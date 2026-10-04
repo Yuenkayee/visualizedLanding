@@ -1,0 +1,16 @@
+# Initial heading prior resolves the H marker's 180-degree symmetry.
+initial_position: [0.0, 0.0, 30.0]
+initial_rotation:
+  - [1, 0, 0]
+  - [0, -1, 0]
+  - [0, 0, -1]
+checkpoint: null
+pixel_sigma: 1.5
+max_reprojection_error: 5.0
+acceleration_noise: 0.5
+angular_acceleration_noise: 0.05
+max_measurement_age: 1.0
+max_position_std: 5.0
+deck_half_extent: [12.0, 7.0]
+lidar_height_tolerance: 3.0
+plane_threshold: 0.08

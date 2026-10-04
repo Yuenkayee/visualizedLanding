@@ -1,0 +1,25 @@
+seed: 42
+frames: 100
+fps: 10.0
+samples: 32
+camera_config: configs/camera.yaml
+lidar_config: configs/lidar.yaml
+ship:
+  length: 140.0
+  # Optional licensed asset; orient its length along +X before import.
+  asset_path: null
+  marker:
+    width: 6.0
+    length: 6.0
+    stroke: 1.2
+sea:
+  size: 1000.0
+  grid: 80
+  wave_amplitude: 0.3
+  sun_elevation: 30.0
+weather:
+  sky_strength: 0.3
+  sun_energy: 3.0
+  sun_pitch: 25.0
+  sun_yaw: -30.0
+  fog_density: 0.0

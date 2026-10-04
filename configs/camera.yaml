@@ -1,0 +1,13 @@
+# OpenCV camera: +x right, +y down, +z forward, RGB images.
+width: 640
+height: 480
+fx: 600.0
+fy: 600.0
+cx: 320.0
+cy: 240.0
+distortion: [0, 0, 0, 0, 0]
+T_camera_lidar:
+  - [1, 0, 0, 0]
+  - [0, 1, 0, 0]
+  - [0, 0, 1, 0]
+  - [0, 0, 0, 1]

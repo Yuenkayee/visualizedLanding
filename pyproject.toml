@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools==75.6.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "visualized-landing"
+version = "0.1.0"
+description = "H-deck visual navigation and offline landing simulation"
+requires-python = ">=3.11,<3.13"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.in"]}
+
+[tool.setuptools.packages.find]
+include = ["navigation*", "simulation*", "visual_modeling*", "visual_training*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

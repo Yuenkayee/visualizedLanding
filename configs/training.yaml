@@ -1,0 +1,12 @@
+seed: 42
+data_root: data
+output: visual_training/checkpoints
+image_size: 256
+batch_size: 8
+epochs: 20
+learning_rate: 0.001
+device: cpu
+threads: 4
+model:
+  channels: 16
+  keypoints: 4

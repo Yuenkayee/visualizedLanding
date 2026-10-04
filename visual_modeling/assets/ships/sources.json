@@ -1,0 +1,4 @@
+{
+  "default_frigate": {"type": "original_procedural", "implementation": "visual_modeling/blender/build_ship.py", "real_vessel": false, "units": "m", "landing_marker": "H"},
+  "references": [{"repository": "https://github.com/osrf/vrx", "commit": "41f2df50fbf75b30264eb4c7a2222d4235f6a70b", "license": "Apache-2.0", "asset": "vrx_gz/models/roboboat01/meshes/roboboat01.dae", "role": "marine asset and material reference; not a frigate", "redistributed": false}]
+}

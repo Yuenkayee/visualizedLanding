@@ -1,0 +1,5 @@
+# Optional headless Blender Python runtime (Python 3.11 is required).
+-r requirements.in
+bpy==4.2.0
+zstandard==0.23.0
+requests==2.32.3

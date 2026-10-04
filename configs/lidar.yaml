@@ -1,0 +1,8 @@
+horizontal_fov: 50.0
+vertical_fov: 40.0
+columns: 64
+rows: 32
+max_range: 150.0
+min_range: 0.2
+range_std: 0.02
+dropout: 0.05

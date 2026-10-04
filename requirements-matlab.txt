@@ -1,0 +1,2 @@
+# Optional MATLAB R2024b engine. Requires a local licensed MATLAB installation.
+matlabengine==24.2.2

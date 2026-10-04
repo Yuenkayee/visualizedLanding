@@ -1,0 +1,6 @@
+{
+  "naval_grey": {"base_color": [0.24, 0.29, 0.32], "metallic": 0.3, "roughness": 0.7},
+  "deck": {"base_color": [0.065, 0.09, 0.09], "roughness": 0.7},
+  "marker": {"base_color": [0.98, 0.98, 0.98], "roughness": 0.8},
+  "ocean": {"base_color": [0.015, 0.08, 0.12], "metallic": 0.25, "roughness": 0.22}
+}

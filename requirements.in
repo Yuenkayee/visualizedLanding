@@ -1,0 +1,14 @@
+# Direct dependencies; requirements.txt contains the complete pinned resolution.
+numpy==1.26.4
+scipy==1.13.1
+opencv-python-headless==4.10.0.84
+PyYAML==6.0.2
+torch==2.5.1
+Pillow==11.0.0
+matplotlib==3.9.2
+pytest==8.3.3
+onnx==1.17.0
+onnxruntime==1.20.1
+protobuf==5.28.3
+setuptools==75.6.0
+pip==24.3.1

@@ -1,0 +1,9 @@
+root: data
+seed: 42
+sequences: 12
+frames_per_sequence: 30
+camera_config: configs/camera.yaml
+marker:
+  width: 6.0
+  length: 6.0
+  stroke: 1.2
