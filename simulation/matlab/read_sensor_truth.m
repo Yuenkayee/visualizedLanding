@@ -20,5 +20,10 @@ else
         'T_deck_camera',[R'*diag([1 -1 -1]) p;0 0 0 1], ...
         'velocity_deck',v');
 end
+% Record a read of this exact state snapshot for the interface-only backend.
+if isfield(s.config,'truth_callback') && strcmp(s.config.truth_callback,'innerloop_truth')
+    s.observed_timestamp=s.timestamp;
+    assignin('base','landingState',s);
+end
 result=jsonencode(truth);
 end

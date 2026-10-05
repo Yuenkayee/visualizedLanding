@@ -1,0 +1,17 @@
+# Merge plant into offline_simulation.yaml ONLY after filling calibrated values.
+# null values are intentionally unusable; no invented UH-60/vessel geometry.
+backend: matlab
+plant:
+  initialize_callback: innerloop_initialize
+  allow_state_hold: false
+  # Name of future MATLAB function s=plant_step_callback(s,dt).
+  plant_step_callback: null
+  # [CG NED metres (3), native velocity knots (3), Euler radians (3), body pqr rad/s (3)]
+  helicopter_state: null
+  ship_state: null
+  # Independent navigation attitude, not copied from ship-state truth.
+  nav_R_ned_deck: null
+  geometry:
+    T_body_camera: null
+    H_ship_body: null
+    gear_body: null

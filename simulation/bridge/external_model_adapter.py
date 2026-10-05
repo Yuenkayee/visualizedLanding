@@ -90,6 +90,10 @@ class MatlabExternalModel:
     def read_sensor_truth(self):
         return SensorTruth.from_dict(self.session.call("read_sensor_truth"))
 
+    def read_navigation_feedback(self):
+        """Inspect wheel-plane-centre minus H-centre NED feedback (interface backend)."""
+        return self.session.call("read_innerloop_feedback")
+
     def write_navigation_estimate(self, estimate):
         self.session.call("write_navigation_estimate", estimate.to_dict())
 

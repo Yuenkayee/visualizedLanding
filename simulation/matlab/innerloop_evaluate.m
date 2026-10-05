@@ -1,0 +1,53 @@
+function out=innerloop_evaluate(s)
+% Pure snapshot evaluation. Running StopTime=0 never advances a plant.
+persistent loaded
+% Generated Simulink artifacts stay outside the source tree.
+previous=Simulink.fileGenControl('getConfig');
+cache=fullfile(tempdir,'visualizedLanding_innerloop_cache');
+Simulink.fileGenControl('set','CacheFolder',cache, ...
+    'CodeGenFolder',fullfile(cache,'codegen'),'createDir',true);
+restore=onCleanup(@()Simulink.fileGenControl('setConfig','config',previous)); %#ok<NASGU>
+if isempty(loaded) || ~bdIsLoaded('innerLoop')
+    load_system(fullfile(s.config.interface_root,'innerLoop.slx')); loaded=true;
+end
+g=s.config.geometry;
+if isempty(s.estimate)
+    e=struct('T_deck_camera',eye(4),'velocity',zeros(3,1), ...
+        'covariance',eye(6),'healthy',false,'timestamp',s.timestamp);
+else
+    e=s.estimate;
+end
+values={s.timestamp,s.helicopter_state(:),s.ship_state(:), ...
+    g.T_body_camera,g.H_ship_body(:),g.gear_body(:), ...
+    e.T_deck_camera,e.velocity(:),e.covariance,double(e.healthy), ...
+    e.timestamp,s.nav_R_ned_deck};
+names={'timestamp','helicopter_state','ship_state','T_body_camera', ...
+    'H_ship_body','gear_body','nav_T_deck_camera','nav_velocity_deck', ...
+    'nav_covariance','nav_healthy','nav_timestamp','nav_R_ned_deck'};
+ds=Simulink.SimulationData.Dataset;
+for k=1:numel(values)
+    v=values{k};
+    if ismatrix(v) && size(v,2)>1
+        data=cat(3,v,v);
+    else
+        data=[v(:)';v(:)'];
+    end
+    ds=ds.addElement(timeseries(data,[0;0.01]),names{k});
+end
+input=Simulink.SimulationInput('innerLoop');
+input=input.setExternalInput(ds);
+input=input.setModelParameter('StopTime','0');
+result=sim(input); outputs=result.yout;
+fields={'T_world_deck','T_deck_camera','velocity_deck', ...
+    'helicopter_velocity_ned_mps','ship_velocity_ned_mps', ...
+    'gear_relative_truth_ned','gear_relative_estimate_ned', ...
+    'relative_distance_estimate_m','relative_covariance_ned','feedback_valid', ...
+    'navigation_velocity_camera_ned_mps','state_timestamp'};
+out=struct();
+for k=1:numel(fields)
+    signal=outputs.getElement(k).Values;
+    data=squeeze(signal.Data);
+    if isvector(data), data=data(:); end
+    out.(fields{k})=data;
+end
+end
