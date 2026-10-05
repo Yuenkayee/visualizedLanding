@@ -20,3 +20,11 @@ Blender 4.2 的 macOS cp311 wheel 内部 WHEEL 标记错误地写成 cp39；pip/
 新增 `external/innerloop/simu/innerLoop.slx` 在 MATLAB/Simulink R2024b 中生成并编译。`test_innerloop_interfaces` 实际执行 SLX，验证节速转换、NED/ENU/甲板/相机变换、轮底与 H 偏移、协方差传播、旋转坐标系速度有限差分、读/反馈/推进顺序及缺失动力学显式错误。人工几何夹具不是 UH-60 实际尺寸。原有 Python 19 项测试通过。
 
 现有 Python `MatlabExternalModel` 到新 SLX 的端到端往返通过：读取 SensorTruth、写入 NavigationEstimate、读取轮底 NED 反馈、推进显式静态测试时钟并读取下一状态。Simulink 缓存输出至临时目录。此验证不包含飞机/舰船动力学、UH-60 真实起落架尺寸或控制器性能。
+
+### 甲板 NED 姿态内部计算
+
+按舰船状态通信无延迟的假设，convert 内部使用舰船横摇、纵摇、艏向计算 R_NED_deck，删除外部 nav_R_ned_deck 端口及配置/适配要求。对现有 SLX 原位更新，未用重建函数覆盖已有模型布局。实际模型编译和 MATLAB 接口测试通过，新增倾斜舰船下位置、速度向量、协方差旋转及有偏导航位置保持测试；SLX 根输入确认由 12 个降为 11 个。Python 19 项测试通过。
+
+### MATLAB System 几何参数
+
+转换模块改为 convert < matlab.System，三个 Nontunable 参数为 T_body_camera、H_ship_body、gear_body，删除其根信号输入，剩余 8 个信号输入。Model Workspace 参数初始为 NaN，setup 阶段拒绝未填写或非法几何。适配层通过 SimulationInput 设置参数。实际 SLX 测试覆盖安装参数更改后参考点变化、未填写参数拒绝、原有坐标/单位/反馈顺序；独立临时目录中重建脚本成功生成同样的 MATLAB System 结构。Python 19 项测试通过。

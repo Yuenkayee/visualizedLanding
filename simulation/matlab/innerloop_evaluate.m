@@ -18,12 +18,11 @@ else
     e=s.estimate;
 end
 values={s.timestamp,s.helicopter_state(:),s.ship_state(:), ...
-    g.T_body_camera,g.H_ship_body(:),g.gear_body(:), ...
     e.T_deck_camera,e.velocity(:),e.covariance,double(e.healthy), ...
-    e.timestamp,s.nav_R_ned_deck};
-names={'timestamp','helicopter_state','ship_state','T_body_camera', ...
-    'H_ship_body','gear_body','nav_T_deck_camera','nav_velocity_deck', ...
-    'nav_covariance','nav_healthy','nav_timestamp','nav_R_ned_deck'};
+    e.timestamp};
+names={'timestamp','helicopter_state','ship_state', ...
+    'nav_T_deck_camera','nav_velocity_deck', ...
+    'nav_covariance','nav_healthy','nav_timestamp'};
 ds=Simulink.SimulationData.Dataset;
 for k=1:numel(values)
     v=values{k};
@@ -36,6 +35,9 @@ for k=1:numel(values)
 end
 input=Simulink.SimulationInput('innerLoop');
 input=input.setExternalInput(ds);
+input=input.setVariable('T_body_camera',g.T_body_camera,'Workspace','innerLoop');
+input=input.setVariable('H_ship_body',g.H_ship_body(:),'Workspace','innerLoop');
+input=input.setVariable('gear_body',g.gear_body(:),'Workspace','innerLoop');
 input=input.setModelParameter('StopTime','0');
 result=sim(input); outputs=result.yout;
 fields={'T_world_deck','T_deck_camera','velocity_deck', ...

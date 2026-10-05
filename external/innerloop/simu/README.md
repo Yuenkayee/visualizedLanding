@@ -1,6 +1,6 @@
 # innerLoop：着舰接口与转换模型（无动力学/控制器）
 
-`innerLoop.slx` 是 MATLAB/Simulink R2024b 实际模型，包含 12 个根输入、一个 MATLAB Function 转换模块、12 个根输出。`build_innerLoop.m` 可重建模型；`innerLoop_conversion.m` 是嵌入模块的可审阅源码。修改源码后需重新执行构建函数。
+`innerLoop.slx` 是 MATLAB/Simulink R2024b 实际模型，包含 8 个根输入、一个 MATLAB System 转换模块、12 个根输出。`build_innerLoop.m` 可重建模型；`convert.m` 是 MATLAB System 类，`innerLoop_conversion.m` 是其调用的几何转换函数。构建函数会重建整个模型；已有手工改动时应更新嵌入转换函数与相关端口，避免覆盖其他模块。
 
 路径按本次要求使用 `external/innerloop/simu`，原有 `external/inner_loop` 及其 SLX 不作改动。
 
@@ -13,19 +13,29 @@
 | timestamp | 1 | 当前已推进完成的状态时刻 |
 | helicopter_state | 12 | `[CG_NED_m(3); velocity_BODY_knot(3); roll_pitch_yaw_rad(3); omega_BODY_rad_s(3)]` |
 | ship_state | 12 | `[CG_NED_m(3); velocity_NED_knot(3); roll_pitch_heading_rad(3); omega_BODY_rad_s(3)]` |
-| T_body_camera | 4×4 | 相机 OpenCV 系到飞机机体系的刚体变换，包括安装位置 |
-| H_ship_body | 3 | 舰船质心到 H 中心的偏移，舰体 forward/right/down 系，米 |
-| gear_body | 3 | UH-60 质心到起落架轮底平面中心的偏移，机体 forward/right/down 系，米 |
 | nav_T_deck_camera | 4×4 | 已有 NavigationEstimate.T_deck_camera |
 | nav_velocity_deck | 3 | 已有 NavigationEstimate.velocity，甲板系相机相对速度，m/s |
 | nav_covariance | 6×6 | 已有估计协方差：[甲板平移误差；相机局部右乘旋转误差] |
 | nav_healthy | 1 | 0/1，导航健康状态 |
 | nav_timestamp | 1 | 已有 NavigationEstimate.timestamp；控制接口要求匹配当前状态时刻 |
-| nav_R_ned_deck | 3×3 | 导航可获得的甲板系到 NED 旋转，不能从模型真值自动取用 |
 
 姿态定义 `R_NED_body=Rz(yaw)Ry(pitch)Rx(roll)`。角速度是机体系角速度 p/q/r，不是 Euler 角导数；新增角速度输入是为了正确计算偏移点速度与旋转甲板系速度，不能互相替代。飞机和舰船必须使用同一个 NED 原点。
 
 UH-60 几何尚未指定具体型号、质心/起落架构型及标定结果，因此模型不内置未经核实的尺寸。`gear_body` 要由所选构型的轮胎接触点确定中心、明确轮胎载荷/压缩状态；着陆后是否使用固定值或时变值由后续模型决定。H 中心相对舰船质心和相机安装外参同样必须显式输入。三者默认不能视为同一点。
+
+## MATLAB System 参数
+
+双击 `Frame_Unit_ReferencePoint_Conversion` 模块，在参数窗口填入以下三个非可调参数（Nontunable），不再使用信号输入端口：
+
+| 参数 | 尺寸 | 定义 |
+|---|---|---|
+| T_body_camera | 4×4 | 相机 OpenCV 系到飞机机体系的固定安装变换，平移单位米 |
+| H_ship_body | 3×1 | 舰船质心到 H 中心的偏移，舰体 forward/right/down 系，米 |
+| gear_body | 3×1 | UH-60 质心到轮底平面中心的偏移，机体 forward/right/down 系，米 |
+
+模型参数表达式默认引用同名 Model Workspace 变量，其初始值为 NaN，**必须填入标定值才能运行**。可直接在模块参数窗口填数值/矩阵表达式，或在 Model Explorer 中设置同名变量。模型的 PreLoadFcn 自动将模型所在目录加入 MATLAB 路径，供加载 convert 类和转换函数。
+
+Python/MATLAB 适配层沿用 `config.geometry` 三个字段，通过 SimulationInput.setVariable 设置模型工作区参数，不再生成几何信号。通过适配层运行时应保留模块中默认的同名参数表达式；若手工将其改为字面常量，模块将使用该常量而非 config.geometry。参数在仿真开始前确定，单次运行期间固定；时变安装几何需要另行设计接口。
 
 ## 输出
 
@@ -46,11 +56,11 @@ UH-60 几何尚未指定具体型号、质心/起落架构型及标定结果，�
 
 轮底在甲板上方时，NED 下向误差为负。deck 为船首/左舷/向上，H 原点，`R_NED_deck=R_NED_ship diag(1,-1,-1)`；world 是现有代码的 ENU，用 `A=[0 1 0;1 0 0;0 0 -1]` 转换。
 
-反馈计算仅使用导航位姿、安装参数与 **独立导航姿态 nav_R_ned_deck**：
+当前假设所有舰船状态通信无延迟。转换函数内部直接使用 `ship_state(7:9)` 的横摇、纵摇和艏向计算 `nav_R_ned_deck=Rz(heading)Ry(pitch)Rx(roll)diag(1,-1,-1)`，无需外部矩阵输入。反馈位置仍由导航位姿与安装参数计算：
 
 `r_NED = nav_R_ned_deck * (t_deck_camera + R_deck_camera * R_body_camera' * (gear_body-camera_body))`
 
-导航 NED 姿态和安装尺寸的不确定性尚未包含在输出协方差中；该协方差是这些参数给定时的条件协方差。可用飞机惯导姿态加相机安装姿态和视觉相对姿态求 nav_R_ned_deck，或由舰船姿态链路获得。具体来源待后续导航接口补充，绝不从 truth 通道静默替代。
+舰船姿态按理想同步通信值使用。安装尺寸的不确定性尚未包含在输出协方差中；该协方差是给定安装参数和舰船姿态时的条件协方差。后续考虑通信延迟或姿态噪声时，需要重新设计时间对齐和有效性判断。
 
 ## 因果顺序及动力学接入
 
@@ -60,7 +70,7 @@ SLX 是快照转换边界，`sim(..., StopTime='0')` 不推进动力学、不包
 2. `read_sensor_truth` 返回与 Python SensorTruth 一致的 JSON，并登记当前时刻已读取。
 3. Python 用真值生成相机/LiDAR，再运行导航。
 4. `write_navigation_estimate` 写入原有 NavigationEstimate JSON；转换成轮底 NED 反馈并标记待推进。
-5. `advance_external_model(dt)` 调用用户 `plant_step_callback(s,dt)`；它消费 `s.feedback`、推进飞机/舰船与控制器状态、更新导航姿态来源、令时间准确增加 dt。
+5. `advance_external_model(dt)` 调用用户 `plant_step_callback(s,dt)`；它消费 `s.feedback`、推进飞机/舰船与控制器状态、更新舰船通信状态、令时间准确增加 dt。
 6. 下一次 `read_sensor_truth` 读取新状态。
 
 调用顺序错误、重复反馈、旧时间反馈均拒绝。动力学不存在时明确报 `landing:MissingDynamics`。`allow_state_hold=true` 仅用于接口测试：状态固定，时间推进，不能称为着舰动力学闭环。测试时相机/雷达/控制可同频，或保证每次状态推进前已有该时刻的控制反馈；任意异步调度策略需要显式设计保持和控制采样。

@@ -7,7 +7,6 @@ c.helicopter_state=[10;20;-30;10;0;0;0;0;pi/2;0;0;0];
 c.ship_state=[1;2;0;0;20;0;0;0;0;0;0;0];
 c.geometry=struct('T_body_camera',[diag([1 -1 -1]) [1;0;2];0 0 0 1], ...
     'H_ship_body',[-5;0;-3],'gear_body',[0;0;2]);
-c.nav_R_ned_deck=diag([1 -1 -1]);
 cleanup=onCleanup(@()finalize_external_model());
 initialize_external_model(jsonencode(c));
 % Advancement and feedback must follow a current-state read.
@@ -17,6 +16,15 @@ e=struct('timestamp',0,'T_deck_camera',eye(4),'velocity',[0 0 0], ...
 expect_error(@()write_navigation_estimate(jsonencode(e)),'landing:Order');
 truth=jsondecode(read_sensor_truth());
 s=evalin('base','landingState'); o=innerloop_evaluate(s);
+% Installation geometry is now supplied through MATLAB System parameters.
+block='innerLoop/Frame_Unit_ReferencePoint_Conversion';
+assert(strcmp(get_param(block,'System'),'convert'));
+assert(numel(find_system('innerLoop','SearchDepth',1,'BlockType','Inport'))==8);
+assert(strcmp(get_param(block,'T_body_camera'),'T_body_camera'));
+changed=s; changed.config.geometry.gear_body=[1;0;2];
+shifted=innerloop_evaluate(changed);
+assert(norm(shifted.gear_relative_truth_ned-o.gear_relative_truth_ned-[0;1;0])<1e-10);
+
 assert(norm(o.helicopter_velocity_ned_mps-[0;10*1852/3600;0])<1e-10);
 assert(norm(o.ship_velocity_ned_mps-[0;20*1852/3600;0])<1e-10);
 assert(norm(o.gear_relative_truth_ned-[14;18;-25])<1e-10);
@@ -46,6 +54,21 @@ A=[0 1 0;1 0 0;0 0 -1]; Rb=euler_rot(s.helicopter_state(7:9)); Rs=euler_rot(s.sh
 T=o.T_world_deck*o.T_deck_camera;
 assert(norm(T(1:3,4)-A*(s.helicopter_state(1:3)+Rb*c.geometry.T_body_camera(1:3,4)))<1e-9);
 assert(norm(T(1:3,1:3)-A*Rb*c.geometry.T_body_camera(1:3,1:3),'fro')<1e-9);
+% Internal communicated ship attitude must rotate feedback and covariance.
+s.estimate=struct('timestamp',s.timestamp,'T_deck_camera',o.T_deck_camera, ...
+    'velocity',[1;2;3],'covariance',diag([.01 .02 .03 .04 .05 .06]),'healthy',true);
+f=innerloop_evaluate(s);
+assert(f.feedback_valid==1);
+assert(norm(f.gear_relative_estimate_ned-o.gear_relative_truth_ned)<1e-9);
+D=diag([1 -1 -1]); navR=Rs*D;
+assert(norm(f.navigation_velocity_camera_ned_mps-navR*[1;2;3])<1e-9);
+lever=c.geometry.T_body_camera(1:3,1:3)'*(c.geometry.gear_body-c.geometry.T_body_camera(1:3,4));
+J=[navR -navR*o.T_deck_camera(1:3,1:3)*skew(lever)];
+assert(norm(f.relative_covariance_ned-J*s.estimate.covariance*J','fro')<1e-9);
+% A biased navigation translation remains a biased estimate, not plant truth.
+s.estimate.T_deck_camera(1:3,4)=s.estimate.T_deck_camera(1:3,4)+[1;2;3];
+f=innerloop_evaluate(s);
+assert(norm(f.gear_relative_estimate_ned-o.gear_relative_truth_ned-navR*[1;2;3])<1e-9);
 % Finite-difference rotating lever velocity and rotating deck coordinates.
 dt=1e-6; w=s.helicopter_state(10:12); ws=s.ship_state(10:12);
 Rc2=Rb*expm(skew(w)*dt); Rs2=Rs*expm(skew(ws)*dt); D=diag([1 -1 -1]);
@@ -56,6 +79,15 @@ assert(norm((p2-o.T_deck_camera(1:3,4))/dt-o.velocity_deck)<1e-5);
 % Stale navigation packet fails validity directly inside SLX conversion.
 s.estimate=e; s.estimate.timestamp=s.timestamp-.05;
 o=innerloop_evaluate(s); assert(o.feedback_valid==0);
+% Unfilled properties must fail at setup, never silently use guessed geometry.
+obj=convert;
+try
+    step(obj,0,c.helicopter_state,c.ship_state,eye(4),zeros(3,1),eye(6),0,0);
+    error('landing:Test','Unfilled geometry unexpectedly accepted');
+catch ex
+    assert(~strcmp(ex.identifier,'landing:Test'));
+end
+release(obj);
 result=jsonencode(struct('passed',true,'checks', ...
     'SLX compilation, units, rotated frames, reference offsets, covariance, sensor contract, order, stale feedback, absent dynamics'));
 end

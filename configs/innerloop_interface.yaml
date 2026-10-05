@@ -9,8 +9,8 @@ plant:
   # [CG NED metres (3), native velocity knots (3), Euler radians (3), body pqr rad/s (3)]
   helicopter_state: null
   ship_state: null
-  # Independent navigation attitude, not copied from ship-state truth.
-  nav_R_ned_deck: null
+  # Ship Euler angles are available to navigation with zero communication delay.
+  # MATLAB System Nontunable parameters, set through Model Workspace.
   geometry:
     T_body_camera: null
     H_ship_body: null

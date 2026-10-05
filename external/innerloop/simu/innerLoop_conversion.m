@@ -1,9 +1,9 @@
 function [T_world_deck,T_deck_camera,velocity_deck,v_heli_ned,v_ship_ned, ...
     r_truth,r_est,distance_est,P_relative,feedback_valid,v_camera_est_ned,t_out] = ...
-    convert(t,heli,ship,T_body_camera,H_body,gear_body,nav_T,nav_v,nav_P,nav_ok,nav_t,nav_R)
+    innerLoop_conversion(t,heli,ship,T_body_camera,H_body,gear_body,nav_T,nav_v,nav_P,nav_ok,nav_t)
 %#codegen
 % BODY is forward/right/down; deck is bow/port/up. Euler Rz Ry Rx.
-% nav_R MUST come from available attitude/navigation information, not truth.
+% Ship Euler angles are available through ideal zero-delay communication.
 assert(isfinite(t) && t>=0);
 assert(all(isfinite(heli)) && all(isfinite(ship)));
 assert(all(isfinite(T_body_camera(:))) && all(isfinite(H_body)) && all(isfinite(gear_body)));
@@ -12,7 +12,7 @@ Rc=T_body_camera(1:3,1:3); lc=T_body_camera(1:3,4);
 assert(norm(Rc'*Rc-eye(3),'fro')<1e-6 && det(Rc)>0);
 assert(norm(T_body_camera(4,:)-[0 0 0 1])<1e-8);
 D=diag([1 -1 -1]); A=[0 1 0;1 0 0;0 0 -1];
-Rdeck=Rs*D; pc=heli(1:3)+Rb*lc; ph=ship(1:3)+Rs*H_body;
+Rdeck=Rs*D; nav_R=Rdeck; pc=heli(1:3)+Rb*lc; ph=ship(1:3)+Rs*H_body;
 T_world_deck=[A*Rdeck A*ph;0 0 0 1];
 T_deck_camera=[Rdeck'*Rb*Rc Rdeck'*(pc-ph);0 0 0 1];
 knot=1852/3600;

@@ -12,10 +12,6 @@ assert(isfield(c,'helicopter_state') && numel(c.helicopter_state)==12, ...
     'landing:State','12 helicopter state values required');
 assert(isfield(c,'ship_state') && numel(c.ship_state)==12, ...
     'landing:State','12 ship state values required');
-assert(isfield(c,'nav_R_ned_deck'),'landing:Heading','Independent navigation attitude required');
-assert(isequal(size(c.nav_R_ned_deck),[3 3]) && all(isfinite(c.nav_R_ned_deck(:))) && ...
-    norm(c.nav_R_ned_deck'*c.nav_R_ned_deck-eye(3),'fro')<1e-6 && det(c.nav_R_ned_deck)>0, ...
-    'landing:Heading','Navigation rotation must be finite SO(3)');
 root=fileparts(fileparts(fileparts(mfilename('fullpath'))));
 s.config.interface_root=fullfile(root,'external','innerloop','simu');
 addpath(s.config.interface_root);
@@ -24,7 +20,6 @@ s.config.feedback_callback='innerloop_feedback';
 s.config.advance_callback='innerloop_advance';
 s.config.finalize_callback='innerloop_finalize';
 s.helicopter_state=c.helicopter_state(:); s.ship_state=c.ship_state(:);
-s.nav_R_ned_deck=c.nav_R_ned_deck;
 s.phase='read'; s.feedback=[];
 innerloop_evaluate(s); % Validate/compile actual SLX and contracts now.
 end
