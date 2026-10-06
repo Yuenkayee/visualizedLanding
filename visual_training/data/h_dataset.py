@@ -36,5 +36,8 @@ class HDataset(Dataset):
             image=torch.from_numpy(image.transpose(2, 0, 1).copy()).float() / 255,
             mask=torch.from_numpy((mask > 127).astype("float32")[None]),
             keypoints=torch.tensor(kp, dtype=torch.float32),
-            visibility=torch.tensor(row["visibility"], dtype=torch.bool),
+            visibility=torch.tensor(
+                row.get("keypoint_train_visibility", row["visibility"]),
+                dtype=torch.bool,
+            ),
         )

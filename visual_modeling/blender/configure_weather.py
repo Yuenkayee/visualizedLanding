@@ -16,9 +16,10 @@ def configure_weather(config=None):
             math.radians(c.get("sun_yaw", -30)),
         )
     if c.get("fog_density", 0) > 0:
-        from visual_modeling.blender.build_ship import box, material
+        from visual_modeling.blender.build_ship import box
 
-        m = material("fog", (1, 1, 1))
+        m = bpy.data.materials.new("fog")
+        m.use_nodes = True
         nodes = m.node_tree.nodes
         nodes.clear()
         output = nodes.new("ShaderNodeOutputMaterial")

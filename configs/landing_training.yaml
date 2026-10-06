@@ -1,0 +1,11 @@
+seed: 20261006
+data_root: data/landing
+output: visual_training/checkpoints/landing
+# Wide-angle far H is small: retain substantially more than 256 px.
+image_size: 512
+batch_size: 4
+epochs: 40
+learning_rate: 0.001
+device: cpu
+threads: 4
+model: {channels: 16, keypoints: 4}

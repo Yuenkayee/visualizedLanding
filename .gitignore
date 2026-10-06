@@ -10,6 +10,7 @@ data/annotations/*
 data/calibration/*
 data/trajectories/*
 data/splits/*
+data/landing/
 outputs/figures/*
 outputs/logs/*
 outputs/metrics/*

@@ -62,3 +62,15 @@ MATLAB 后端调用现有 `ship_motion_model`，飞机侧默认仍为受限加�
 H 图案对称，不能独立确定绝对航向；激光平面不观测水平位置/yaw；目前没有 IMU 输入。滤波使用常速度/角速度模型，测量过期会刹车/悬停。接近甲板时完整 H 超出视场，经典检测会失效，系统安全停止下降；此基线不保证触舰，也不代表真实飞行安全验证。终端阶段需要更宽视场、部分标记模型、额外不对称标记或其他传感器。
 
 所有运行命令在仓库根目录执行。数据、权重、日志和 `.blend` 是运行产物，不纳入 Git；`.gitkeep` 保留目录结构。
+
+## 三阶段进近、等待窗口、触舰训练数据
+
+使用 `configs/landing_dataset.yaml` 和 `shell/generate_landing_dataset.sh` 生成轮底中心从后方 50 m / 高 50 m 到正上方 5 m、悬停等待、再下降至 0 m 的航次。固定相机安装、舰船直线航行、空气尾流运动残差和五种天气均由同一轨迹生成；每个航次保持在同一个 train/val/test 集合。
+
+```bash
+bash shell/generate_landing_dataset.sh --plan-only
+bash shell/generate_landing_dataset.sh
+python -m visual_training.train --config configs/landing_training.yaml
+```
+
+光学布局是待标定的超广角设计，不能直接视为真实 UH-60 尺寸。方案、窗口事件输入、退化模型、预览与小型测试命令见 [三阶段数据设计](docs/landing_training_dataset.md)。

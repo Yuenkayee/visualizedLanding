@@ -1,0 +1,70 @@
+# Installation values are design placeholders, NOT certified UH-60 dimensions.
+output: data/landing
+seed: 20261006
+sorties_per_weather: 12
+frames_per_stage: 60
+trajectory_hz: 10.0
+split_ratios: [0.7, 0.15, 0.15]
+camera:
+  width: 1280
+  height: 960
+  horizontal_fov_deg: 140.0
+  vertical_fov_deg: 145.0
+  # Almost downward, 6 degrees aft; forward targets remain in the wide FOV.
+  optical_down_deg: 96.0
+  # Forward belly centreline, ~8 cm below the provisional lower skin at x=2.
+  position_body_m: [2.0, 0.0, 1.11]
+  # Independent, small fixed misalignment per sortie; no look-at tracking.
+  mounting_error_deg: 0.5
+  exposure_s: 0.004
+  readout_s: 0.008
+geometry:
+  gear_body_m: [0.0, 0.0, 2.9]
+  H_ship_body_m: [-45.0, 0.0, -5.5]
+  airframe_proxy:
+    model: provisional_ellipsoids_not_uh60_cad
+    ellipsoids:
+      - {name: fuselage, centre_body_m: [0.0, 0.0, 0.0], semiaxes_m: [5.6, 1.25, 1.1]}
+      - {name: right_main_wheel, centre_body_m: [1.6, 1.6, 2.55], semiaxes_m: [0.35, 0.14, 0.35]}
+      - {name: left_main_wheel, centre_body_m: [1.6, -1.6, 2.55], semiaxes_m: [0.35, 0.14, 0.35]}
+      - {name: tail_wheel, centre_body_m: [-3.2, 0.0, 2.65], semiaxes_m: [0.25, 0.10, 0.25]}
+    struts:
+      - {name: right_main_strut, start_body_m: [1.2, 1.12, 0.55], end_body_m: [1.6, 1.6, 2.55], radius_m: 0.06}
+      - {name: left_main_strut, start_body_m: [1.2, -1.12, 0.55], end_body_m: [1.6, -1.6, 2.55], radius_m: 0.06}
+      - {name: tail_strut, start_body_m: [-3.0, 0.0, 0.8], end_body_m: [-3.2, 0.0, 2.65], radius_m: 0.05}
+marker: {width: 6.0, length: 6.0, stroke: 1.2}
+mission:
+  # Gravity-level ship-heading frame: forward, port, up; not tilted deck axes.
+  initial_gear_heading_m: [-50.0, 0.0, 50.0]
+  hover_height_m: 5.0
+  approach_duration_s: [36.0, 44.0]
+  hover_duration_s: [6.0, 12.0]
+  descent_duration_s: [12.0, 18.0]
+  acceleration_fraction: 0.12
+  ship_speed_knots: [10.0, 16.0]
+  # Use supplied touchdown-window times if available; default wait is sampled.
+  window_events_file: null
+motion:
+  ship_roll_deg: [0.5, 3.0]
+  ship_pitch_deg: [0.3, 2.0]
+  ship_heave_m: [0.1, 0.6]
+  wave_period_s: [6.0, 11.0]
+  wake_position_std_m: 0.18
+  wake_attitude_std_deg: 1.5
+  wake_correlation_s: 0.7
+  camera_vibration_deg: 0.18
+  helicopter_pitch_deg: -2.0
+  yaw_tracking_error_deg: 0.3
+  # Stage 2 nominal hold is exact; residual tracking error is smaller.
+  hover_residual_scale: 0.25
+render:
+  samples: 24
+  sea_grid: 80
+  sea_size_m: 1600.0
+  wave_amplitude_m: 0.4
+weather:
+  clear: {sun_energy: 2.0, sky_strength: 0.25, sun_elevation_deg: 35.0, fog_density: 0.0, glare: 0.0, sensor_noise: 1.5, exposure_gain: 1.0, deck_lights: false}
+  fog: {sun_energy: 2.0, sky_strength: 0.4, sun_elevation_deg: 25.0, fog_density: 0.006, glare: 0.0, sensor_noise: 3.0, exposure_gain: 1.0, deck_lights: false}
+  glare: {sun_energy: 5.0, sky_strength: 0.35, sun_elevation_deg: 12.0, fog_density: 0.0, glare: 0.9, sensor_noise: 2.0, exposure_gain: 1.1, deck_lights: false}
+  night: {sun_energy: 0.0, sky_strength: 0.001, sun_elevation_deg: -12.0, fog_density: 0.0, glare: 0.25, sensor_noise: 7.0, exposure_gain: 1.0, deck_lights: true}
+  night_fog: {sun_energy: 0.0, sky_strength: 0.002, sun_elevation_deg: -12.0, fog_density: 0.012, glare: 0.35, sensor_noise: 8.0, exposure_gain: 1.0, deck_lights: true}
