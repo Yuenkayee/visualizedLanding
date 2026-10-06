@@ -29,7 +29,7 @@ Blender 4.2 的 macOS cp311 wheel 内部 WHEEL 标记错误地写成 cp39；pip/
 
 转换模块改为 convert < matlab.System，三个 Nontunable 参数为 T_body_camera、H_ship_body、gear_body，删除其根信号输入，剩余 8 个信号输入。Model Workspace 参数初始为 NaN，setup 阶段拒绝未填写或非法几何。适配层通过 SimulationInput 设置参数。实际 SLX 测试覆盖安装参数更改后参考点变化、未填写参数拒绝、原有坐标/单位/反馈顺序；独立临时目录中重建脚本成功生成同样的 MATLAB System 结构。Python 19 项测试通过。
 
-## 三阶段着舰训练数据初版（2026-10-06，机腹安装更新见下文）
+## 三阶段着舰训练数据初版（2026-10-06，后续调整见下文）
 
 新增固定安装单相机、轮底中心三阶段轨迹、天气分层航次划分与 Blender/CPU 生成入口。轨迹使用不随甲板摇摆倾斜的水平航向系，悬停目标在 NED 中为 [0,0,-5] m；真实甲板系单独用于成像及 PnP。默认 60 航次已生成全轨迹和光学计划：40/10/10 航次分配到 train/val/test，正式渲染目标为 10,800 图像，尚未执行全量 Blender 渲染。
 
@@ -50,3 +50,15 @@ Blender 4.2 的 macOS cp311 wheel 内部 WHEEL 标记错误地写成 cp39；pip/
 含机身和起落架的五类天气 × 三阶段共 15 张 Blender 样例重新渲染，8 samples，全部样例四个外角几何可见；可见部分 H 被起落架遮挡及飞机阴影。更新 output/figure/landing_three_stage_preview.png、landing_optics_report.json，并生成 landing_camera_mount.png 侧视示意图。全量 10,800 张仍未渲染。
 
 26 项 pytest 通过，新增覆盖机身内安装拒绝、主轮/机身射线遮挡、目标前/后遮挡物区分和 CPU 遮挡投影；静态 F/E9 检查通过。
+
+### 按仿真结果扩大姿态晃动（2026-10-06）
+
+以用户所述幅值为单边 Euler 偏移峰值：第一阶段 phi/theta/psi 初始 0.6 rad，前 15% 保持、15%–80% 连续衰减至 0.05 rad，第二阶段暂用 0.05 rad；第三阶段前 12% 从 0.05 升至 0.3 rad，后续保持。航次/轴独立幅值系数 0.9–1.0，周期 2.7–3.3 s，全航次相位连续。稠密轨迹改为 20 Hz，保留小幅高频机体振动。舰船晃动、相机位置/角度/FOV 和天气参数保持原设计。
+
+主姿态波动替代原 1.5° Gaussian 残差，取消主姿态的距离/高度衰减及从 CG 速度反复修正 yaw。后者会擦除用户指定的 psi 波动；直线轮底轨迹与大偏航同时给定的运动学代理无法保证零侧滑，逐帧保存实际计算值。轨迹/图像标注新增姿态包络、Euler 偏移、周期、SO(3) 有限差分体轴角速度；plan.json（schema_version=2）按航次保存姿态统计，新增 planning_report.json 汇总视场和最长连续不可见时间。
+
+默认 60 航次的 H 中心可见率：approach 航次平均 92.67%、最差 86.69%，window_hold/touchdown 均 100%；四角同时可见率：approach 平均 90.09%、最差 84.11%，window_hold 100%，touchdown 平均 83.99%、最差 74.04%。中心最长连续不可见约 1.25 s，末端最长四角不齐约 2.39 s。最小中距投影尺度约 10.51 px，最小甲板法向相机高度约 0.923 m。以上均为采样代理几何结果，旧小扰动可见率不适用于本版。
+
+15 张 Blender 样例按每阶段最大姿态模长重新选择、实际渲染（640×480，8 samples），检查了目标出画和起落架遮挡。12 张几何上四角齐全，3 张不满足四角/像素面积条件；保留全部样本，不按 PnP 可用性筛选。更新 landing_three_stage_preview.png、landing_optics_report.json，新增 landing_attitude_profile.png 和可复现绘图入口。正式 10,800 张图像与完整训练尚未执行。
+
+29 项 pytest 通过：新增包络阶段峰值与边界一阶连续、三秒周期、psi 不被覆盖、采样频率拒绝，以及强扰动遮挡样本在 HDataset/关键点可见性屏蔽下的有限损失和梯度。静态 F/E9、Python 编译、shell 语法和 Git whitespace 检查通过。

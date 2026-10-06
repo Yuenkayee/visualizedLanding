@@ -129,17 +129,57 @@
       ]
     }
   },
+  "attitude_design": {
+    "approach_start_amplitude_rad": [
+      0.6,
+      0.6,
+      0.6
+    ],
+    "approach_end_amplitude_rad": [
+      0.05,
+      0.05,
+      0.05
+    ],
+    "approach_decay_progress": [
+      0.15,
+      0.8
+    ],
+    "hold_amplitude_rad": [
+      0.05,
+      0.05,
+      0.05
+    ],
+    "touchdown_amplitude_rad": [
+      0.3,
+      0.3,
+      0.3
+    ],
+    "touchdown_ramp_fraction": 0.12,
+    "period_s": [
+      2.7,
+      3.3
+    ],
+    "amplitude_scale": [
+      0.9,
+      1.0
+    ]
+  },
+  "trajectory_hz": 20.0,
   "sorties": 60,
   "stages": {
     "approach": {
-      "min_centre_in_frame_fraction": 1.0,
-      "min_four_corners_in_frame_fraction": 1.0,
+      "min_centre_in_frame_fraction": 0.8669108669108669,
+      "min_four_corners_in_frame_fraction": 0.8410852713178295,
       "min_centre_unoccluded_fraction": 1.0,
       "min_four_corners_unoccluded_fraction": 1.0,
-      "min_centre_visible_fraction": 1.0,
-      "min_four_corners_visible_fraction": 1.0,
-      "min_camera_height_above_deck_normal_m": 6.585266140419252,
-      "min_marker_extent_px": 22.243779133080352
+      "min_centre_visible_fraction": 0.8669108669108669,
+      "min_four_corners_visible_fraction": 0.8410852713178295,
+      "max_centre_invisible_duration_s": 1.2483829351606874,
+      "max_four_corners_unavailable_duration_s": 1.5479948395992524,
+      "min_camera_height_above_deck_normal_m": 6.573926913969322,
+      "min_marker_extent_px": 10.5118627348171,
+      "mean_centre_visible_fraction": 0.9267137475370497,
+      "mean_four_corners_visible_fraction": 0.9008913732321248
     },
     "window_hold": {
       "min_centre_in_frame_fraction": 1.0,
@@ -148,18 +188,26 @@
       "min_four_corners_unoccluded_fraction": 1.0,
       "min_centre_visible_fraction": 1.0,
       "min_four_corners_visible_fraction": 1.0,
-      "min_camera_height_above_deck_normal_m": 6.501731575353594,
-      "min_marker_extent_px": 126.5535569731561
+      "max_centre_invisible_duration_s": 0.0,
+      "max_four_corners_unavailable_duration_s": 0.0,
+      "min_camera_height_above_deck_normal_m": 6.525779438597457,
+      "min_marker_extent_px": 125.73001008872933,
+      "mean_centre_visible_fraction": 1.0,
+      "mean_four_corners_visible_fraction": 1.0
     },
     "touchdown": {
       "min_centre_in_frame_fraction": 1.0,
-      "min_four_corners_in_frame_fraction": 1.0,
+      "min_four_corners_in_frame_fraction": 0.8228782287822878,
       "min_centre_unoccluded_fraction": 1.0,
-      "min_four_corners_unoccluded_fraction": 0.993103448275862,
+      "min_four_corners_unoccluded_fraction": 0.8974358974358975,
       "min_centre_visible_fraction": 1.0,
-      "min_four_corners_visible_fraction": 0.993103448275862,
-      "min_camera_height_above_deck_normal_m": 1.589602240752469,
-      "min_marker_extent_px": 127.09097836554395
+      "min_four_corners_visible_fraction": 0.7403846153846154,
+      "max_centre_invisible_duration_s": 0.0,
+      "max_four_corners_unavailable_duration_s": 2.394267598439633,
+      "min_camera_height_above_deck_normal_m": 0.9227340723816209,
+      "min_marker_extent_px": 127.49798391824714,
+      "mean_centre_visible_fraction": 1.0,
+      "mean_four_corners_visible_fraction": 0.8399415127176632
     }
   },
   "split_counts": {

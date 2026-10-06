@@ -67,6 +67,8 @@ H 图案对称，不能独立确定绝对航向；激光平面不观测水平位
 
 使用 `configs/landing_dataset.yaml` 和 `shell/generate_landing_dataset.sh` 生成轮底中心从后方 50 m / 高 50 m 到正上方 5 m、悬停等待、再下降至 0 m 的航次。固定相机安装、舰船直线航行、空气尾流运动残差和五种天气均由同一轨迹生成；每个航次保持在同一个 train/val/test 集合。
 
+直升机三轴姿态主波动按仿真数量级设置：第一阶段单边幅值从约 0.6 rad 衰减至 0.05 rad，第二阶段暂用 0.05 rad，第三阶段升至约 0.3 rad；周期 2.7–3.3 s，20 Hz 稠密轨迹、连续相位和平滑阶段切换。保留大姿态引起的出画与遮挡样本，`planning_report.json` 汇总几何可见率及最长不可见时长。
+
 ```bash
 bash shell/generate_landing_dataset.sh --plan-only
 bash shell/generate_landing_dataset.sh

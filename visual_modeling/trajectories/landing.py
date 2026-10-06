@@ -76,13 +76,89 @@ def _draw(rng, bounds):
     return float(rng.uniform(*bounds))
 
 
+def _smoothstep(s):
+    s = np.clip(np.asarray(s, float), 0, 1)
+    return s * s * (3 - 2 * s)
+
+
+def attitude_envelope(times, durations, settings):
+    """C1 stage transitions for single-sided Euler amplitudes [phi, theta, psi]."""
+    amplitudes = {}
+    for key in (
+        "approach_start_amplitude_rad",
+        "approach_end_amplitude_rad",
+        "hold_amplitude_rad",
+        "touchdown_amplitude_rad",
+    ):
+        value = np.asarray(settings[key], float)
+        if value.shape != (3,) or not np.isfinite(value).all() or (value < 0).any():
+            raise ValueError("attitude amplitudes must be nonnegative finite 3-vectors")
+        amplitudes[key] = value
+    if not np.allclose(
+        amplitudes["approach_end_amplitude_rad"], amplitudes["hold_amplitude_rad"]
+    ):
+        raise ValueError("approach end and hold amplitudes must match for continuity")
+    start, end = settings["approach_decay_progress"]
+    ramp = settings["touchdown_ramp_fraction"]
+    if not 0 <= start < end <= 1 or not 0 < ramp <= 1:
+        raise ValueError("invalid attitude envelope transition fractions")
+    t = np.asarray(times, float)
+    d1, d2, d3 = durations
+    decay = _smoothstep((t / d1 - start) / (end - start))[:, None]
+    envelope = amplitudes["approach_start_amplitude_rad"] + decay * (
+        amplitudes["approach_end_amplitude_rad"]
+        - amplitudes["approach_start_amplitude_rad"]
+    )
+    descent = t > d1 + d2
+    growth = _smoothstep((t[descent] - d1 - d2) / (d3 * ramp))[:, None]
+    envelope[descent] = amplitudes["hold_amplitude_rad"] + growth * (
+        amplitudes["touchdown_amplitude_rad"] - amplitudes["hold_amplitude_rad"]
+    )
+    return envelope
+
+
+def helicopter_attitude(times, durations, settings, rng):
+    """Continuous ~3-second bounded harmonics, independent phases per Euler axis."""
+    period_bounds = np.asarray(settings["period_s"], float)
+    scale_bounds = np.asarray(settings["amplitude_scale"], float)
+    if (
+        period_bounds.shape != (2,)
+        or scale_bounds.shape != (2,)
+        or not np.isfinite([*period_bounds, *scale_bounds]).all()
+        or not 0 < period_bounds[0] <= period_bounds[1]
+        or not 0 <= scale_bounds[0] <= scale_bounds[1]
+    ):
+        raise ValueError("invalid attitude period/scale bounds")
+    periods = rng.uniform(*period_bounds, size=3)
+    scales = rng.uniform(*scale_bounds, size=3)
+    phases = rng.uniform(0, 2 * np.pi, 3)
+    amplitude = attitude_envelope(times, durations, settings) * scales
+    oscillation = amplitude * np.sin(
+        2 * np.pi * np.asarray(times)[:, None] / periods + phases
+    )
+    return (
+        oscillation,
+        amplitude,
+        dict(
+            model="continuous_stage_envelope_euler_harmonics",
+            axes=["phi", "theta", "psi"],
+            amplitude_convention="single_sided_peak_radians",
+            period_s=periods.tolist(),
+            amplitude_scale=scales.tolist(),
+            phase_rad=phases.tolist(),
+            yaw_reference="mean_ship_heading",
+            settings=settings,
+        ),
+    )
+
+
 def make_sortie(config, seed, sequence_id, weather, window_wait=None):
     rng = np.random.default_rng(seed)
     c = config
     m = c["mission"]
     motion = c["motion"]
-    if c["trajectory_hz"] <= 0:
-        raise ValueError("trajectory_hz must be positive")
+    if c["trajectory_hz"] < 10 / min(motion["attitude"]["period_s"]):
+        raise ValueError("trajectory_hz must provide >=10 samples per attitude period")
     durations = [
         _draw(rng, m["approach_duration_s"]),
         _draw(rng, m["hover_duration_s"])
@@ -161,16 +237,9 @@ def make_sortie(config, seed, sequence_id, weather, window_wait=None):
     gear_relative_ned = relative @ heading_R.T
     gear_relative_deck = np.einsum("nji,nj->ni", deck_R, gear_relative_ned)
     gear_ned = h_ned + gear_relative_ned
-    gear_velocity = np.gradient(gear_ned, t, axis=0)
-    # Yaw follows horizontal flight velocity to suppress side slip; no orbit/look-at.
-    yaw = np.unwrap(np.arctan2(gear_velocity[:, 1], gear_velocity[:, 0]))
-    attitudes = correlated_noise(
-        t,
-        rng,
-        np.deg2rad(motion["wake_attitude_std_deg"]),
-        motion["wake_correlation_s"],
+    attitudes, amplitude, attitude_model = helicopter_attitude(
+        t, durations, motion["attitude"], rng
     )
-    attitudes *= spatial[:, None]
     vibration = np.deg2rad(motion["camera_vibration_deg"]) * np.sin(
         t[:, None] * np.array([19.0, 23.0, 29.0]) + phase
     )
@@ -178,26 +247,25 @@ def make_sortie(config, seed, sequence_id, weather, window_wait=None):
     heli_pitch = (
         np.deg2rad(motion["helicopter_pitch_deg"]) + attitudes[:, 1] + vibration[:, 1]
     )
-    yaw += np.deg2rad(motion["yaw_tracking_error_deg"]) * np.sin(t * 0.8 + phase[0])
+    # Preserve measured large yaw oscillations. Aligning yaw to velocity would
+    # erase them; kinematic straight gear tracks do not enforce zero sideslip.
+    yaw = heading + attitudes[:, 2] + vibration[:, 2]
     heli_R = Rotation.from_euler("xyz", np.c_[heli_roll, heli_pitch, yaw]).as_matrix()
+    step_rates = (
+        Rotation.from_matrix(
+            np.einsum("nji,njk->nik", heli_R[:-1], heli_R[1:])
+        ).as_rotvec()
+        / np.diff(t)[:, None]
+    )
+    body_rates = np.vstack([step_rates, step_rates[-1]])
     gear_body = np.asarray(c["geometry"]["gear_body_m"], float)
     heli_cg = gear_ned - np.einsum("nij,j->ni", heli_R, gear_body)
     heli_velocity = np.gradient(heli_cg, t, axis=0)
     ship_velocity = np.gradient(ship_cg, t, axis=0)
     body_velocity = np.einsum("nji,nj->ni", heli_R, heli_velocity)
-    # Align heading with CG flight direction, including lever motion caused by
-    # roll/pitch, rather than only with gear-centre velocity.
-    for _ in range(3):
-        yaw = np.unwrap(
-            np.arctan2(heli_velocity[:, 1], heli_velocity[:, 0])
-        ) + np.deg2rad(motion["yaw_tracking_error_deg"]) * np.sin(t * 0.8 + phase[0])
-        heli_R = Rotation.from_euler(
-            "xyz", np.c_[heli_roll, heli_pitch, yaw]
-        ).as_matrix()
-        heli_cg = gear_ned - np.einsum("nij,j->ni", heli_R, gear_body)
-        heli_velocity = np.gradient(heli_cg, t, axis=0)
-        body_velocity = np.einsum("nji,nj->ni", heli_R, heli_velocity)
-    beta = np.arctan2(body_velocity[:, 1], np.maximum(body_velocity[:, 0], 1e-8))
+    beta = np.arctan2(
+        body_velocity[:, 1], np.hypot(body_velocity[:, 0], body_velocity[:, 2])
+    )
     cal, mount = camera_geometry(c, rng)
     rows = []
     for i in range(len(t)):
@@ -215,6 +283,9 @@ def make_sortie(config, seed, sequence_id, weather, window_wait=None):
                 gear_relative_deck_m=gear_relative_deck[i].tolist(),
                 gear_relative_nominal_heading_m=(relative[i] - disturbance[i]).tolist(),
                 wake_position_residual_m=disturbance[i].tolist(),
+                attitude_oscillation_rad=attitudes[i].tolist(),
+                attitude_amplitude_rad=amplitude[i].tolist(),
+                attitude_vibration_rad=vibration[i].tolist(),
                 T_world_deck=world_deck.tolist(),
                 T_world_body=world_body.tolist(),
                 T_deck_camera=camera_pose.tolist(),
@@ -227,6 +298,7 @@ def make_sortie(config, seed, sequence_id, weather, window_wait=None):
                     float(heli_pitch[i]),
                     float(yaw[i]),
                 ],
+                helicopter_angular_velocity_body_rad_s=body_rates[i].tolist(),
                 ship_cg_ned_m=ship_cg[i].tolist(),
                 ship_velocity_ned_knots=(ship_velocity[i] * 3600 / 1852).tolist(),
                 ship_euler_rad=[float(roll[i]), float(pitch[i]), float(heading)],
@@ -244,6 +316,7 @@ def make_sortie(config, seed, sequence_id, weather, window_wait=None):
         if window_wait is not None
         else "sampled_wait_not_predictor",
         ship_speed_knots=speed * 3600 / 1852,
+        attitude_model=attitude_model,
         trajectory_reference_frame="ship_heading_forward_port_up_gravity_level",
         geometry=c["geometry"],
         T_body_camera=mount.tolist(),
@@ -278,6 +351,53 @@ def selected_frames(sortie, per_stage):
     return chosen
 
 
+def preview_frames(sortie, selection="max_attitude"):
+    """Representative severe poses for visual review; not a training-frame filter."""
+    if selection not in ("max_attitude", "stage_endpoints"):
+        raise ValueError("unknown preview pose selection")
+    result = []
+    for stage in STAGES:
+        rows = [r for r in sortie["rows"] if r["stage"] == stage]
+        if selection == "max_attitude":
+            result.append(
+                max(rows, key=lambda r: np.linalg.norm(r["attitude_oscillation_rad"]))
+            )
+        else:
+            result.append(rows[0] if stage != "touchdown" else rows[-1])
+    return result
+
+
+def attitude_report(sortie):
+    result = {}
+    for stage in STAGES:
+        rows = [r for r in sortie["rows"] if r["stage"] == stage]
+        a = np.asarray([r["attitude_amplitude_rad"] for r in rows])
+        signal = np.asarray([r["attitude_oscillation_rad"] for r in rows])
+        result[stage] = dict(
+            min_amplitude_rad=a.min(axis=0).tolist(),
+            max_amplitude_rad=a.max(axis=0).tolist(),
+            max_abs_oscillation_rad=np.abs(signal).max(axis=0).tolist(),
+            max_abs_body_angular_velocity_rad_s=np.abs(
+                [r["helicopter_angular_velocity_body_rad_s"] for r in rows]
+            )
+            .max(axis=0)
+            .tolist(),
+            max_abs_sideslip_rad=float(max(abs(r["sideslip_rad"]) for r in rows)),
+        )
+    return dict(period_s=sortie["attitude_model"]["period_s"], stages=result)
+
+
+def _max_failure_duration(times, valid):
+    """Duration to next valid sample, or to trajectory end for trailing failures."""
+    failed = np.flatnonzero(~np.asarray(valid, bool))
+    if not len(failed):
+        return 0.0
+    runs = np.split(failed, np.flatnonzero(np.diff(failed) > 1) + 1)
+    return float(
+        max(times[min(run[-1] + 1, len(times) - 1)] - times[run[0]] for run in runs)
+    )
+
+
 def optical_report(sortie, marker):
     c = sortie["camera"]
     cal = CameraCalibration(c["K"], c["width"], c["height"])
@@ -296,9 +416,11 @@ def optical_report(sortie, marker):
         visible_centre = []
         visible_corners = []
         camera_height = []
+        timestamps = []
         for row in sortie["rows"]:
             if row["stage"] != stage:
                 continue
+            timestamps.append(row["timestamp"])
             T = np.array(row["T_deck_camera"])
             pixels = project_points(points, T, cal)
             z = transform_points(invert(T), points)[:, 2]
@@ -331,6 +453,12 @@ def optical_report(sortie, marker):
             four_corners_unoccluded_fraction=float(np.mean(clear_corners)),
             centre_visible_fraction=float(np.mean(visible_centre)),
             four_corners_visible_fraction=float(np.mean(visible_corners)),
+            max_centre_invisible_duration_s=_max_failure_duration(
+                timestamps, visible_centre
+            ),
+            max_four_corners_unavailable_duration_s=_max_failure_duration(
+                timestamps, visible_corners
+            ),
             min_camera_height_above_deck_normal_m=min(camera_height),
             min_marker_extent_px=min(extent),
         )

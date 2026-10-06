@@ -3,7 +3,7 @@ output: data/landing
 seed: 20261006
 sorties_per_weather: 12
 frames_per_stage: 60
-trajectory_hz: 10.0
+trajectory_hz: 20.0
 split_ratios: [0.7, 0.15, 0.15]
 camera:
   width: 1280
@@ -50,11 +50,20 @@ motion:
   ship_heave_m: [0.1, 0.6]
   wave_period_s: [6.0, 11.0]
   wake_position_std_m: 0.18
-  wake_attitude_std_deg: 1.5
   wake_correlation_s: 0.7
   camera_vibration_deg: 0.18
   helicopter_pitch_deg: -2.0
-  yaw_tracking_error_deg: 0.3
+  # Euler offsets [phi, theta, psi], SINGLE-SIDED peak amplitude, radians.
+  # psi is relative to mean ship heading; do not overwrite it from velocity.
+  attitude:
+    approach_start_amplitude_rad: [0.6, 0.6, 0.6]
+    approach_end_amplitude_rad: [0.05, 0.05, 0.05]
+    approach_decay_progress: [0.15, 0.80]
+    hold_amplitude_rad: [0.05, 0.05, 0.05]
+    touchdown_amplitude_rad: [0.3, 0.3, 0.3]
+    touchdown_ramp_fraction: 0.12
+    period_s: [2.7, 3.3]
+    amplitude_scale: [0.9, 1.0]
   # Stage 2 nominal hold is exact; residual tracking error is smaller.
   hover_residual_scale: 0.25
 render:
@@ -62,6 +71,9 @@ render:
   sea_grid: 80
   sea_size_m: 1600.0
   wave_amplitude_m: 0.4
+preview:
+  # Show strong oscillations instead of an accidentally benign first frame.
+  pose_selection: max_attitude
 weather:
   clear: {sun_energy: 2.0, sky_strength: 0.25, sun_elevation_deg: 35.0, fog_density: 0.0, glare: 0.0, sensor_noise: 1.5, exposure_gain: 1.0, deck_lights: false}
   fog: {sun_energy: 2.0, sky_strength: 0.4, sun_elevation_deg: 25.0, fog_density: 0.006, glare: 0.0, sensor_noise: 3.0, exposure_gain: 1.0, deck_lights: false}

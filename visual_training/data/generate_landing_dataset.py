@@ -17,6 +17,8 @@ from visual_modeling.trajectories.landing import (
     selected_frames,
     optical_report,
     camera_geometry,
+    preview_frames,
+    attitude_report,
     STAGES,
 )
 from visual_modeling.blender.build_h_marker import marker_points
@@ -38,6 +40,37 @@ def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+
+
+def summarize_plan(config, plan):
+    report = dict(
+        trajectory_reference_frame="ship_heading_forward_port_up_gravity_level",
+        visibility_model="in-frame plus provisional fuselage/wheel/strut ray occlusion; not real UH-60 CAD",
+        design_camera=config["camera"],
+        design_geometry=config["geometry"],
+        attitude_design=config["motion"]["attitude"],
+        trajectory_hz=config["trajectory_hz"],
+        sorties=len(plan),
+        stages={},
+        split_counts={
+            name: sum(s["split"] == name for s in plan)
+            for name in ("train", "val", "test")
+        },
+    )
+    for stage in STAGES:
+        optics = [entry["optics"][stage] for entry in plan]
+        summary = {}
+        for key in optics[0]:
+            if key.startswith("max_"):
+                summary[key] = max(o[key] for o in optics)
+            elif key.startswith("min_"):
+                summary[key] = min(o[key] for o in optics)
+            else:
+                summary["min_" + key] = min(o[key] for o in optics)
+        for key in ("centre_visible_fraction", "four_corners_visible_fraction"):
+            summary["mean_" + key] = float(np.mean([o[key] for o in optics]))
+        report["stages"][stage] = summary
+    return report
 
 
 def plan_dataset(config, output):
@@ -87,6 +120,7 @@ def plan_dataset(config, output):
                     split=assignment.get(i, "train"),
                     trajectory=str(path),
                     optics=report,
+                    attitude=attitude_report(sortie),
                 )
             )
     calibration, mount = camera_geometry(config)
@@ -100,7 +134,8 @@ def plan_dataset(config, output):
             note="Provisional design geometry; replace with calibrated installation",
         ),
     )
-    write_json(root / "plan.json", dict(schema_version=1, config=config, sorties=plan))
+    write_json(root / "plan.json", dict(schema_version=2, config=config, sorties=plan))
+    write_json(root / "planning_report.json", summarize_plan(config, plan))
     return plan
 
 
@@ -192,10 +227,9 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
         primitives = airframe_primitives(sortie["geometry"])
         rows = selected_frames(sortie, config["frames_per_stage"])
         if preview:
-            rows = [sortie["rows"][0]] + [
-                next(r for r in rows if r["stage"] == s) for s in STAGES[1:]
-            ]
-            rows[-1] = sortie["rows"][-1]
+            rows = preview_frames(
+                sortie, config.get("preview", {}).get("pose_selection", "max_attitude")
+            )
         for row in rows:
             i = row["frame_id"]
             sequence = sortie["sequence_id"]
@@ -293,6 +327,14 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
                 touchdown=row["touchdown"],
                 window_source=sortie["window_source"],
                 self_occluded_keypoints=self_occluded.tolist(),
+                helicopter_euler_rad=row["helicopter_euler_rad"],
+                helicopter_angular_velocity_body_rad_s=row[
+                    "helicopter_angular_velocity_body_rad_s"
+                ],
+                attitude_oscillation_rad=row["attitude_oscillation_rad"],
+                attitude_amplitude_rad=row["attitude_amplitude_rad"],
+                attitude_period_s=sortie["attitude_model"]["period_s"],
+                stage_progress=row["stage_progress"],
             )
             # In-frame geometry does not mean recoverable in dark/fog/glare.
             pixels = int((mask > 127).sum())
@@ -331,6 +373,9 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
                     geometric_pnp_ready=annotation["geometric_pnp_ready"],
                     photometrically_observable=bool(observable),
                     image=str(root / image_path),
+                    stage_progress=row["stage_progress"],
+                    timestamp=row["timestamp"],
+                    attitude_oscillation_rad=row["attitude_oscillation_rad"],
                 )
             )
             print(
@@ -429,6 +474,7 @@ def main(argv=None):
                     sorties=len(plan),
                     output=str(Path(output).resolve()),
                     optics=plan[0]["optics"],
+                    attitude=plan[0]["attitude"],
                 ),
                 indent=2,
             )

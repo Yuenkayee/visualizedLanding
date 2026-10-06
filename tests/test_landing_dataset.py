@@ -10,6 +10,9 @@ from visual_modeling.trajectories.landing import (
     optical_report,
     cruise_progress,
     STAGES,
+    attitude_envelope,
+    helicopter_attitude,
+    preview_frames,
 )
 from visual_training.data.generate_landing_dataset import plan_dataset, render_dataset
 from visual_training.data.h_dataset import HDataset
@@ -58,9 +61,7 @@ def test_stages_camera_and_reference_points():
             ned_to_enu()[:3, :3] @ (gear_world - deck[:3, 3]),
             r["gear_relative_ned_m"],
         )
-    assert (
-        rows[-1]["T_deck_camera"][2][3] > 1.5
-    )  # External belly camera stays above deck.
+    assert rows[-1]["T_deck_camera"][2][3] > 0  # Camera stays above the deck plane.
 
 
 def test_cruise_and_hover_boundaries():
@@ -84,6 +85,14 @@ def test_cruise_and_hover_boundaries():
 
 def test_optical_coverage_and_bad_mount():
     c = config()
+    # Isolate mounting coverage from deliberately large new flight oscillations.
+    for key in (
+        "approach_start_amplitude_rad",
+        "approach_end_amplitude_rad",
+        "hold_amplitude_rad",
+        "touchdown_amplitude_rad",
+    ):
+        c["motion"]["attitude"][key] = [0, 0, 0]
     s = make_sortie(c, 42, "view", "clear")
     report = optical_report(s, c["marker"])
     assert all(v["centre_in_frame_fraction"] == 1 for v in report.values())
@@ -145,12 +154,17 @@ def test_cpu_airframe_silhouette():
         c["motion"][name] = [0, 0]
     for name in [
         "wake_position_std_m",
-        "wake_attitude_std_deg",
         "camera_vibration_deg",
         "helicopter_pitch_deg",
-        "yaw_tracking_error_deg",
     ]:
         c["motion"][name] = 0
+    for key in (
+        "approach_start_amplitude_rad",
+        "approach_end_amplitude_rad",
+        "hold_amplitude_rad",
+        "touchdown_amplitude_rad",
+    ):
+        c["motion"]["attitude"][key] = [0, 0, 0]
     sortie = make_sortie(c, 42, "silhouette", "clear")
     cal, mount = camera_geometry(c)
     pose = np.array(sortie["rows"][-1]["T_deck_camera"])
@@ -160,6 +174,95 @@ def test_cpu_airframe_silhouette():
     u, v = np.rint(pixel[:2] / pixel[2]).astype(int)
     assert mask[v, u]
     assert not mask[cal.height // 2, cal.width // 2]
+
+
+def test_measured_attitude_envelope_and_boundary_continuity():
+    settings = config()["motion"]["attitude"]
+    durations = [40, 9, 15]
+    times = np.array([0, 6, 32, 40, 49, 50.8, 64], float)
+    envelope = attitude_envelope(times, durations, settings)
+    assert np.allclose(envelope[:2], 0.6)
+    assert np.allclose(envelope[2:5], 0.05)
+    assert np.allclose(envelope[5:], 0.3)
+    # Continuous values AND near-zero envelope slopes at all transitions.
+    for boundary in times[1:-1]:
+        local = attitude_envelope(
+            boundary + np.array([-1e-5, 0, 1e-5]), durations, settings
+        )
+        assert np.max(np.abs(np.diff(local, axis=0))) < 1e-9
+    bad = dict(settings, hold_amplitude_rad=[0.1] * 3)
+    with pytest.raises(ValueError, match="must match"):
+        attitude_envelope(times, durations, bad)
+
+
+def test_three_second_attitude_and_yaw_are_preserved():
+    c = config()
+    settings = c["motion"]["attitude"]
+    settings["period_s"] = [3, 3]
+    settings["amplitude_scale"] = [1, 1]
+    times = np.arange(0, 65, 0.01)
+    signal, envelope, metadata = helicopter_attitude(
+        times, [40, 9, 15], settings, np.random.default_rng(42)
+    )
+    assert metadata["period_s"] == [3, 3, 3]
+    assert np.max(np.abs(signal[:600]), axis=0).min() > 0.5999
+    assert np.max(np.abs(signal[5100:]), axis=0).min() > 0.2999
+    assert (np.abs(signal) <= envelope + 1e-12).all()
+    # Three-second repeat inside a constant-amplitude interval.
+    assert np.allclose(signal[4000:4500], signal[4300:4800])
+    sortie = make_sortie(c, 42, "large", "clear")
+    for row in sortie["rows"]:
+        euler = np.array(row["helicopter_euler_rad"])
+        baseline = [
+            0,
+            np.deg2rad(c["motion"]["helicopter_pitch_deg"]),
+            row["ship_euler_rad"][2],
+        ]
+        assert np.allclose(
+            euler - baseline,
+            np.array(row["attitude_oscillation_rad"]) + row["attitude_vibration_rad"],
+        )
+    assert len(preview_frames(sortie)) == 3
+    c["trajectory_hz"] = 1
+    with pytest.raises(ValueError, match="samples per attitude period"):
+        make_sortie(c, 42, "undersampled", "clear")
+
+
+def test_large_attitude_occluded_frames_and_training_loss(tmp_path):
+    import torch
+    from visual_training.models.losses import segmentation_keypoint_loss
+    from visual_training.models.h_segmentation_keypoints import HSegmentationKeypoints
+
+    c = config()
+    c["trajectory_hz"] = 20
+    c["camera"]["width"], c["camera"]["height"] = 160, 120
+    c["frames_per_stage"] = 15
+    c["weather"] = {"clear": c["weather"]["clear"]}
+    plan = plan_dataset(c, tmp_path)
+    render_dataset(c, plan, tmp_path, "cpu")
+    labels = [
+        json.loads(p.read_text()) for p in (tmp_path / "annotations").rglob("*.json")
+    ]
+    assert any(not all(r["visibility"]) for r in labels)
+    assert all(np.isfinite(r["keypoints"]).all() for r in labels)
+    for row in labels:
+        assert not (
+            np.asarray(row["keypoint_train_visibility"])
+            & ~np.asarray(row["visibility"])
+        ).any()
+        assert len(row["attitude_oscillation_rad"]) == 3
+    dataset = HDataset(tmp_path / "splits" / "train.json", tmp_path, 32)
+    sample = next(
+        dataset[i] for i in range(len(dataset)) if not dataset[i]["visibility"].all()
+    )
+    batch = {k: v.unsqueeze(0) for k, v in sample.items()}
+    model = HSegmentationKeypoints(channels=4, keypoints=4)
+    loss, _ = segmentation_keypoint_loss(model(batch["image"]), batch)
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert all(
+        torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None
+    )
 
 
 def test_stratified_sorties_and_training_contract(tmp_path):
