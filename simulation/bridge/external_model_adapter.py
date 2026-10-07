@@ -2,7 +2,7 @@
 
 import numpy as np
 from scipy.spatial.transform import Rotation
-from navigation.common.frames import transform, invert
+from navigation.common.frames import transform, invert, ned_to_enu
 from simulation.bridge.exchange_contracts import SensorTruth
 from simulation.bridge.matlab_session import MatlabSession
 
@@ -42,6 +42,15 @@ class MockExternalModel:
             raise ValueError("feedback timestamp differs from plant timestamp")
         self.estimate = estimate
 
+    def read_navigation_context(self):
+        """Ideal synchronous ship attitude channel, separate from aircraft truth."""
+        return dict(
+            timestamp=self.timestamp,
+            R_ned_deck=(
+                ned_to_enu()[:3, :3] @ self.deck_pose(self.timestamp)[:3, :3]
+            ).tolist(),
+        )
+
     def advance(self, dt):
         if self.closed or dt <= 0:
             raise ValueError("model closed or dt invalid")
@@ -77,11 +86,14 @@ class MatlabExternalModel:
     def __init__(self, config=None):
         self.config = config or {}
         self.session = MatlabSession()
+        self.initialization = None
 
     def __enter__(self):
         self.session.__enter__()
         try:
-            self.session.call("initialize_external_model", self.config)
+            self.initialization = self.session.call(
+                "initialize_external_model", self.config
+            )
         except Exception:
             self.session.__exit__()
             raise
@@ -93,6 +105,9 @@ class MatlabExternalModel:
     def read_navigation_feedback(self):
         """Inspect wheel-plane-centre minus H-centre NED feedback (interface backend)."""
         return self.session.call("read_innerloop_feedback")
+
+    def read_navigation_context(self):
+        return self.session.call("read_navigation_context")
 
     def write_navigation_estimate(self, estimate):
         self.session.call("write_navigation_estimate", estimate.to_dict())

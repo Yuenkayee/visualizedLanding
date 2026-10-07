@@ -76,3 +76,17 @@ python -m visual_training.train --config configs/landing_training.yaml
 ```
 
 光学布局是待标定的超广角设计，不能直接视为真实 UH-60 尺寸。方案、窗口事件输入、退化模型、预览与小型测试命令见 [三阶段数据设计](docs/landing_training_dataset.md)。
+
+## 多相机导航与训练
+
+`configs/multi_camera_dataset.yaml` 提供机腹、前下方、左/右侧下视四个固定相机；同步图像共享分割/关键点/可见性网络，逐路几何/PnP/创新检查后带滞回选一路更新固定 C0 的 ESKF，再融合 LiDAR。输出仍可转换为轮底中心相对 H 中心的 NED 距离；内环 `T_body_camera` 始终填写 C0 外参。
+
+```bash
+bash shell/generate_multi_camera_dataset.sh --plan-only
+bash shell/generate_multi_camera_dataset.sh
+.venv/bin/python -m visual_training.train --config configs/multi_camera_training.yaml
+```
+
+默认规划 60 航次、43,200 张图，完整航次分组并包含偏心触舰样本。本次已验证小型生成/训练、同步回放和四视角 Blender 预览，正式全量生成和训练需要运行上述命令。采样轨迹中至少一路可见 H 中心的比例为 100%，末端至少一路四角齐全的航次平均比例约 89.98%；当前版本尚无跨视角部分关键点联合 PnP，不能保证每帧都有有效导航。配置、回放/闭环命令及验证限制见 [多相机实现说明](docs/multi_camera_navigation.md)，效果见 [四视角预览](output/figure/multi_camera_training_preview.png)。
+
+当前导航已对齐 `external/innerloop/simu/innerLoop.slx`。运行 `.venv/bin/python -m simulation.offline.verify_innerloop_navigation` 可实际检查读取状态 → 生成四路相机/LiDAR → 导航 → 写入反馈 → 推进 → 读取下一状态，支持传感器与控制异频，并逐次比对实际 SLX 的轮底 NED 反馈。该入口显式采用接口状态保持测试，不含动力学/控制器；信号对应和后续接入方式见 [内环导航对齐](docs/innerloop_navigation_alignment.md)。

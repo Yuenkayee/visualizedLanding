@@ -17,11 +17,15 @@ def block(i, o):
 
 
 class HSegmentationKeypoints(nn.Module):
-    def __init__(self, channels=16, keypoints=4):
+    def __init__(self, channels=16, keypoints=4, predict_visibility=False):
         super().__init__()
         if channels % 4:
             raise ValueError("channels must be divisible by four")
-        self.model_config = dict(channels=channels, keypoints=keypoints)
+        self.model_config = dict(
+            channels=channels,
+            keypoints=keypoints,
+            predict_visibility=predict_visibility,
+        )
         self.e1 = block(3, channels)
         self.e2 = block(channels, channels * 2)
         self.e3 = block(channels * 2, channels * 4)
@@ -29,6 +33,9 @@ class HSegmentationKeypoints(nn.Module):
         self.d1 = block(channels * 3, channels)
         self.seg = nn.Conv2d(channels, 1, 1)
         self.kp = nn.Conv2d(channels, keypoints, 1)
+        self.visibility = (
+            nn.Linear(channels * 4, keypoints) if predict_visibility else None
+        )
 
     def forward(self, image):
         a = self.e1(image)
@@ -63,8 +70,11 @@ class HSegmentationKeypoints(nn.Module):
         ys = (torch.arange(h, device=image.device, dtype=image.dtype) + 0.5) / h
         x = (prob.sum(2) * xs).sum(2)
         y = (prob.sum(3) * ys).sum(2)
-        return dict(
+        result = dict(
             mask_logits=self.seg(d),
             keypoints=torch.stack([x, y], -1),
             heatmap_logits=heatmaps,
         )
+        if self.visibility is not None:
+            result["visibility_logits"] = self.visibility(c.mean(dim=(2, 3)))
+        return result

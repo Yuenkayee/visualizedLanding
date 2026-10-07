@@ -28,9 +28,16 @@ def segmentation_keypoint_loss(
     ).reshape(n, k)
     heat_loss = (ce * visible).sum() / visible.sum().clamp_min(1)
     total = bce + dice + keypoint_weight * kp + heatmap_weight * heat_loss
+    visibility_loss = logits.new_tensor(0)
+    if "visibility_logits" in output:
+        visibility_loss = F.binary_cross_entropy_with_logits(
+            output["visibility_logits"], visible
+        )
+        total = total + visibility_loss
     return total, dict(
         bce=float(bce.detach()),
         dice=float(dice.detach()),
         keypoint=float(kp.detach()),
         heatmap=float(heat_loss.detach()),
+        visibility=float(visibility_loss.detach()),
     )

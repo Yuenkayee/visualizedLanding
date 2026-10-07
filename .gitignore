@@ -11,6 +11,9 @@ data/calibration/*
 data/trajectories/*
 data/splits/*
 data/landing/
+data/multi_camera/
+data/multi_camera_preview/
+data/multi_camera_smoke/
 outputs/figures/*
 outputs/logs/*
 outputs/metrics/*

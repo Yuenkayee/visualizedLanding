@@ -14,4 +14,6 @@ else
         'No dynamics/controller supplied. Configure plant_step_callback; allow_state_hold is test-only.');
 end
 s.phase='read';
+s.feedback=[];
+if isfield(s,'observed_timestamp'), s=rmfield(s,'observed_timestamp'); end
 end

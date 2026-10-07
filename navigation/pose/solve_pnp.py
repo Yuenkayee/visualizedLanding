@@ -39,12 +39,25 @@ def solve_pnp(points_deck, pixels, calibration):
         calibration.distortion,
         flags=cv2.SOLVEPNP_IPPE if planar else cv2.SOLVEPNP_SQPNP,
     )
+    branches = list(zip(result[1], result[2])) if result[0] else []
+    if planar:
+        # OpenCV IPPE can return unstable Rodrigues vectors at exactly pi.
+        # Its homography-initialized iterative solver supplies an independent
+        # candidate; keep both planar branches for the existing prior resolver.
+        ok, rv, tv = cv2.solvePnP(
+            X, u, calibration.K, calibration.distortion, flags=cv2.SOLVEPNP_ITERATIVE
+        )
+        if ok:
+            branches.append((rv, tv))
     candidates = []
-    if not result[0]:
-        return candidates
-    for rv, tv in zip(result[1], result[2]):
+    for rv, tv in branches:
         if not np.isfinite(rv).all() or not np.isfinite(tv).all():
             continue
+        # Refine each IPPE branch separately. Near fronto-parallel geometry can
+        # leave a noticeable numerical reprojection error even for exact pixels.
+        rv, tv = cv2.solvePnPRefineLM(
+            X, u, calibration.K, calibration.distortion, rv.copy(), tv.copy()
+        )
         R, _ = cv2.Rodrigues(rv)
         if not np.isfinite(R).all():
             continue
