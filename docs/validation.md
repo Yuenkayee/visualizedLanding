@@ -106,3 +106,13 @@ Python 全部 41 项测试通过，新增共同安装几何/冲突拒绝、实�
 安装入口优先复用 uv，其次通过 pip 从 PyPI 安装项目本地的 uv 0.9.5，再回退到带 TLS 中断重试的 GitHub 下载。Python 环境创建失败单独报告；支持 LANDING_PYTHON 指定已有 3.11。新增 tmux 后台入口按安装/检查成功后才训练的顺序执行，保存独立日志及退出码，并传递当前代理/包源/GPU 环境。
 
 7 项脚本集成测试通过：隔离 PATH，以受控替身模拟包源失败、curl EOF、Python 下载失败、已有 tmux 环境以及训练程序，验证回退、安装失败停止、参数中的空格、GPU 检查先于训练、重复会话拒绝、日志唯一性和完成状态保留。这些测试未连接真实 tmux 服务或 NVIDIA GPU。另从 PyPI 实际下载 macOS arm64 的 uv 0.9.5 wheel，使用 pip --target 安装到临时目录，确认 bin/uv --version 可运行；原项目依赖版本检查、shell 语法、Ruff F/E9 和 Git whitespace 检查通过。未修改训练算法，本次未重复完整训练测试。
+
+### 对齐服务器 Python 3.12 / PyTorch 2.8.0 / CUDA 12.8（2026-10-07）
+
+RTX 5090 profile 更新为 Python 3.12.x、PyTorch 2.8.0+cu128，完整依赖锁通过官方 PyTorch cu128 源与 PyPI 重新解析，CUDA runtime 包为 12.8.90、cuDNN 为 9.10.2.21、Triton 为 3.4.0。对 x86_64-manylinux_2_35 / Python 3.12 执行只允许 binary 的安装 dry-run，49 个锁定包解析通过；未下载或执行 Linux CUDA 库。
+
+安装脚本按 profile 选择 Python 版本，保留默认 Blender/MATLAB 的 3.11；旧 .venv 的 Python 版本不符时给出备份/迁移提示并停止，不删除环境。GPU 检查新增实际 Python/PyTorch/CUDA runtime 版本核验，接受 `2.8.0` 或 `2.8.0+cu128` 的版本报告，但要求 `torch.version.cuda == "12.8"`。ONNX 导出显式指定 `dynamo=False`，保持原有 opset 17、动态 batch 和输出接口。
+
+在独立 macOS arm64 临时环境实际安装 Python 3.12.14、PyTorch 2.8.0 和服务器锁中全部公共依赖（平台特有 CUDA/Triton 除外）。`pip check` 通过。完整 pytest **66 项通过、1 项 RTX 5090 硬件测试跳过**，耗时约 137 s；包括 CPU BF16 前向/反向、FP32 关键点/损失、spawn 并行加载、1 epoch 训练、权重保存/重载评估、ONNX 导出与 batch=2 数值比对（rtol 1e-4 / atol 1e-5），以及安装器对 3.11/3.12 profile 分支和错误环境保留的检查。ONNX 保留旧导出器弃用提示和 GroupNorm 形状追踪提示，数值验证通过。
+
+Ruff F/E9、格式、Python 编译、shell 语法及 Git whitespace 检查通过；现有 Python 3.11.16 / PyTorch 2.5.1 默认环境的依赖版本检查通过。没有 NVIDIA GPU 或服务器连接，未宣称已在 RTX 5090 上运行 CUDA 训练；服务器安装入口和 tmux 入口会执行版本/SM 120/BF16/fused AdamW 预检查，正式显存、吞吐和模型精度仍需实际训练验证。

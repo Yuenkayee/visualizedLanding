@@ -7,6 +7,7 @@ CHECK=0
 BLENDER=1
 MATLAB=auto
 RTX5090=0
+PYTHON_VERSION=3.11
 for arg in "$@"; do
   case "$arg" in
     --check) CHECK=1 ;;
@@ -19,8 +20,9 @@ for arg in "$@"; do
   esac
 done
 if [[ "$RTX5090" == 1 ]]; then
+  PYTHON_VERSION=3.12
   if [[ "$(uname -s):$(uname -m)" != Linux:x86_64 ]]; then
-    echo 'The RTX 5090 dependency lock requires Linux x86_64 / Python 3.11.' >&2; exit 2
+    echo 'The RTX 5090 dependency lock requires Linux x86_64 / Python 3.12.' >&2; exit 2
   fi
   if [[ "$MATLAB" == yes ]]; then
     echo '--rtx5090 selects training only; use a separate environment for MATLAB/Blender.' >&2; exit 2
@@ -50,7 +52,7 @@ bootstrap_uv() {
   local bootstrap_python target
   # Ubuntu's system Python can install a wheel into a project-local directory;
   # no system packages, sudo, or shell PATH changes are needed.
-  for bootstrap_python in python3 python3.11 python; do
+  for bootstrap_python in "python$PYTHON_VERSION" python3 python; do
     if command -v "$bootstrap_python" >/dev/null 2>&1 && "$bootstrap_python" -m pip --version >/dev/null 2>&1; then
       echo 'Installing uv 0.9.5 from the configured Python package index (default: PyPI)...'
       if "$bootstrap_python" -m pip install --target "$ROOT/.tools/uv-bootstrap" \
@@ -67,7 +69,7 @@ bootstrap_uv() {
     Darwin:x86_64) target=x86_64-apple-darwin ;;
     Linux:x86_64) target=x86_64-unknown-linux-gnu ;;
     Linux:aarch64) target=aarch64-unknown-linux-gnu ;;
-    *) echo 'Unsupported OS/architecture; install uv or Python 3.11 manually.' >&2; return 2 ;;
+    *) echo "Unsupported OS/architecture; install uv or Python $PYTHON_VERSION manually." >&2; return 2 ;;
   esac
   if command -v curl >/dev/null 2>&1; then
     echo 'Downloading uv from GitHub (with retries for interrupted TLS connections)...'
@@ -106,19 +108,23 @@ if [[ -n "$MATLAB_ROOT" ]]; then export MATLAB_ROOT; export PATH="$MATLAB_ROOT/b
 if [[ ! -x "$PY" ]]; then
   if [[ "$CHECK" == 1 ]]; then echo 'Missing .venv (run without --check to install).'; exit 2; fi
   bootstrap_uv
-  echo 'Creating the project Python 3.11 environment...'
+  echo "Creating the project Python $PYTHON_VERSION environment..."
   if ! UV_CACHE_DIR="$ROOT/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$ROOT/.tools/python" \
-      "$UV" venv --python "${LANDING_PYTHON:-3.11}" "$VENV"; then
-    cat >&2 <<'MESSAGE'
-Python environment creation failed. If Python 3.11 is missing, uv must download
+      "$UV" venv --python "${LANDING_PYTHON:-$PYTHON_VERSION}" "$VENV"; then
+    cat >&2 <<MESSAGE
+Python environment creation failed. If Python $PYTHON_VERSION is missing, uv must download
 it from GitHub; installing uv through PyPI does not remove that network requirement.
-Use an accessible HTTPS proxy, or set LANDING_PYTHON=/path/to/python3.11 to use
+Use an accessible HTTPS proxy, or set LANDING_PYTHON=/path/to/python$PYTHON_VERSION to use
 an installed interpreter. Rerun installation successfully before starting training.
 MESSAGE
     exit 2
   fi
 fi
-"$PY" -c 'import sys; assert sys.version_info[:2]==(3,11), "Use Python 3.11 for the selected dependency lock"'
+"$PY" -c 'import sys
+expected = tuple(map(int, sys.argv[1].split(".")))
+if sys.version_info[:2] != expected:
+    raise SystemExit(f"The selected dependency lock requires Python {sys.argv[1]}, but .venv uses {sys.version.split()[0]}. Move the old .venv aside and rerun installation, or select the matching profile. No environment was removed.")
+print(f"Project Python: {sys.version.split()[0]}")' "$PYTHON_VERSION"
 LOCK=requirements.txt
 UV_INDEX_STRATEGY=first-index
 if [[ "$RTX5090" == 1 ]]; then

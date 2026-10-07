@@ -33,6 +33,9 @@ def export_model(checkpoint, output, image_size=256):
         input_names=["image"],
         output_names=names,
         opset_version=17,
+        # Preserve the existing exporter and three-output navigation contract.
+        # This also avoids adding onnxscript as a training dependency.
+        dynamo=False,
         dynamic_axes={
             "image": {0: "batch"},
             "mask_logits": {0: "batch"},

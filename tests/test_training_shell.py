@@ -54,6 +54,11 @@ with open(os.environ['MOCK_CALLS'], 'a') as stream:
         + """
 if args[:1] == ['-'] and len(args) > 1:
     sys.exit(0 if (root / '.installed').exists() else 2)
+if args[:1] == ['-c'] and 'expected = tuple' in args[1]:
+    actual = os.environ.get('MOCK_VENV_VERSION', args[2])
+    if actual != args[2]:
+        print(f'Move the old .venv aside: expected Python {args[2]}, got {actual}', file=sys.stderr)
+        sys.exit(1)
 if 'visual_training.train' in args:
     assert os.environ.get('CUDA_VISIBLE_DEVICES') != 'stale'
     assert os.environ.get('HTTPS_PROXY') != 'stale'
@@ -245,3 +250,35 @@ def test_default_log_names_are_unique_and_persist_after_completion(server):
     for log in logs:
         assert "TRAINING_STARTED" in log.read_text()
         assert Path(str(log) + ".exit_code").read_text() == "0\n"
+
+
+@pytest.mark.parametrize(
+    "profile,version",
+    [(["--rtx5090"], "3.12"), (["--without-blender", "--without-matlab"], "3.11")],
+)
+def test_installer_selects_python_for_profile(server, profile, version):
+    result = run(server, "check_dependencies.sh", *profile)
+    assert result.returncode == 0, result.stderr
+    commands = calls(server)
+    creation = next(args for _, args in commands if args[:1] == ["venv"])
+    assert creation[creation.index("--python") + 1] == version
+    check = next(
+        args
+        for _, args in commands
+        if args[:1] == ["-c"] and "expected = tuple" in args[1]
+    )
+    assert check[-1] == version
+
+
+def test_existing_wrong_python_is_preserved_and_training_stops(server):
+    root, env, _ = server
+    python = root / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    shutil.copy(env["MOCK_PYTHON"], python)
+    before = python.read_bytes()
+    result = run(server, "train_rtx5090.sh", "--foreground", MOCK_VENV_VERSION="3.11")
+    assert result.returncode != 0
+    assert "expected Python 3.12" in result.stdout
+    assert python.read_bytes() == before
+    assert not any("visual_training.train" in args for _, args in calls(server))
+    assert not any(args[:1] == ["venv"] for _, args in calls(server))

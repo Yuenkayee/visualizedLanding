@@ -9,7 +9,7 @@ import torch
 import yaml
 from torch.utils.data import Dataset
 
-from visual_training.check_gpu import check_gpu
+from visual_training.check_gpu import check_gpu, check_profile_versions
 from visual_training.data.augmentations import PhotometricAugmentation
 from visual_training.data.build_dataset import build_dataset
 from visual_training.data.h_dataset import HDataset
@@ -170,6 +170,28 @@ def test_cuda_missing_and_unsupported_precision_fail_early(monkeypatch):
         training_device(dict(device="cuda:0", precision="bf16"))
     with pytest.raises(ValueError, match="FP16 requires CUDA"):
         training_device(dict(device="cpu", precision="fp16"))
+
+
+@pytest.mark.parametrize("torch_version", ["2.8.0", "2.8.0+cu128"])
+def test_server_versions_accept_pypi_and_cu128_builds(torch_version):
+    check_profile_versions((3, 12, 14), torch_version, "12.8")
+
+
+@pytest.mark.parametrize(
+    "python_version, torch_version, cuda_runtime, message",
+    [
+        ((3, 11), "2.8.0+cu128", "12.8", "Python 3.12"),
+        ((3, 12), "2.7.1+cu128", "12.8", "PyTorch 2.8.0"),
+        ((3, 12), "2.8.0", None, "CUDA runtime 12.8"),
+        ((3, 12), "2.8.0+cu126", "12.6", "CUDA runtime 12.8"),
+        ((3, 12), "2.8.0+cu129", "12.9", "CUDA runtime 12.8"),
+    ],
+)
+def test_server_version_mismatch_rejected(
+    python_version, torch_version, cuda_runtime, message
+):
+    with pytest.raises(RuntimeError, match=message):
+        check_profile_versions(python_version, torch_version, cuda_runtime)
 
 
 @pytest.mark.skipif(

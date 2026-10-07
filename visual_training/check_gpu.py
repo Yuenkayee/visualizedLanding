@@ -3,24 +3,35 @@
 import argparse
 import json
 from pathlib import Path
+import sys
 
 import torch
 import yaml
+from packaging.version import Version
 
 from visual_training.models.h_segmentation_keypoints import HSegmentationKeypoints
 from visual_training.models.losses import segmentation_keypoint_loss
 from visual_training.train import training_device
 
 
+def check_profile_versions(python_version, torch_version, cuda_runtime):
+    """Validate the server profile independently of driver/device discovery."""
+    if tuple(python_version[:2]) != (3, 12):
+        raise RuntimeError("RTX 5090 training profile requires Python 3.12")
+    if Version(str(torch_version)).public != "2.8.0":
+        raise RuntimeError("RTX 5090 training profile requires PyTorch 2.8.0 (cu128)")
+    if cuda_runtime != "12.8":
+        raise RuntimeError(
+            "RTX 5090 training profile requires PyTorch CUDA runtime 12.8; "
+            "install requirements-rtx5090.txt (system CUDA Toolkit is separate)"
+        )
+
+
 def check_gpu(config):
+    check_profile_versions(sys.version_info, torch.__version__, torch.version.cuda)
     if torch.device(config.get("device", "cuda:0")).type != "cuda":
         raise ValueError("RTX 5090 preflight requires a CUDA device")
     device, precision = training_device(config)
-    runtime = tuple(map(int, torch.version.cuda.split(".")[:2]))
-    if runtime < (12, 8):
-        raise RuntimeError(
-            "RTX 5090 requires CUDA 12.8 or newer; install requirements-rtx5090.txt"
-        )
     capability = torch.cuda.get_device_capability(device)
     architectures = torch.cuda.get_arch_list()
     if capability != (12, 0):
@@ -67,6 +78,7 @@ def check_gpu(config):
     torch.cuda.synchronize(device)
     return dict(
         status="ok",
+        python_version=sys.version.split()[0],
         torch_version=torch.__version__,
         cuda_runtime=torch.version.cuda,
         device=str(device),

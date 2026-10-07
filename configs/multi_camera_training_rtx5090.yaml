@@ -1,4 +1,4 @@
-# Ubuntu 22.04 / one RTX 5090 (32 GiB) / PyTorch 2.7.1+cu128.
+# Ubuntu 22.04 / Python 3.12 / one RTX 5090 (32 GiB) / PyTorch 2.8.0+cu128.
 # Start with batch 16; tune using logged peak GPU memory on the actual server.
 seed: 20261007
 data_root: data/multi_camera

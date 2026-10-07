@@ -4,9 +4,27 @@
 
 ## 环境与安装
 
-目标环境为 Ubuntu 22.04、x86_64、Python 3.11 和一张 RTX 5090（32 GB）。`nvidia-smi` 应能识别显卡，使用支持 RTX 5090 和 CUDA 12.8 的 NVIDIA 驱动，例如支持该显卡的 R570 或更新驱动。安装脚本不修改系统驱动。PyTorch wheel 自带所需 CUDA 运行库，本项目训练无需另外安装完整 CUDA Toolkit 或 `nvcc`。
+目标环境为 Ubuntu 22.04、x86_64、Python 3.12 和一张 RTX 5090（32 GB）。`nvidia-smi` 应能识别显卡，使用支持 RTX 5090 和 CUDA 12.8 的 NVIDIA 驱动，例如支持该显卡的 R570 或更新驱动。安装脚本不修改系统驱动。PyTorch wheel 自带所需 CUDA 运行库，本项目训练无需另外安装完整 CUDA Toolkit 或 `nvcc`。
 
-原默认锁中的 PyTorch 2.5.1 / CUDA 12.4 不适合 RTX 5090 的 Blackwell SM 120。本配置单独锁定 PyTorch **2.7.1+cu128** 及其 CUDA 12.8 传递依赖，其他直接依赖沿用原版本。`requirements.in` 是包元数据约束，实际安装使用完整精确锁 `requirements-rtx5090.txt`。
+原默认锁中的 PyTorch 2.5.1 / CUDA 12.4 不适合 RTX 5090 的 Blackwell SM 120。本配置与服务器现有版本对齐，单独锁定 PyTorch **2.8.0+cu128** 及其 CUDA 12.8 传递依赖（`nvidia-cuda-runtime-cu12==12.8.90`），其他直接依赖沿用原版本。`requirements.in` 是包元数据约束，实际安装使用完整精确锁 `requirements-rtx5090.txt`。
+
+| 项目 | RTX 5090 profile |
+| --- | --- |
+| Python | 3.12.x（不固定补丁版本） |
+| PyTorch | 2.8.0+cu128 |
+| PyTorch CUDA 运行时 | 12.8（运行库包 12.8.90） |
+
+这里检查的是 `torch.version.cuda`，不以系统 `nvcc` 或 `nvidia-smi` 显示的 CUDA 版本代替。服务器已安装 Python 3.12 时，uv 可使用该解释器；安装脚本仍把项目依赖安装到 `.venv`，不会自动继承系统或 Conda 环境里的 PyTorch 包。已存在的 `.venv` 如果满足精确依赖锁则直接复用，否则补齐或更新依赖。
+
+若旧项目 `.venv` 是 Python 3.11，脚本会给出版本错误并停止。确认没有任务在使用该环境后，可先保留备份再重新安装：
+
+```bash
+# 仅在已有 .venv 确认为 Python 3.11 时执行
+mv .venv ".venv-py311-$(date +%Y%m%d_%H%M%S)"
+bash shell/check_dependencies.sh --rtx5090
+```
+
+默认 Blender/MATLAB profile 继续使用 Python 3.11 与原依赖锁；RTX 5090 环境后续检查必须带 `--rtx5090`。
 
 在服务器的仓库根目录执行：
 
@@ -16,7 +34,7 @@ bash shell/check_dependencies.sh --rtx5090
 bash shell/check_dependencies.sh --rtx5090 --check
 ```
 
-`--rtx5090` 选择训练环境，自动跳过 Blender 和 MATLAB；脚本创建 `.venv`，安装或纠正缺失/版本不符的依赖。数据已生成时服务器只需此环境。GPU 预检查核对 CUDA、SM 120、BF16，并以 64×64 图像实际执行网络前向、损失、反向及 fused AdamW 更新。缺少 GPU、驱动不可用或装错 PyTorch 会报错。之后检查和补装也应使用 `--rtx5090`，避免默认依赖锁重新安装 PyTorch 2.5.1。需要 Blender/MATLAB 时使用独立环境。
+`--rtx5090` 选择训练环境，自动跳过 Blender 和 MATLAB；脚本创建 `.venv`，安装或纠正缺失/版本不符的依赖。数据已生成时服务器只需此环境。GPU 预检查核对 Python 3.12、PyTorch 2.8.0、PyTorch CUDA 运行时 12.8、SM 120、BF16，并以 64×64 图像实际执行网络前向、损失、反向及 fused AdamW 更新。缺少 GPU、驱动不可用或装错 PyTorch 会报错。之后检查和补装也应使用 `--rtx5090`，避免默认依赖锁重新安装 PyTorch 2.5.1。需要 Blender/MATLAB 时使用独立环境。
 
 首次安装优先复用可用的 `uv`；若没有，则通过已有 Python 的 pip 从 PyPI 安装到项目 `.tools/uv-bootstrap`，不修改系统 Python，也不需要把 uv 加入 PATH。pip 不可用或安装失败时，回退到带连接超时、TLS 中断重试的 GitHub release 下载。Ubuntu 若尚未安装 pip，可先执行：
 
@@ -27,10 +45,10 @@ sudo apt install -y python3-pip ca-certificates
 
 原先的 `curl: (56) ... unexpected eof` 表示网络连接被中断；脚本现在增加了另一条下载路径和重试，不能保证绕过服务器的网络限制。它继承 `HTTPS_PROXY`、`PIP_INDEX_URL` 等设置，不关闭 TLS 校验。PyTorch CUDA wheel 仍从 requirements 中的官方源安装。
 
-如果系统没有 Python 3.11，uv 还需从 GitHub 下载 Python；若该步骤受阻，配置可用代理，或通过 `LANDING_PYTHON` 指定已经安装的 3.11 解释器：
+如果系统没有 Python 3.12，uv 还需从 GitHub 下载 Python；若该步骤受阻，配置可用代理，或通过 `LANDING_PYTHON` 指定已经安装的 3.12 解释器：
 
 ```bash
-LANDING_PYTHON=/path/to/python3.11 bash shell/check_dependencies.sh --rtx5090
+LANDING_PYTHON=/path/to/python3.12 bash shell/check_dependencies.sh --rtx5090
 ```
 
 可以单独检查 GPU，或选择其他显卡编号：
@@ -122,10 +140,17 @@ batch=16 是起点，尚未在实际 RTX 5090 上测量吞吐或完整训练显�
 
 数据迁移到独立磁盘时，评估的 `--root` 与训练的 `--data-root` 应一致。评估使用 FP32，按阶段/天气/相机输出分组指标。ONNX 导出在 CPU 执行；此环境锁定的是 CPU `onnxruntime`，GPU 训练通过 PyTorch CUDA 完成。训练权重保存为 FP32，可供原有 CPU/MPS/PyTorch 导航加载，也可导出为原有三输出 ONNX。
 
+ONNX 导出显式选择 `dynamo=False`，保持现有 opset 17、动态 batch 和三个输出的接口。服务器上可以运行针对训练和导出的回归测试（会生成临时小数据，不覆盖正式权重）：
+
+```bash
+.venv/bin/python -m pytest -q tests/test_gpu_training.py tests/test_training_shell.py
+```
+
+测试包含版本拒绝、BF16 损失/梯度、spawn 数据加载、1 epoch 训练、权重重载评估、PyTorch/ONNX 数值比对，以及有 RTX 5090 时的真实 CUDA 前向/反向更新。完整分辨率显存和吞吐仍由正式训练日志确认。
+
 ## 依据与验证边界
 
-- [PyTorch 2.7 发布说明](https://pytorch.org/blog/pytorch-2-7/)：官方 Blackwell 支持及 CUDA 12.8 wheel。
-- [PyTorch 历史版本安装说明](https://pytorch.org/get-started/previous-versions/)：2.7.1 的 cu128 官方源。
+- [PyTorch 历史版本安装说明](https://pytorch.org/get-started/previous-versions/)：2.8.0 的 cu128 官方源。
 - [CUDA 12.8 发布说明](https://docs.nvidia.com/cuda/archive/12.8.0/cuda-toolkit-release-notes/index.html)：SM 120 支持及驱动要求。
 
-本机为 macOS，无 NVIDIA CUDA 设备。CPU BF16、并行加载、数据迁移、权重评估和 ONNX 导出可在本机验证；RTX 5090 的内核、驱动、完整分辨率显存和吞吐需在目标服务器执行上述检查与训练。详细结果见 [验证记录](validation.md)。
+本机为 macOS，无 NVIDIA CUDA 设备。已在独立 Python 3.12.14 / PyTorch 2.8.0 环境完成完整回归：66 项通过、1 项 NVIDIA 硬件测试跳过，包含 CPU BF16 训练、并行加载、权重重载评估与 ONNX 数值比对。Linux / Python 3.12 的 49 个锁定包通过 binary-only 安装 dry-run。RTX 5090 的内核、驱动、完整分辨率显存和吞吐需在目标服务器执行上述检查与训练。详细结果见 [验证记录](validation.md)。
