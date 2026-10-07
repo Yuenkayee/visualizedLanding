@@ -3,9 +3,10 @@ from torch.nn import functional as F
 
 
 def segmentation_keypoint_loss(
-    output, target, keypoint_weight=10.0, heatmap_weight=1.0
+    output, target, keypoint_weight=10.0, heatmap_weight=1.0, return_metrics=True
 ):
-    logits = output["mask_logits"]
+    # Compute reductions and landmark supervision in FP32 under mixed precision.
+    logits = output["mask_logits"].float()
     truth = target["mask"]
     bce = F.binary_cross_entropy_with_logits(
         logits, truth, pos_weight=torch.tensor(4.0, device=logits.device)
@@ -15,10 +16,10 @@ def segmentation_keypoint_loss(
     dice = 1 - ((2 * (p * truth).sum(dims) + 1) / ((p + truth).sum(dims) + 1)).mean()
     visible = target["visibility"].float()
     error = F.smooth_l1_loss(
-        output["keypoints"], target["keypoints"], reduction="none"
+        output["keypoints"].float(), target["keypoints"], reduction="none"
     ).sum(-1)
     kp = (error * visible).sum() / visible.sum().clamp_min(1)
-    heat = output["heatmap_logits"]
+    heat = output["heatmap_logits"].float()
     n, k, h, w = heat.shape
     xy = target["keypoints"]
     x = (xy[:, :, 0] * w).long().clamp(0, w - 1)
@@ -31,9 +32,11 @@ def segmentation_keypoint_loss(
     visibility_loss = logits.new_tensor(0)
     if "visibility_logits" in output:
         visibility_loss = F.binary_cross_entropy_with_logits(
-            output["visibility_logits"], visible
+            output["visibility_logits"].float(), visible
         )
         total = total + visibility_loss
+    if not return_metrics:
+        return total, {}
     return total, dict(
         bce=float(bce.detach()),
         dice=float(dice.detach()),

@@ -73,6 +73,8 @@ multi_dataset_report.json         # 渲染结果及图像组索引
 
 所有命令在仓库根目录执行，使用现有锁定依赖即可。
 
+Ubuntu 22.04 / RTX 5090 使用 `shell/check_dependencies.sh --rtx5090` 和 `configs/multi_camera_training_rtx5090.yaml`，启用 CUDA 12.8、BF16 及并行加载；安装和数据迁移步骤见 [服务器训练说明](rtx5090_training.md)。下方 CPU 配置保留作小型执行检查。
+
 ```bash
 # 全量轨迹/覆盖规划，无需渲染
 bash shell/generate_multi_camera_dataset.sh --plan-only

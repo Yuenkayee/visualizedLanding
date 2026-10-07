@@ -90,3 +90,13 @@ Blender 4.2 的 macOS cp311 wheel 内部 WHEEL 标记错误地写成 cp39；pip/
 MATLAB 合同测试新增错误 C0 参考拒绝、推进后陈旧反馈拒绝和测试状态回调：回调读取当前已转换反馈、替换下一时刻的原生状态，验证后续真值位姿变化正确。缺少动力学且没有显式状态保持依然报错。此测试回调不包含动力学或控制律。
 
 Python 全部 41 项测试通过，新增共同安装几何/冲突拒绝、实际反馈错误和旧时间拒绝、严格因果 fixture 在非控制采样雷达时刻执行等检查。可运行配置为 `configs/innerloop_navigation.yaml`，可审阅验证记录为 `output/verification/innerloop_navigation.json`，完整说明见 `docs/innerloop_navigation_alignment.md`。
+
+## RTX 5090 训练配置（2026-10-07）
+
+新增 Ubuntu 22.04 x86_64 / Python 3.11 训练 profile，锁定 PyTorch 2.7.1+cu128 及 CUDA 12.8 传递依赖。配置采用 512×512、batch 16、40 epoch、BF16、8 worker / spawn、锁页内存、channels last 和 fused AdamW；关键点 softargmax 与损失使用 FP32。GPU 安装检查实际执行 BF16 前向/反向/优化器更新，不将版本匹配当作 GPU 已可用。
+
+本机为 macOS arm64 / PyTorch 2.5.1，无 NVIDIA CUDA。49 项 pytest 通过，1 项 RTX 5090 硬件测试按条件跳过。新增实际验证包括 CPU BF16 有/无可见关键点的有限损失/梯度、512×512 FP16 logits 的 FP32 损失归约、两个 worker 的独立可重复光度增强、带 spawn/persistent workers/channels last 的 1 epoch BF16 训练、FP32 checkpoint 保存及分组评估、三输出 ONNX 导出并在 batch=2 下与 PyTorch 比对（rtol 1e-4 / atol 1e-5）。数据复制后按新根目录加载旧绝对/相对 split，且不改写划分文件；源数据仍存在和移走后均通过。
+
+沙箱内 DataLoader 子进程因 OpenMP 共享内存权限失败，移到沙箱外完成上述回归。ONNX 导出保留 GroupNorm 的形状追踪提示，PyTorch/ONNX 数值比对通过。Ruff F/E9、格式、Python 编译、shell 语法和 Git whitespace 检查通过；原默认依赖锁的版本检查通过。
+
+尚未在 Ubuntu / RTX 5090 上执行安装或完整训练，未报告 CUDA 吞吐、512×512 训练显存峰值或模型精度。服务器须执行 `shell/check_dependencies.sh --rtx5090`（包含实际 GPU 预检查）再开始正式训练；batch 16 是待实测的起始值。具体命令见 [RTX 5090 训练说明](rtx5090_training.md)。

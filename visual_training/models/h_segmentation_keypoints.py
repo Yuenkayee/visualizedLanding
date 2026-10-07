@@ -65,9 +65,11 @@ class HSegmentationKeypoints(nn.Module):
         )
         heatmaps = self.kp(d)
         n, k, h, w = heatmaps.shape
-        prob = heatmaps.flatten(2).softmax(-1).reshape(n, k, h, w)
-        xs = (torch.arange(w, device=image.device, dtype=image.dtype) + 0.5) / w
-        ys = (torch.arange(h, device=image.device, dtype=image.dtype) + 0.5) / h
+        # Keep subpixel coordinates in FP32 even when convolution uses BF16/FP16.
+        # Wide-angle distant targets cannot tolerate quantized coordinate grids.
+        prob = heatmaps.float().flatten(2).softmax(-1).reshape(n, k, h, w)
+        xs = (torch.arange(w, device=image.device, dtype=prob.dtype) + 0.5) / w
+        ys = (torch.arange(h, device=image.device, dtype=prob.dtype) + 0.5) / h
         x = (prob.sum(2) * xs).sum(2)
         y = (prob.sum(3) * ys).sum(2)
         result = dict(

@@ -130,12 +130,14 @@ def main():
     p.add_argument("--split")
     p.add_argument("--output", default="outputs/metrics/vision.json")
     p.add_argument("--image-size", type=int, default=256)
+    p.add_argument("--device", default="cpu")
     a = p.parse_args()
     result = evaluate(
         a.checkpoint,
         a.split or str(Path(a.root) / "splits/test.json"),
         a.root,
         a.image_size,
+        a.device,
     )
     out = Path(a.output)
     out.parent.mkdir(parents=True, exist_ok=True)

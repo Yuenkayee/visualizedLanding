@@ -6,21 +6,33 @@ cd "$ROOT"
 CHECK=0
 BLENDER=1
 MATLAB=auto
+RTX5090=0
 for arg in "$@"; do
   case "$arg" in
     --check) CHECK=1 ;;
     --without-blender) BLENDER=0 ;;
     --with-matlab) MATLAB=yes ;;
     --without-matlab) MATLAB=no ;;
-    --help) echo 'Usage: shell/check_dependencies.sh [--check] [--without-blender] [--with-matlab|--without-matlab]'; exit 0 ;;
+    --rtx5090) RTX5090=1 ;;
+    --help) echo 'Usage: shell/check_dependencies.sh [--check] [--rtx5090 (training only)] [--without-blender] [--with-matlab|--without-matlab]'; exit 0 ;;
     *) echo "Unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
+if [[ "$RTX5090" == 1 ]]; then
+  if [[ "$(uname -s):$(uname -m)" != Linux:x86_64 ]]; then
+    echo 'The RTX 5090 dependency lock requires Linux x86_64 / Python 3.11.' >&2; exit 2
+  fi
+  if [[ "$MATLAB" == yes ]]; then
+    echo '--rtx5090 selects training only; use a separate environment for MATLAB/Blender.' >&2; exit 2
+  fi
+  BLENDER=0
+  MATLAB=no
+fi
 VENV="$ROOT/.venv"
 PY="$VENV/bin/python"
 # Locate licensed MATLAB before trying to build its Engine package.
 MATLAB_ROOT="${MATLAB_ROOT:-}"
-if [[ -z "$MATLAB_ROOT" ]] && command -v matlab >/dev/null 2>&1; then
+if [[ "$MATLAB" != no && -z "$MATLAB_ROOT" ]] && command -v matlab >/dev/null 2>&1; then
   MATLAB_ROOT="$(matlab -batch 'disp(matlabroot)' 2>/dev/null | tail -1)"
 fi
 if [[ -z "$MATLAB_ROOT" && -d /Applications/MATLAB_R2024b.app ]]; then MATLAB_ROOT=/Applications/MATLAB_R2024b.app; fi
@@ -50,9 +62,14 @@ if [[ ! -x "$PY" ]]; then
   fi
   UV_CACHE_DIR="$ROOT/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$ROOT/.tools/python" "$UV" venv --python 3.11 "$VENV"
 fi
-"$PY" -c 'import sys; assert sys.version_info[:2]==(3,11), "Use Python 3.11 for the locked Blender/MATLAB environment"'
+"$PY" -c 'import sys; assert sys.version_info[:2]==(3,11), "Use Python 3.11 for the selected dependency lock"'
 LOCK=requirements.txt
-if [[ "$BLENDER" == 1 ]]; then
+UV_INDEX_STRATEGY=first-index
+if [[ "$RTX5090" == 1 ]]; then
+  LOCK=requirements-rtx5090.txt
+  # Resolve pinned packages across the two official sources emitted in the lock.
+  UV_INDEX_STRATEGY=unsafe-best-match
+elif [[ "$BLENDER" == 1 ]]; then
   if command -v blender >/dev/null 2>&1 || [[ -x /Applications/Blender.app/Contents/MacOS/Blender ]]; then
     echo 'Blender executable available (require 4.2 LTS or compatible).'
   else LOCK=requirements-blender.txt; fi
@@ -68,7 +85,7 @@ except ImportError:
 missing=[]
 for line in open(sys.argv[1]):
     line=line.strip()
-    if not line or line.startswith('#'): continue
+    if not line or line.startswith(('#', '--')): continue
     req=Requirement(line)
     if req.marker and not req.marker.evaluate(): continue
     try: current=version(req.name)
@@ -82,9 +99,12 @@ PYCODE
 STATUS=0
 if ! check_lock "$LOCK"; then STATUS=2; fi
 if [[ "$MATLAB" == yes ]]; then if ! check_lock requirements-matlab.txt; then STATUS=2; fi
-else echo 'MATLAB unavailable/disabled: mock backend is usable; licensed MATLAB cannot be auto-installed.'; fi
+elif [[ "$RTX5090" != 1 ]]; then echo 'MATLAB unavailable/disabled: mock backend is usable; licensed MATLAB cannot be auto-installed.'; fi
 if [[ "$CHECK" == 1 ]]; then
-  if [[ "$STATUS" == 0 ]]; then echo "All selected dependency versions match $LOCK."; fi
+  if [[ "$STATUS" == 0 ]]; then
+    echo "All selected dependency versions match $LOCK."
+    if [[ "$RTX5090" == 1 ]]; then "$PY" -m visual_training.check_gpu; fi
+  fi
   exit "$STATUS"
 fi
 if [[ "$STATUS" != 0 ]]; then
@@ -97,7 +117,7 @@ if [[ "$STATUS" != 0 ]]; then
     UV=''
   fi
   if [[ -n "$UV" ]]; then
-    UV_CACHE_DIR="$ROOT/.tools/uv-cache" "$UV" pip install --python "$PY" --requirement "$LOCK"
+    UV_CACHE_DIR="$ROOT/.tools/uv-cache" "$UV" pip install --python "$PY" --requirement "$LOCK" --index-strategy "$UV_INDEX_STRATEGY"
     if [[ "$MATLAB" == yes ]]; then UV_CACHE_DIR="$ROOT/.tools/uv-cache" "$UV" pip install --python "$PY" --requirement requirements-matlab.txt; fi
   fi
 fi
@@ -124,4 +144,5 @@ if errors:
     print('\n'.join(errors)); raise SystemExit(2)
 print('All declared transitive dependency constraints satisfied.')
 PYCODE
+if [[ "$RTX5090" == 1 ]]; then "$PY" -m visual_training.check_gpu; fi
 echo 'Dependencies ready. Activate with: source .venv/bin/activate'

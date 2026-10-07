@@ -1,0 +1,5 @@
+# Ubuntu 22.04 x86_64 / Python 3.11 / NVIDIA Blackwell.
+# Compile for Python 3.11 / x86_64-manylinux_2_35 with the PyTorch cu128 index,
+# PyPI default index, --index-strategy unsafe-best-match and --emit-index-url.
+-r requirements.in
+torch==2.7.1+cu128

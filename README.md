@@ -15,6 +15,15 @@ pytest -q
 
 `requirements.txt` 锁定核心直接和传递依赖；`requirements-blender.txt` 是包含核心依赖的 Blender 扩展锁；`requirements-matlab.txt` 锁定需要本机 MATLAB 的可选 Engine。CUDA 包使用平台条件标记，macOS 无需安装它们。不要把 `bpy` 装进不同版本的 Blender 内置 Python。
 
+Ubuntu 22.04 / RTX 5090 训练使用独立的 PyTorch 2.7.1 + CUDA 12.8 锁和 BF16 配置：
+
+```bash
+bash shell/check_dependencies.sh --rtx5090
+.venv/bin/python -m visual_training.train --config configs/multi_camera_training_rtx5090.yaml
+```
+
+安装时会实际执行 GPU 前向/反向检查。默认 512×512、batch=16、8 个数据加载 worker；服务器数据路径、驱动要求、显存调节和评估命令见 [RTX 5090 训练说明](docs/rtx5090_training.md)。
+
 ## 生成数据、训练、导出
 
 ```bash
