@@ -30,6 +30,65 @@ if [[ "$RTX5090" == 1 ]]; then
 fi
 VENV="$ROOT/.venv"
 PY="$VENV/bin/python"
+# Respect caller proxy/index settings, and allow slow CUDA wheel downloads.
+export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-120}"
+export UV_HTTP_RETRIES="${UV_HTTP_RETRIES:-5}"
+UV=''
+find_uv() {
+  local candidate
+  for candidate in "$(command -v uv || true)" "$ROOT/.tools/uv-bootstrap/bin/uv" "$ROOT"/.tools/uv-*/uv; do
+    if [[ -n "$candidate" && -x "$candidate" ]] && "$candidate" --version >/dev/null 2>&1; then
+      UV="$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+bootstrap_uv() {
+  find_uv && return 0
+  mkdir -p "$ROOT/.tools"
+  local bootstrap_python target
+  # Ubuntu's system Python can install a wheel into a project-local directory;
+  # no system packages, sudo, or shell PATH changes are needed.
+  for bootstrap_python in python3 python3.11 python; do
+    if command -v "$bootstrap_python" >/dev/null 2>&1 && "$bootstrap_python" -m pip --version >/dev/null 2>&1; then
+      echo 'Installing uv 0.9.5 from the configured Python package index (default: PyPI)...'
+      if "$bootstrap_python" -m pip install --target "$ROOT/.tools/uv-bootstrap" \
+          --cache-dir "$ROOT/.tools/pip-cache" --upgrade --no-deps --only-binary=:all: \
+          --retries 5 --timeout 60 uv==0.9.5 && find_uv; then
+        return 0
+      fi
+      echo 'Python package index download failed; trying the GitHub release.' >&2
+      break
+    fi
+  done
+  case "$(uname -s):$(uname -m)" in
+    Darwin:arm64) target=aarch64-apple-darwin ;;
+    Darwin:x86_64) target=x86_64-apple-darwin ;;
+    Linux:x86_64) target=x86_64-unknown-linux-gnu ;;
+    Linux:aarch64) target=aarch64-unknown-linux-gnu ;;
+    *) echo 'Unsupported OS/architecture; install uv or Python 3.11 manually.' >&2; return 2 ;;
+  esac
+  if command -v curl >/dev/null 2>&1; then
+    echo 'Downloading uv from GitHub (with retries for interrupted TLS connections)...'
+    if curl -fL --retry 3 --retry-all-errors --retry-delay 3 \
+        --connect-timeout 15 --max-time 120 --retry-max-time 360 \
+        "https://github.com/astral-sh/uv/releases/download/0.9.5/uv-$target.tar.gz" \
+        -o "$ROOT/.tools/uv.tar.gz.part"; then
+      if tar -xzf "$ROOT/.tools/uv.tar.gz.part" -C "$ROOT/.tools" && find_uv; then
+        return 0
+      fi
+    fi
+  fi
+  cat >&2 <<'MESSAGE'
+Cannot install uv: the package index/GitHub download was unavailable.
+On Ubuntu, enable the PyPI bootstrap with: sudo apt install python3-pip ca-certificates
+Then rerun this script. If needed, set PIP_INDEX_URL to a trusted reachable index
+or HTTPS_PROXY to your proxy. TLS verification remains enabled.
+Environment setup stopped; training must not start until installation succeeds.
+MESSAGE
+  return 2
+}
 # Locate licensed MATLAB before trying to build its Engine package.
 MATLAB_ROOT="${MATLAB_ROOT:-}"
 if [[ "$MATLAB" != no && -z "$MATLAB_ROOT" ]] && command -v matlab >/dev/null 2>&1; then
@@ -46,21 +105,18 @@ fi
 if [[ -n "$MATLAB_ROOT" ]]; then export MATLAB_ROOT; export PATH="$MATLAB_ROOT/bin:$PATH"; fi
 if [[ ! -x "$PY" ]]; then
   if [[ "$CHECK" == 1 ]]; then echo 'Missing .venv (run without --check to install).'; exit 2; fi
-  mkdir -p "$ROOT/.tools"
-  if command -v uv >/dev/null 2>&1; then UV="$(command -v uv)"; else
-    command -v curl >/dev/null 2>&1 || { echo 'curl is required'; exit 2; }
-    case "$(uname -s):$(uname -m)" in
-      Darwin:arm64) TARGET=aarch64-apple-darwin ;;
-      Darwin:x86_64) TARGET=x86_64-apple-darwin ;;
-      Linux:x86_64) TARGET=x86_64-unknown-linux-gnu ;;
-      Linux:aarch64) TARGET=aarch64-unknown-linux-gnu ;;
-      *) echo 'Unsupported OS/architecture; install Python 3.11 and create .venv manually.'; exit 2 ;;
-    esac
-    curl -fL --retry 3 "https://github.com/astral-sh/uv/releases/download/0.9.5/uv-$TARGET.tar.gz" -o "$ROOT/.tools/uv.tar.gz"
-    tar -xzf "$ROOT/.tools/uv.tar.gz" -C "$ROOT/.tools"
-    UV="$ROOT/.tools/uv-$TARGET/uv"
+  bootstrap_uv
+  echo 'Creating the project Python 3.11 environment...'
+  if ! UV_CACHE_DIR="$ROOT/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$ROOT/.tools/python" \
+      "$UV" venv --python "${LANDING_PYTHON:-3.11}" "$VENV"; then
+    cat >&2 <<'MESSAGE'
+Python environment creation failed. If Python 3.11 is missing, uv must download
+it from GitHub; installing uv through PyPI does not remove that network requirement.
+Use an accessible HTTPS proxy, or set LANDING_PYTHON=/path/to/python3.11 to use
+an installed interpreter. Rerun installation successfully before starting training.
+MESSAGE
+    exit 2
   fi
-  UV_CACHE_DIR="$ROOT/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$ROOT/.tools/python" "$UV" venv --python 3.11 "$VENV"
 fi
 "$PY" -c 'import sys; assert sys.version_info[:2]==(3,11), "Use Python 3.11 for the selected dependency lock"'
 LOCK=requirements.txt
@@ -108,12 +164,11 @@ if [[ "$CHECK" == 1 ]]; then
   exit "$STATUS"
 fi
 if [[ "$STATUS" != 0 ]]; then
-  if command -v uv >/dev/null 2>&1; then UV="$(command -v uv)";
-  elif [[ -n "${UV:-}" ]]; then :;
+  if find_uv; then :;
   else
     "$PY" -m ensurepip --upgrade
-    "$PY" -m pip install --requirement "$LOCK"
-    if [[ "$MATLAB" == yes ]]; then "$PY" -m pip install --requirement requirements-matlab.txt; fi
+    "$PY" -m pip install --retries 5 --timeout 120 --requirement "$LOCK"
+    if [[ "$MATLAB" == yes ]]; then "$PY" -m pip install --retries 5 --timeout 120 --requirement requirements-matlab.txt; fi
     UV=''
   fi
   if [[ -n "$UV" ]]; then

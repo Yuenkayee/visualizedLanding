@@ -100,3 +100,9 @@ Python 全部 41 项测试通过，新增共同安装几何/冲突拒绝、实�
 沙箱内 DataLoader 子进程因 OpenMP 共享内存权限失败，移到沙箱外完成上述回归。ONNX 导出保留 GroupNorm 的形状追踪提示，PyTorch/ONNX 数值比对通过。Ruff F/E9、格式、Python 编译、shell 语法和 Git whitespace 检查通过；原默认依赖锁的版本检查通过。
 
 尚未在 Ubuntu / RTX 5090 上执行安装或完整训练，未报告 CUDA 吞吐、512×512 训练显存峰值或模型精度。服务器须执行 `shell/check_dependencies.sh --rtx5090`（包含实际 GPU 预检查）再开始正式训练；batch 16 是待实测的起始值。具体命令见 [RTX 5090 训练说明](rtx5090_training.md)。
+
+### 安装下载恢复与 tmux 启动
+
+安装入口优先复用 uv，其次通过 pip 从 PyPI 安装项目本地的 uv 0.9.5，再回退到带 TLS 中断重试的 GitHub 下载。Python 环境创建失败单独报告；支持 LANDING_PYTHON 指定已有 3.11。新增 tmux 后台入口按安装/检查成功后才训练的顺序执行，保存独立日志及退出码，并传递当前代理/包源/GPU 环境。
+
+7 项脚本集成测试通过：隔离 PATH，以受控替身模拟包源失败、curl EOF、Python 下载失败、已有 tmux 环境以及训练程序，验证回退、安装失败停止、参数中的空格、GPU 检查先于训练、重复会话拒绝、日志唯一性和完成状态保留。这些测试未连接真实 tmux 服务或 NVIDIA GPU。另从 PyPI 实际下载 macOS arm64 的 uv 0.9.5 wheel，使用 pip --target 安装到临时目录，确认 bin/uv --version 可运行；原项目依赖版本检查、shell 语法、Ruff F/E9 和 Git whitespace 检查通过。未修改训练算法，本次未重复完整训练测试。

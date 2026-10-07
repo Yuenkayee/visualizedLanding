@@ -24,6 +24,8 @@ bash shell/check_dependencies.sh --rtx5090
 
 安装时会实际执行 GPU 前向/反向检查。默认 512×512、batch=16、8 个数据加载 worker；服务器数据路径、驱动要求、显存调节和评估命令见 [RTX 5090 训练说明](docs/rtx5090_training.md)。
 
+已安装 tmux 时，可用 `bash shell/train_rtx5090.sh` 在后台依次安装依赖、检查 GPU 并启动训练；安装失败时停止，完整日志保存在 `outputs/logs/`。用 `tmux attach -t landing_train` 查看，按 `Ctrl+b` 后按 `d` 离开且继续运行。安装脚本优先通过 PyPI 获取 uv，再回退到带网络重试的 GitHub 下载；Ubuntu 缺少 pip 时先安装 `python3-pip`。
+
 ## 生成数据、训练、导出
 
 ```bash

@@ -18,12 +18,52 @@ bash shell/check_dependencies.sh --rtx5090 --check
 
 `--rtx5090` 选择训练环境，自动跳过 Blender 和 MATLAB；脚本创建 `.venv`，安装或纠正缺失/版本不符的依赖。数据已生成时服务器只需此环境。GPU 预检查核对 CUDA、SM 120、BF16，并以 64×64 图像实际执行网络前向、损失、反向及 fused AdamW 更新。缺少 GPU、驱动不可用或装错 PyTorch 会报错。之后检查和补装也应使用 `--rtx5090`，避免默认依赖锁重新安装 PyTorch 2.5.1。需要 Blender/MATLAB 时使用独立环境。
 
+首次安装优先复用可用的 `uv`；若没有，则通过已有 Python 的 pip 从 PyPI 安装到项目 `.tools/uv-bootstrap`，不修改系统 Python，也不需要把 uv 加入 PATH。pip 不可用或安装失败时，回退到带连接超时、TLS 中断重试的 GitHub release 下载。Ubuntu 若尚未安装 pip，可先执行：
+
+```bash
+sudo apt update
+sudo apt install -y python3-pip ca-certificates
+```
+
+原先的 `curl: (56) ... unexpected eof` 表示网络连接被中断；脚本现在增加了另一条下载路径和重试，不能保证绕过服务器的网络限制。它继承 `HTTPS_PROXY`、`PIP_INDEX_URL` 等设置，不关闭 TLS 校验。PyTorch CUDA wheel 仍从 requirements 中的官方源安装。
+
+如果系统没有 Python 3.11，uv 还需从 GitHub 下载 Python；若该步骤受阻，配置可用代理，或通过 `LANDING_PYTHON` 指定已经安装的 3.11 解释器：
+
+```bash
+LANDING_PYTHON=/path/to/python3.11 bash shell/check_dependencies.sh --rtx5090
+```
+
 可以单独检查 GPU，或选择其他显卡编号：
 
 ```bash
 .venv/bin/python -m visual_training.check_gpu
 .venv/bin/python -m visual_training.check_gpu --device cuda:1
 ```
+
+## tmux 后台安装与训练
+
+服务器已安装 tmux 时，在仓库根目录运行以下入口即可。依赖安装、GPU 检查、训练按顺序执行；任何前置步骤失败都不会启动训练：
+
+```bash
+bash shell/train_rtx5090.sh
+```
+
+默认创建后台会话 `landing_train`，SSH 断开后任务继续。脚本输出本次日志路径，安装及训练输出均写入 `outputs/logs/rtx5090_*.log`，结束后相邻的 `.log.exit_code` 文件保存退出码（0 为成功）。日志每次自动使用新文件；训练权重仍写入训练配置的输出目录。重复启动同名会话会被拒绝，不会并行启动第二份训练。
+
+```bash
+tmux attach -t landing_train
+```
+
+查看时按 `Ctrl+b`，松开后按 `d`，即可离开会话并保持任务运行。任务完成或失败后，会话自动结束，此时查看启动脚本输出的日志路径。tmux 保持 SSH 断开后的进程运行，不提供服务器重启后的自动恢复；现有训练入口也没有断点续训参数。
+
+可以把数据路径、批量、轮数等训练参数放在 `--` 后：
+
+```bash
+bash shell/train_rtx5090.sh -- \
+  --data-root /data/visualizedLanding/multi_camera --batch-size 16
+```
+
+需要在当前终端排查时，使用 `bash shell/train_rtx5090.sh --foreground`，仍会保存日志。`--session NAME` 可指定会话名称，`--log PATH` 可指定日志文件（追加写入）。后台入口将当前 SSH 会话的代理、包源、Python 路径和 `CUDA_VISIBLE_DEVICES` 等设置传入任务，避免已有 tmux 服务保留过期环境。
 
 ## 数据迁移
 
