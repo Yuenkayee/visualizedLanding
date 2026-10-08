@@ -18,6 +18,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from visual_training.data.linux_render_dependencies import ensure_blender_libraries
+
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = "4.5.3"
 ARCHIVE = f"blender-{VERSION}-linux-x64.tar.xz"
@@ -327,6 +329,7 @@ def main(argv=None):
                 archive_path=args.blender_archive,
                 download_url=args.blender_download_url,
             )
+        ensure_blender_libraries(executable, isolated_env())
         info = blender_info(executable)
         site = tools_dir / "blender-4.5-py311-site"
         ensure_dependencies(info["executable"], site)

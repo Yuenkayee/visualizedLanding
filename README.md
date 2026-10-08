@@ -100,6 +100,8 @@ python -m visual_training.train --config configs/multi_camera_training.yaml
 
 多相机脚本使用当前 Python（可选 `--python`），在 Linux x86_64 自动下载校验 Blender 4.5.3 LTS，并把锁定渲染依赖装入独立 `.tools/` 目录，不创建 `.venv` 或改动训练 PyTorch。默认 OptiX GPU，实际小图渲染检查通过后才生成数据。`--setup-only` 只安装检查；`--preview`、`--plan-only` 不产生训练 split。完整生成后才可训练；RTX PRO 6000 / RTX 5090 的服务器步骤与 tmux 命令见 [服务器训练说明](docs/rtx5090_training.md#在服务器直接生成训练数据)。
 
+Blender 启动前会用 `ldd` 检查 Linux 系统库；Ubuntu/Debian 缺少的 `libsm6` 等已知运行库，在 root 或已有免密 sudo 权限时通过 apt 按需安装并复查，无权限时提供管理员命令。系统库检查通过后再安装 Python 渲染包和执行 GPU 探针。
+
 默认规划 60 航次、43,200 张图，完整航次分组并包含偏心触舰样本。本次已验证小型生成/训练、同步回放和四视角 Blender 预览，正式全量生成和训练需要运行上述命令。采样轨迹中至少一路可见 H 中心的比例为 100%，末端至少一路四角齐全的航次平均比例约 89.98%；当前版本尚无跨视角部分关键点联合 PnP，不能保证每帧都有有效导航。配置、回放/闭环命令及验证限制见 [多相机实现说明](docs/multi_camera_navigation.md)，效果见 [四视角预览](output/figure/multi_camera_training_preview.png)。
 
 当前导航已对齐 `external/innerloop/simu/innerLoop.slx`。运行 `.venv/bin/python -m simulation.offline.verify_innerloop_navigation` 可实际检查读取状态 → 生成四路相机/LiDAR → 导航 → 写入反馈 → 推进 → 读取下一状态，支持传感器与控制异频，并逐次比对实际 SLX 的轮底 NED 反馈。该入口显式采用接口状态保持测试，不含动力学/控制器；信号对应和后续接入方式见 [内环导航对齐](docs/innerloop_navigation_alignment.md)。

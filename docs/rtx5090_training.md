@@ -103,7 +103,7 @@ bash shell/generate_multi_camera_dataset.sh \
 bash shell/generate_multi_camera_dataset.sh --python /root/miniconda3/bin/python
 ```
 
-解释器路径按服务器实际位置调整；省略 `--python` 时采用当前环境，选择顺序同训练脚本。Linux x86_64 首次运行会依次尝试 Blender 官方源、南京大学和 Berkeley OCF 的 HTTPS 镜像，下载 **Blender 4.5.3 LTS** 便携版，校验固定 SHA256，并解压至项目 `.tools/`。403/404 等永久错误会立即切换来源；网络中断、超时、408/429 或服务端故障每个来源最多尝试三次。压缩包校验不符也会换源，绝不解压未通过校验的文件。成功下载的压缩包会复用。无需 sudo，也不会替换系统 Blender 或 NVIDIA 驱动。已有 Blender 4.5 LTS 时可用 `--blender /opt/blender-4.5.3/blender` 跳过下载；其他版本会明确报错。
+解释器路径按服务器实际位置调整；省略 `--python` 时采用当前环境，选择顺序同训练脚本。Linux x86_64 首次运行会依次尝试 Blender 官方源、南京大学和 Berkeley OCF 的 HTTPS 镜像，下载 **Blender 4.5.3 LTS** 便携版，校验固定 SHA256，并解压至项目 `.tools/`。403/404 等永久错误会立即切换来源；网络中断、超时、408/429 或服务端故障每个来源最多尝试三次。压缩包校验不符也会换源，绝不解压未通过校验的文件。成功下载的压缩包会复用。便携程序和 Python 渲染包安装在项目目录，缺少的系统动态库通过下述 apt 步骤补齐。已有 Blender 4.5 LTS 时可用 `--blender /opt/blender-4.5.3/blender` 跳过下载；其他版本会明确报错。
 
 出现 `HTTP Error 403: Forbidden` 表示下载请求被站点或中间代理拒绝，尚未开始检查 GPU。仅凭这条日志无法区分出口 IP、代理规则或站点策略。更新脚本后重新运行原命令即可自动换源；也可以只使用服务器可访问的指定镜像：
 
@@ -125,7 +125,25 @@ bash shell/generate_multi_camera_dataset.sh \
 
 Blender 4.5 自带 Python 3.11，渲染用 NumPy/SciPy/OpenCV/PyYAML 按 `requirements-render.txt` 安装到 `.tools/blender-4.5-py311-site/`，使用其内置 Python 选择二进制包。Python 3.12 只负责启动和安装调度；渲染不加载训练环境的 site-packages，不修改已有 PyTorch/CUDA。`.tools/` 是便携程序及渲染包目录，不是 `.venv`。
 
-默认 `--cycles-device OPTIX --gpu-index 0`，在 Cycles 中仅启用指定 GPU。日志中必须出现 `cycles_smoke_ok` 和目标显卡名称，之后才开始规划和渲染。PyTorch 的 CUDA 检查成功不等于 Cycles 检查成功；OptiX 不可用时可显式尝试 `--cycles-device CUDA`，仍需通过实际渲染。失败不会静默改用 CPU。`--gpu-index` 是该 Cycles 后端枚举的索引，按日志确认设备名称，不假设与 PyTorch 的 `cuda:N` 一致。驱动缺失、容器未暴露 GPU 或缺少系统动态库时，脚本会保留原始错误并停止。
+Linux 启动 Blender 前会用 `ldd` 检查实际缺失的系统动态库。例如 `libSM.so.6` 来自 Ubuntu 的 `libsm6`；这些属于系统运行库，pip 无法补齐。Blender 后台渲染也需要加载部分 X11/图形库，但不需要安装桌面环境或启动显示服务器。
+
+在 Ubuntu/Debian 上，脚本按缺失库映射出对应软件包，先执行 `apt-get update`，再执行 `apt-get install -y --no-install-recommends ...`，安装后重新运行 `ldd`。root 直接安装，非 root 仅在已有免密 sudo 权限时安装；否则打印需要管理员执行的具体命令并停止。依赖已齐全时不调用 apt。未知系统库、驱动库或其他发行版会给出缺失列表，脚本不自动安装 NVIDIA 驱动/CUDA 或修改 apt 源。系统包版本由服务器的 Ubuntu/Debian 软件源管理，不纳入 Python requirements 锁。
+
+旧脚本出现 `libSM.so.6: cannot open shared object file` 时，下载已经成功。可先在服务器以 root 补齐常用运行库（普通用户在 apt-get 前加 sudo）：
+
+```bash
+apt-get update
+apt-get install -y --no-install-recommends \
+  libsm6 libice6 libxrender1 libxext6 libxi6 libxfixes3 \
+  libxrandr2 libxxf86vm1 libxkbcommon0 libgl1 libegl1
+
+bash shell/generate_multi_camera_dataset.sh \
+  --python /root/miniconda3/bin/python --setup-only
+```
+
+更新后的入口会自动完成上述检查和按需安装。保留 `.tools/`，重跑会复用已有 Blender。apt 安装或安装后复查失败均阻断 Blender/Python 依赖/GPU 检查，原始错误保留在终端日志。
+
+默认 `--cycles-device OPTIX --gpu-index 0`，在 Cycles 中仅启用指定 GPU。日志中必须出现 `cycles_smoke_ok` 和目标显卡名称，之后才开始规划和渲染。PyTorch 的 CUDA 检查成功不等于 Cycles 检查成功；OptiX 不可用时可显式尝试 `--cycles-device CUDA`，仍需通过实际渲染。失败不会静默改用 CPU。`--gpu-index` 是该 Cycles 后端枚举的索引，按日志确认设备名称，不假设与 PyTorch 的 `cuda:N` 一致。驱动缺失、容器未暴露 GPU 或系统库无法自动补齐时，脚本会保留原始错误并停止。
 
 `--renderer blender --cycles-device CPU` 是 Blender 的真实场景 CPU 渲染；`--renderer cpu` 是用于流程检查的简化投影图，二者不同。`--renderer cpu` 和 `--plan-only` 直接使用所选 Python，检查/补齐四个生成依赖，不下载 Blender、不探测 GPU。
 

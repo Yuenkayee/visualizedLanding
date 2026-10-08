@@ -29,6 +29,7 @@ def test_plan_and_cpu_do_not_require_blender(monkeypatch, options):
 
 def test_blender_launch_isolates_python_and_propagates_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime, "ROOT", tmp_path)
+    monkeypatch.setattr(runtime, "ensure_blender_libraries", lambda *a: None)
     monkeypatch.setattr(
         runtime, "portable_blender", lambda p, **kw: "/portable/blender"
     )
@@ -259,6 +260,7 @@ def test_cli_passes_source_options_and_overrides_environment(
     monkeypatch, tmp_path, flag, value, key
 ):
     monkeypatch.setattr(runtime, "ROOT", tmp_path)
+    monkeypatch.setattr(runtime, "ensure_blender_libraries", lambda *a: None)
     monkeypatch.setenv("LANDING_BLENDER", "/old/blender")
     sources = []
 
