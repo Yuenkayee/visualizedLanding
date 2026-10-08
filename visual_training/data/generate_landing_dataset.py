@@ -61,6 +61,8 @@ def summarize_plan(config, plan):
         optics = [entry["optics"][stage] for entry in plan]
         summary = {}
         for key in optics[0]:
+            if key == "frames":
+                continue
             if key.startswith("max_"):
                 summary[key] = max(o[key] for o in optics)
             elif key.startswith("min_"):
@@ -152,6 +154,9 @@ def _blender_scene(config, weather):
 
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
+    # Full rigs build hundreds of sortie/view scenes; release unused meshes,
+    # volumes and materials instead of accumulating them across render batches.
+    bpy.data.orphans_purge(do_recursive=True)
     ship = build_ship(dict(marker=config["marker"]))
     r = config["render"]
     ocean = build_sea_sky(
@@ -197,7 +202,9 @@ def _cpu_image(cal, pose, rng, marker, weather, mount, primitives):
     return image, mask
 
 
-def render_dataset(config, plan, output, renderer="blender", preview=False):
+def render_dataset(
+    config, plan, output, renderer="blender", preview=False, write_splits=True
+):
     root = Path(output).resolve()
     paths = {name: [] for name in ["train", "val", "test"]}
     summary = []
@@ -214,10 +221,13 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
         sortie = json.loads(Path(entry["trajectory"]).read_text())
         weather = copy.deepcopy(config["weather"][entry["weather"]])
         # Fixed within a sortie, varied independently across sorties.
-        rng = np.random.default_rng(sortie["seed"] + 17)
-        weather["sun_energy"] *= float(rng.uniform(0.85, 1.15))
-        weather["sensor_noise"] *= float(rng.uniform(0.85, 1.15))
-        weather["fog_density"] *= float(rng.uniform(0.6, 1.5))
+        weather_rng = np.random.default_rng(
+            sortie.get("environment_seed", sortie["seed"]) + 17
+        )
+        rng = np.random.default_rng(sortie.get("sensor_seed", sortie["seed"]) + 37)
+        weather["sun_energy"] *= float(weather_rng.uniform(0.85, 1.15))
+        weather["sensor_noise"] *= float(weather_rng.uniform(0.85, 1.15))
+        weather["fog_density"] *= float(weather_rng.uniform(0.6, 1.5))
         if renderer == "blender":
             scene = _blender_scene(config, weather)
         cal = CameraCalibration(
@@ -233,7 +243,8 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
         for row in rows:
             i = row["frame_id"]
             sequence = sortie["sequence_id"]
-            stem = f"{sequence}/{i:06d}"
+            camera_id = sortie.get("camera_id")
+            stem = f"{sequence}/" + (f"{camera_id}/" if camera_id else "") + f"{i:06d}"
             image_path = f"rendered/{stem}.png"
             mask_path = f"annotations/{stem}_mask.png"
             label_path = root / f"annotations/{stem}.json"
@@ -335,6 +346,8 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
                 attitude_amplitude_rad=row["attitude_amplitude_rad"],
                 attitude_period_s=sortie["attitude_model"]["period_s"],
                 stage_progress=row["stage_progress"],
+                camera_id=camera_id or "single",
+                bundle_id=f"{sequence}/{i:06d}",
             )
             # In-frame geometry does not mean recoverable in dark/fog/glare.
             pixels = int((mask > 127).sum())
@@ -376,6 +389,8 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
                     stage_progress=row["stage_progress"],
                     timestamp=row["timestamp"],
                     attitude_oscillation_rad=row["attitude_oscillation_rad"],
+                    camera_id=camera_id or "single",
+                    bundle_id=f"{sequence}/{i:06d}",
                 )
             )
             print(
@@ -389,7 +404,7 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
                 ),
                 flush=True,
             )
-    if not preview:
+    if not preview and write_splits:
         for split, labels in paths.items():
             if not labels:
                 raise ValueError(f"empty {split} split")

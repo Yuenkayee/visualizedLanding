@@ -1,0 +1,37 @@
+{
+  "passed": true,
+  "model": "/Users/yuanjiayi/Desktop/\u6a21\u578b\u548c\u7b97\u6cd5/visualizedLanding/external/innerloop/simu/innerLoop.slx",
+  "model_sha256": "8a18f4a5c26b6433a82b04955e46214f4e2479c1868152d4b1d86552b27dac47",
+  "matlab_contract_tests": {
+    "passed": true,
+    "checks": "SLX compilation, units, rotated frames, fixed camera reference, offsets, covariance, sensor contract, order, stale feedback, next-state callback, absent dynamics"
+  },
+  "transactions": {
+    "state_reads": 9,
+    "camera_bundles": 4,
+    "camera_images": 16,
+    "lidar_frames": 3,
+    "visual_updates": 4,
+    "lidar_updates": 3,
+    "feedback_writes": 9,
+    "advances": 8,
+    "checked_slx_feedbacks": 9
+  },
+  "control_samples": 7,
+  "max_slx_python_feedback_difference": 3.552713678800501e-15,
+  "navigation": {
+    "position_rmse": 0.13021474629416835,
+    "axis_rmse": [
+      0.11623804960894417,
+      0.056891541973688085,
+      0.014420417033475488
+    ],
+    "position_p95": 0.17043729333569188,
+    "attitude_rmse_deg": 0.24521479612431915,
+    "healthy_fraction": 1.0,
+    "samples": 7
+  },
+  "mode": "interface_state_hold",
+  "dynamics_tested": false,
+  "audit_log": "outputs/logs/innerloop_navigation_audit.jsonl"
+}

@@ -1,15 +1,16 @@
 function out=innerloop_evaluate(s)
 % Pure snapshot evaluation. Running StopTime=0 never advances a plant.
-persistent loaded
 % Generated Simulink artifacts stay outside the source tree.
 previous=Simulink.fileGenControl('getConfig');
 cache=fullfile(tempdir,'visualizedLanding_innerloop_cache');
 Simulink.fileGenControl('set','CacheFolder',cache, ...
     'CodeGenFolder',fullfile(cache,'codegen'),'createDir',true);
 restore=onCleanup(@()Simulink.fileGenControl('setConfig','config',previous)); %#ok<NASGU>
-if isempty(loaded) || ~bdIsLoaded('innerLoop')
-    load_system(fullfile(s.config.interface_root,'innerLoop.slx')); loaded=true;
+if ~bdIsLoaded('innerLoop')
+    validate_innerloop_model(s.config.interface_root);
 end
+assert(strcmp(get_param('innerLoop','FileName'),fullfile(s.config.interface_root,'innerLoop.slx')), ...
+    'landing:Model','Loaded model differs from the configured interface');
 g=s.config.geometry;
 if isempty(s.estimate)
     e=struct('T_deck_camera',eye(4),'velocity',zeros(3,1), ...
@@ -46,7 +47,10 @@ fields={'T_world_deck','T_deck_camera','velocity_deck', ...
     'relative_distance_estimate_m','relative_covariance_ned','feedback_valid', ...
     'navigation_velocity_camera_ned_mps','state_timestamp'};
 out=struct();
+assert(numElements(outputs)==numel(fields),'landing:Model','Unexpected SLX output dataset size');
 for k=1:numel(fields)
+    % Simulink may leave Dataset signal labels empty. Root Outport numbering
+    % and names are checked at initialization, so that contract maps this index.
     signal=outputs.getElement(k).Values;
     data=squeeze(signal.Data);
     if isvector(data), data=data(:); end

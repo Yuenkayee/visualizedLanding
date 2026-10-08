@@ -1,0 +1,23 @@
+# Ubuntu 22.04 / Python 3.12 / one RTX 5090 (32 GiB) / PyTorch 2.8.0+cu128.
+# Start with batch 16; tune using logged peak GPU memory on the actual server.
+seed: 20261007
+data_root: data/multi_camera
+output: visual_training/checkpoints/multi_camera
+image_size: 512
+batch_size: 16
+epochs: 40
+learning_rate: 0.001
+device: cuda:0
+precision: bf16
+threads: 8
+num_workers: 8
+# Start fresh processes; do not fork after CUDA and pinned-memory initialization.
+multiprocessing_context: spawn
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 2
+channels_last: true
+cudnn_benchmark: true
+allow_tf32: true
+fused_optimizer: true
+model: {channels: 16, keypoints: 4, predict_visibility: true}

@@ -1,26 +1,55 @@
 #!/usr/bin/env bash
-# Install into the repository venv; never alter the system Python.
+# Check/install into the selected existing Python environment; no .venv creation.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT"
+source "$ROOT/shell/python_environment.sh"
 CHECK=0
 BLENDER=1
 MATLAB=auto
-for arg in "$@"; do
-  case "$arg" in
-    --check) CHECK=1 ;;
-    --without-blender) BLENDER=0 ;;
-    --with-matlab) MATLAB=yes ;;
-    --without-matlab) MATLAB=no ;;
-    --help) echo 'Usage: shell/check_dependencies.sh [--check] [--without-blender] [--with-matlab|--without-matlab]'; exit 0 ;;
-    *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+RTX5090=0
+PYTHON_VERSION=3.11
+PYTHON_ARG=''
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check) CHECK=1; shift ;;
+    --without-blender) BLENDER=0; shift ;;
+    --with-matlab) MATLAB=yes; shift ;;
+    --without-matlab) MATLAB=no; shift ;;
+    --rtx5090) RTX5090=1; shift ;;
+    --python)
+      [[ $# -ge 2 && -n "$2" ]] || { echo 'Missing value for --python' >&2; exit 2; }
+      PYTHON_ARG="$2"; shift 2 ;;
+    --help)
+      echo 'Usage: shell/check_dependencies.sh [--python PATH] [--check] [--rtx5090] [--without-blender] [--with-matlab|--without-matlab]'
+      echo 'Uses --python, LANDING_PYTHON, or active python/python3, in that order. Does not create .venv.'
+      echo 'Installs missing/mismatched locked packages into that environment; --check never installs.'
+      exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-VENV="$ROOT/.venv"
-PY="$VENV/bin/python"
-# Locate licensed MATLAB before trying to build its Engine package.
+# Resolve relative interpreter paths before changing to the repository directory.
+resolve_landing_python "$PYTHON_ARG"
+PY="$LANDING_PYTHON"
+cd "$ROOT"
+if [[ "$RTX5090" == 1 ]]; then
+  PYTHON_VERSION=3.12
+  if [[ "$(uname -s):$(uname -m)" != Linux:x86_64 ]]; then
+    echo 'The RTX 5090 dependency lock requires Linux x86_64 / Python 3.12.' >&2; exit 2
+  fi
+  if [[ "$MATLAB" == yes ]]; then
+    echo '--rtx5090 selects training only; use a separate environment for MATLAB/Blender.' >&2; exit 2
+  fi
+  BLENDER=0
+  MATLAB=no
+fi
+"$PY" -c 'import sys
+expected = tuple(map(int, sys.argv[1].split(".")))
+if sys.version_info[:2] != expected:
+    raise SystemExit(f"This profile requires Python {sys.argv[1]}, but {sys.executable} uses {sys.version.split()[0]}. Activate the matching environment or pass --python /path/to/python{sys.argv[1]}.")
+print(f"Selected Python: {sys.executable} ({sys.version.split()[0]})")' "$PYTHON_VERSION"
+
 MATLAB_ROOT="${MATLAB_ROOT:-}"
-if [[ -z "$MATLAB_ROOT" ]] && command -v matlab >/dev/null 2>&1; then
+if [[ "$MATLAB" != no && -z "$MATLAB_ROOT" ]] && command -v matlab >/dev/null 2>&1; then
   MATLAB_ROOT="$(matlab -batch 'disp(matlabroot)' 2>/dev/null | tail -1)"
 fi
 if [[ -z "$MATLAB_ROOT" && -d /Applications/MATLAB_R2024b.app ]]; then MATLAB_ROOT=/Applications/MATLAB_R2024b.app; fi
@@ -28,35 +57,19 @@ if [[ "$MATLAB" == auto ]]; then
   if [[ -n "$MATLAB_ROOT" ]]; then MATLAB=yes; else MATLAB=no; fi
 fi
 if [[ "$MATLAB" == yes && ! -x "$MATLAB_ROOT/bin/matlab" ]]; then
-  echo 'MATLAB R2024b not found. Install/activate the licensed application and set MATLAB_ROOT.' >&2
-  exit 2
+  echo 'MATLAB R2024b not found. Install/activate the licensed application and set MATLAB_ROOT.' >&2; exit 2
 fi
-if [[ -n "$MATLAB_ROOT" ]]; then export MATLAB_ROOT; export PATH="$MATLAB_ROOT/bin:$PATH"; fi
-if [[ ! -x "$PY" ]]; then
-  if [[ "$CHECK" == 1 ]]; then echo 'Missing .venv (run without --check to install).'; exit 2; fi
-  mkdir -p "$ROOT/.tools"
-  if command -v uv >/dev/null 2>&1; then UV="$(command -v uv)"; else
-    command -v curl >/dev/null 2>&1 || { echo 'curl is required'; exit 2; }
-    case "$(uname -s):$(uname -m)" in
-      Darwin:arm64) TARGET=aarch64-apple-darwin ;;
-      Darwin:x86_64) TARGET=x86_64-apple-darwin ;;
-      Linux:x86_64) TARGET=x86_64-unknown-linux-gnu ;;
-      Linux:aarch64) TARGET=aarch64-unknown-linux-gnu ;;
-      *) echo 'Unsupported OS/architecture; install Python 3.11 and create .venv manually.'; exit 2 ;;
-    esac
-    curl -fL --retry 3 "https://github.com/astral-sh/uv/releases/download/0.9.5/uv-$TARGET.tar.gz" -o "$ROOT/.tools/uv.tar.gz"
-    tar -xzf "$ROOT/.tools/uv.tar.gz" -C "$ROOT/.tools"
-    UV="$ROOT/.tools/uv-$TARGET/uv"
-  fi
-  UV_CACHE_DIR="$ROOT/.tools/uv-cache" UV_PYTHON_INSTALL_DIR="$ROOT/.tools/python" "$UV" venv --python 3.11 "$VENV"
-fi
-"$PY" -c 'import sys; assert sys.version_info[:2]==(3,11), "Use Python 3.11 for the locked Blender/MATLAB environment"'
+if [[ "$MATLAB" == yes ]]; then export MATLAB_ROOT; export PATH="$MATLAB_ROOT/bin:$PATH"; fi
 LOCK=requirements.txt
-if [[ "$BLENDER" == 1 ]]; then
+if [[ "$RTX5090" == 1 ]]; then
+  LOCK=requirements-rtx5090.txt
+elif [[ "$BLENDER" == 1 ]]; then
   if command -v blender >/dev/null 2>&1 || [[ -x /Applications/Blender.app/Contents/MacOS/Blender ]]; then
     echo 'Blender executable available (require 4.2 LTS or compatible).'
   else LOCK=requirements-blender.txt; fi
 fi
+LOCKS=("$LOCK")
+if [[ "$MATLAB" == yes ]]; then LOCKS+=(requirements-matlab.txt); fi
 check_lock() {
   "$PY" - "$1" <<'PYCODE'
 import sys
@@ -68,7 +81,7 @@ except ImportError:
 missing=[]
 for line in open(sys.argv[1]):
     line=line.strip()
-    if not line or line.startswith('#'): continue
+    if not line or line.startswith(('#', '--')): continue
     req=Requirement(line)
     if req.marker and not req.marker.evaluate(): continue
     try: current=version(req.name)
@@ -79,49 +92,59 @@ for item in missing: print(item)
 sys.exit(2 if missing else 0)
 PYCODE
 }
-STATUS=0
-if ! check_lock "$LOCK"; then STATUS=2; fi
-if [[ "$MATLAB" == yes ]]; then if ! check_lock requirements-matlab.txt; then STATUS=2; fi
-else echo 'MATLAB unavailable/disabled: mock backend is usable; licensed MATLAB cannot be auto-installed.'; fi
-if [[ "$CHECK" == 1 ]]; then
-  if [[ "$STATUS" == 0 ]]; then echo "All selected dependency versions match $LOCK."; fi
-  exit "$STATUS"
-fi
-if [[ "$STATUS" != 0 ]]; then
-  if command -v uv >/dev/null 2>&1; then UV="$(command -v uv)";
-  elif [[ -n "${UV:-}" ]]; then :;
-  else
-    "$PY" -m ensurepip --upgrade
-    "$PY" -m pip install --requirement "$LOCK"
-    if [[ "$MATLAB" == yes ]]; then "$PY" -m pip install --requirement requirements-matlab.txt; fi
-    UV=''
+MISSING_LOCKS=()
+for selected_lock in "${LOCKS[@]}"; do
+  if ! check_lock "$selected_lock"; then MISSING_LOCKS+=("$selected_lock"); fi
+done
+if [[ "${#MISSING_LOCKS[@]}" -gt 0 ]]; then
+  if [[ "$CHECK" == 1 ]]; then
+    echo 'Dependencies are missing or mismatched. Rerun without --check to install.' >&2; exit 2
   fi
-  if [[ -n "$UV" ]]; then
-    UV_CACHE_DIR="$ROOT/.tools/uv-cache" "$UV" pip install --python "$PY" --requirement "$LOCK"
-    if [[ "$MATLAB" == yes ]]; then UV_CACHE_DIR="$ROOT/.tools/uv-cache" "$UV" pip install --python "$PY" --requirement requirements-matlab.txt; fi
+  if ! "$PY" -m pip --version >/dev/null 2>&1; then
+    echo "Bootstrapping pip for $PY..."
+    if ! "$PY" -m ensurepip --upgrade; then
+      echo "pip is unavailable for $PY. Install pip for this interpreter and rerun. Training has not started." >&2
+      exit 2
+    fi
   fi
+  for selected_lock in "${MISSING_LOCKS[@]}"; do
+    echo "Installing missing/mismatched packages from $selected_lock into $PY..."
+    if ! "$PY" -m pip install --retries 5 --timeout 120 --requirement "$selected_lock"; then
+      echo "Dependency installation failed for $PY. Check the pip error above (network, permissions or environment policy), then rerun. Training has not started." >&2
+      exit 2
+    fi
+  done
 fi
-check_lock "$LOCK"
-if [[ "$MATLAB" == yes ]]; then check_lock requirements-matlab.txt; "$PY" -c 'import matlab.engine; print("MATLAB Engine import OK")'; fi
+# Recheck installed metadata, actual imports and only the selected project's
+# dependency declarations. Unrelated packages in a shared environment are not
+# included (bpy's broken macOS WHEEL tags are also avoided).
+for selected_lock in "${LOCKS[@]}"; do check_lock "$selected_lock"; done
+if [[ "$MATLAB" == yes ]]; then "$PY" -c 'import matlab.engine; print("MATLAB Engine import OK")'; fi
 if [[ "$LOCK" == requirements-blender.txt ]]; then "$PY" -c 'import bpy; assert bpy.app.version[:2] == (4,2); print("Blender runtime",bpy.app.version_string)'; fi
 "$PY" -c 'import numpy,scipy,cv2,yaml,torch,PIL,matplotlib,onnx,onnxruntime,pytest; print("Core imports OK")'
-# Check declared transitive requirements independently of broken WHEEL metadata:
-# bpy 4.2's cp311 macOS wheel internally says cp39, despite working on cp311.
-# Native import/version/render checks establish runtime compatibility separately.
-"$PY" - <<'PYCODE'
-from importlib.metadata import distributions, version, PackageNotFoundError
+"$PY" - "${LOCKS[@]}" <<'PYCODE'
+import sys
+from importlib.metadata import distribution, version, PackageNotFoundError
 from packaging.requirements import Requirement
+selected=set()
+for path in sys.argv[1:]:
+    for line in open(path):
+        line=line.strip()
+        if not line or line.startswith(('#', '--')): continue
+        req=Requirement(line)
+        if not req.marker or req.marker.evaluate(): selected.add(req.name)
 errors=[]
-for dist in distributions():
-    for declaration in dist.requires or []:
+for name in sorted(selected):
+    for declaration in distribution(name).requires or []:
         req=Requirement(declaration)
         if req.marker and not req.marker.evaluate(): continue
         try: current=version(req.name)
         except PackageNotFoundError: current=None
         if current is None or current not in req.specifier:
-            errors.append(f'{dist.metadata["Name"]} requires {req}; installed {current}')
+            errors.append(f'{name} requires {req}; installed {current}')
 if errors:
     print('\n'.join(errors)); raise SystemExit(2)
-print('All declared transitive dependency constraints satisfied.')
+print('Selected project dependency constraints satisfied.')
 PYCODE
-echo 'Dependencies ready. Activate with: source .venv/bin/activate'
+if [[ "$RTX5090" == 1 ]]; then "$PY" -m visual_training.check_gpu; fi
+echo "Dependencies ready in $PY (no new environment created)."

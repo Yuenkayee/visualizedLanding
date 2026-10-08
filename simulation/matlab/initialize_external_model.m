@@ -16,5 +16,7 @@ else
     error('landing:MissingShip', 'external ship_motion_model class is required');
 end
 assignin('base','landingState',s);
-result = jsonencode(struct('initialized',true,'timestamp',s.timestamp));
+info=struct('initialized',true,'timestamp',s.timestamp);
+if isfield(s,'interface_contract'), info.interface_contract=s.interface_contract; end
+result = jsonencode(info);
 end

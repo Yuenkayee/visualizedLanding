@@ -44,6 +44,14 @@ def camera_geometry(config, rng=None):
     a = np.deg2rad(c["optical_down_deg"])
     # Camera +x right, +y down, +z forward; body forward/right/down.
     R = np.array([[0, -np.sin(a), np.cos(a)], [1, 0, 0], [0, np.cos(a), np.sin(a)]])
+    R = (
+        Rotation.from_euler(
+            "xy",
+            [c.get("optical_roll_deg", 0), c.get("optical_pitch_deg", 0)],
+            degrees=True,
+        ).as_matrix()
+        @ R
+    )
     if rng is not None:
         R = (
             Rotation.from_rotvec(
@@ -398,7 +406,7 @@ def _max_failure_duration(times, valid):
     )
 
 
-def optical_report(sortie, marker):
+def optical_report(sortie, marker, include_frames=False):
     c = sortie["camera"]
     cal = CameraCalibration(c["K"], c["width"], c["height"])
     points = marker_points(marker["width"], marker["length"])
@@ -417,6 +425,7 @@ def optical_report(sortie, marker):
         visible_corners = []
         camera_height = []
         timestamps = []
+        per_frame = []
         for row in sortie["rows"]:
             if row["stage"] != stage:
                 continue
@@ -445,6 +454,14 @@ def optical_report(sortie, marker):
             visible_corners.append(bool((inside & ~blocked[:4]).all()))
             camera_height.append(float(T[2, 3]))
             full.append(bool(inside.all()))
+            per_frame.append(
+                dict(
+                    frame_id=row["frame_id"],
+                    timestamp=row["timestamp"],
+                    centre_visible=visible_centre[-1],
+                    keypoints_visible=(inside & ~blocked[:4]).tolist(),
+                )
+            )
             extent.append(float(min(np.ptp(pixels[:, 0]), np.ptp(pixels[:, 1]))))
         result[stage] = dict(
             centre_in_frame_fraction=float(np.mean(seen)),
@@ -462,4 +479,6 @@ def optical_report(sortie, marker):
             min_camera_height_above_deck_normal_m=min(camera_height),
             min_marker_extent_px=min(extent),
         )
+        if include_frames:
+            result[stage]["frames"] = per_frame
     return result

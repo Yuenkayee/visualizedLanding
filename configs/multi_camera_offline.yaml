@@ -1,0 +1,19 @@
+# CPU sensor/point-mass integration check. Use the trained checkpoint for vision.
+backend: mock
+seed: 42
+duration: 5.0
+camera_hz: 10.0
+lidar_hz: 5.0
+control_hz: 20.0
+camera_rig_config: configs/multi_camera_dataset.yaml
+lidar_config: configs/lidar.yaml
+navigation_config: configs/multi_camera_navigation.yaml
+log: outputs/logs/multi_camera_closed_loop.jsonl
+metrics: outputs/metrics/multi_camera_closed_loop.json
+marker: {width: 6.0, length: 6.0, stroke: 1.2}
+plant:
+  initial_position: [2.0, -1.0, 30.0]
+  target_height: 0.8
+  kp: 0.25
+  kd: 1.0
+  max_acceleration: 2.0

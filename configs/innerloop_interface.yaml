@@ -1,8 +1,12 @@
 # Merge plant into offline_simulation.yaml ONLY after filling calibrated values.
 # null values are intentionally unusable; no invented UH-60/vessel geometry.
+# Runnable design-geometry/state-hold interface check: innerloop_navigation.yaml.
 backend: matlab
+camera_rig_config: configs/multi_camera_dataset.yaml
+navigation_config: configs/multi_camera_navigation.yaml
 plant:
   initialize_callback: innerloop_initialize
+  reference_camera_id: C0
   allow_state_hold: false
   # Name of future MATLAB function s=plant_step_callback(s,dt).
   plant_step_callback: null

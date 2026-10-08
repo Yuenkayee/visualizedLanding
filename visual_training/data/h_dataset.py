@@ -8,12 +8,29 @@ from torch.utils.data import Dataset
 
 class HDataset(Dataset):
     def __init__(self, split, root="data", image_size=256, augmentation=None):
-        self.paths = [Path(p) for p in json.loads(Path(split).read_text())]
         self.root = Path(root)
+        self.paths = [
+            self._annotation_path(Path(p)) for p in json.loads(Path(split).read_text())
+        ]
         self.size = image_size
         self.augmentation = augmentation
         if not self.paths:
             raise ValueError("empty dataset split")
+
+    def _annotation_path(self, path):
+        # Generated splits may contain absolute paths from another machine.
+        # Prefer the configured root even if that original dataset still exists.
+        candidates = [
+            self.root.joinpath(*path.parts[i:])
+            for i, part in enumerate(path.parts)
+            if part == "annotations"
+        ]
+        if candidates:
+            for candidate in candidates:
+                if candidate.is_file():
+                    return candidate
+            raise FileNotFoundError(f"annotation not found under {self.root}: {path}")
+        return path if path.is_absolute() else self.root / path
 
     def __len__(self):
         return len(self.paths)

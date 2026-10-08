@@ -37,10 +37,37 @@ assert(abs(f.distance_m-norm([14;18;-25]))<1e-10);
 assert(min(eig(f.covariance_ned))>0);
 expect_error(@()write_navigation_estimate(jsonencode(e)),'landing:Order');
 advance_external_model(.1);
+expect_error(@()read_innerloop_feedback(),'landing:Feedback');
+expect_error(@()advance_external_model(.1),'landing:Order');
 expect_error(@()write_navigation_estimate(jsonencode(e)),'landing:Timestamp');
 truth2=jsondecode(read_sensor_truth()); assert(abs(truth2.timestamp-.1)<1e-10);
 e.timestamp=.1; e.T_deck_camera=truth2.T_deck_camera; e.healthy=false;
 write_navigation_estimate(jsonencode(e)); f=jsondecode(read_innerloop_feedback()); assert(~f.valid);
+% An explicit reference ID must match C0 even when a different camera supplied
+% the PnP update. Bad feedback cannot change the stored state or phase.
+s=evalin('base','landingState'); s.config.reference_camera_id='C0';
+assignin('base','landingState',s); advance_external_model(.1);
+truth3=jsondecode(read_sensor_truth());
+e.timestamp=.2; e.T_deck_camera=truth3.T_deck_camera; e.healthy=true;
+e.diagnostics=struct('reference_camera_id','C1');
+expect_error(@()write_navigation_estimate(jsonencode(e)),'landing:Reference');
+e.diagnostics.reference_camera_id='C0';
+write_navigation_estimate(jsonencode(e));
+f=jsondecode(read_innerloop_feedback()); assert(f.valid);
+% Test-only state replacement callback consumes the converted feedback and
+% changes native state. This validates next-state reads without dynamics.
+s=evalin('base','landingState');
+s.config.plant_step_callback=@fixture_step;
+before=s.helicopter_state; assignin('base','landingState',s);
+advance_external_model(.05); truth4=jsondecode(read_sensor_truth());
+s=evalin('base','landingState');
+assert(norm(s.helicopter_state(1:3)-before(1:3)-[.05;0;0])<1e-10);
+assert(abs(truth4.timestamp-.25)<1e-10);
+assert(norm(truth4.T_deck_camera(1:3,4)-truth3.T_deck_camera(1:3,4)-[.05;0;0])<1e-10);
+e.timestamp=.25; e.T_deck_camera=truth4.T_deck_camera;
+write_navigation_estimate(jsonencode(e));
+s=evalin('base','landingState'); s.config=rmfield(s.config,'plant_step_callback');
+assignin('base','landingState',s);
 % No hidden surrogate: missing plant raises explicitly.
 s=evalin('base','landingState'); s.config.allow_state_hold=false; assignin('base','landingState',s);
 expect_error(@()advance_external_model(.1),'landing:MissingDynamics');
@@ -89,7 +116,7 @@ catch ex
 end
 release(obj);
 result=jsonencode(struct('passed',true,'checks', ...
-    'SLX compilation, units, rotated frames, reference offsets, covariance, sensor contract, order, stale feedback, absent dynamics'));
+    'SLX compilation, units, rotated frames, fixed camera reference, offsets, covariance, sensor contract, order, stale feedback, next-state callback, absent dynamics'));
 end
 function expect_error(f,id)
 try
@@ -105,4 +132,9 @@ R=[cos(c) -sin(c) 0;sin(c) cos(c) 0;0 0 1]*[cos(b) 0 sin(b);0 1 0;-sin(b) 0 cos(
 end
 function S=skew(v)
 S=[0 -v(3) v(2);v(3) 0 -v(1);-v(2) v(1) 0];
+end
+function s=fixture_step(s,dt)
+assert(s.feedback.valid && abs(s.feedback.timestamp-s.timestamp)<1e-8);
+s.helicopter_state(1)=s.helicopter_state(1)+dt;
+s.timestamp=s.timestamp+dt;
 end

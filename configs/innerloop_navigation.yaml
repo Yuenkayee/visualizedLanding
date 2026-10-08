@@ -1,0 +1,33 @@
+# Runnable interface transaction check; states are held while the clock advances.
+# Geometry is the same provisional design as the multi-camera dataset, not UH-60 calibration.
+backend: matlab
+seed: 42
+duration: 0.3
+camera_hz: 10.0
+lidar_hz: 7.0
+control_hz: 20.0
+camera_rig_config: configs/multi_camera_dataset.yaml
+lidar_config: configs/lidar.yaml
+navigation_config: configs/multi_camera_navigation.yaml
+navigation:
+  # Classical image detector lets the interface check run before formal training.
+  checkpoint: null
+  initial_position: [0.0, 0.0, 30.0]
+  # C0 heading prior, specified independently of SLX truth.
+  initial_rotation:
+    - [0.0, -0.9945218953682733, -0.10452846326765355]
+    - [-1.0, 0.0, 0.0]
+    - [0.0, 0.10452846326765355, -0.9945218953682733]
+log: outputs/logs/innerloop_navigation.jsonl
+audit_log: outputs/logs/innerloop_navigation_audit.jsonl
+metrics: outputs/metrics/innerloop_navigation.json
+marker: {width: 6.0, length: 6.0, stroke: 1.2}
+plant:
+  initialize_callback: innerloop_initialize
+  reference_camera_id: C0
+  geometry_from_camera_rig: true
+  allow_state_hold: true
+  plant_step_callback: null
+  # H centre = [0,0,0] NED in this fixture. C0 starts around [2,-1,30] deck.
+  helicopter_state: [0.0, 1.0, -31.11, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  ship_state: [45.0, 0.0, 5.5, 0, 0, 0, 0, 0, 0, 0, 0, 0]
