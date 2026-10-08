@@ -14,48 +14,37 @@
 | PyTorch | 2.8.0+cu128 |
 | PyTorch CUDA 运行时 | 12.8（运行库包 12.8.90） |
 
-这里检查的是 `torch.version.cuda`，不以系统 `nvcc` 或 `nvidia-smi` 显示的 CUDA 版本代替。服务器已安装 Python 3.12 时，uv 可使用该解释器；安装脚本仍把项目依赖安装到 `.venv`，不会自动继承系统或 Conda 环境里的 PyTorch 包。已存在的 `.venv` 如果满足精确依赖锁则直接复用，否则补齐或更新依赖。
+这里检查的是 `torch.version.cuda`，不以系统 `nvcc` 或 `nvidia-smi` 显示的 CUDA 版本代替。安装和训练默认使用服务器当前的 Python 环境，不创建、不自动选择项目 `.venv`，也不下载 uv 或 Python。
 
-若旧项目 `.venv` 是 Python 3.11，脚本会给出版本错误并停止。确认没有任务在使用该环境后，可先保留备份再重新安装：
-
-```bash
-# 仅在已有 .venv 确认为 Python 3.11 时执行
-mv .venv ".venv-py311-$(date +%Y%m%d_%H%M%S)"
-bash shell/check_dependencies.sh --rtx5090
-```
-
-默认 Blender/MATLAB profile 继续使用 Python 3.11 与原依赖锁；RTX 5090 环境后续检查必须带 `--rtx5090`。
-
-在服务器的仓库根目录执行：
+解释器选择顺序：`--python PATH` → `LANDING_PYTHON` → 当前 PATH 中的 `python` → `python3`。先激活服务器已有的 Python 3.12 / PyTorch 环境，再在仓库根目录运行：
 
 ```bash
-nvidia-smi
+python --version
 bash shell/check_dependencies.sh --rtx5090
 bash shell/check_dependencies.sh --rtx5090 --check
 ```
 
-`--rtx5090` 选择训练环境，自动跳过 Blender 和 MATLAB；脚本创建 `.venv`，安装或纠正缺失/版本不符的依赖。数据已生成时服务器只需此环境。GPU 预检查核对 Python 3.12、PyTorch 2.8.0、PyTorch CUDA 运行时 12.8、SM 120、BF16，并以 64×64 图像实际执行网络前向、损失、反向及 fused AdamW 更新。缺少 GPU、驱动不可用或装错 PyTorch 会报错。之后检查和补装也应使用 `--rtx5090`，避免默认依赖锁重新安装 PyTorch 2.5.1。需要 Blender/MATLAB 时使用独立环境。
+脚本会打印实际解释器的绝对路径。`--rtx5090` 自动跳过 Blender/MATLAB，核对完整依赖锁，通过所选解释器的 `python -m pip` 补齐缺少的包，并纠正与锁文件不符的版本；已满足锁定版本的包直接复用。安装后重新核对版本、模块导入和项目包的传递依赖，最后执行实际 GPU 前向、反向和 fused AdamW 更新。安装失败、导入失败或 GPU 检查失败都会返回非零退出码。
 
-首次安装优先复用可用的 `uv`；若没有，则通过已有 Python 的 pip 从 PyPI 安装到项目 `.tools/uv-bootstrap`，不修改系统 Python，也不需要把 uv 加入 PATH。pip 不可用或安装失败时，回退到带连接超时、TLS 中断重试的 GitHub release 下载。Ubuntu 若尚未安装 pip，可先执行：
+这些安装发生在当前环境中，可能更新该环境的已有包。精确锁仍是 `torch==2.8.0+cu128`；如果预装包仅标记 `2.8.0`，pip 会按锁调整为官方 cu128 build。脚本检查项目自身的依赖声明，不要求同一环境中无关工具的依赖也符合本项目。
+
+`--check` 只检查、不安装，也不引导安装 pip。正常安装时若所选解释器没有 pip，先尝试其 `ensurepip`；若解释器不提供 ensurepip、安装目录不可写或系统环境策略禁止 pip 写入，脚本会保留原始错误并停止，不自动提权或绕过系统策略。包下载保留重试/超时，继承当前 pip 配置及代理。
+
+可以显式选择现有 Python/Conda 环境，不必修改 PATH：
 
 ```bash
-sudo apt update
-sudo apt install -y python3-pip ca-certificates
+bash shell/check_dependencies.sh --rtx5090 --python /opt/conda/bin/python
+# 或使用环境变量（路径按服务器实际位置填写）
+LANDING_PYTHON=/opt/conda/bin/python bash shell/check_dependencies.sh --rtx5090
 ```
 
-原先的 `curl: (56) ... unexpected eof` 表示网络连接被中断；脚本现在增加了另一条下载路径和重试，不能保证绕过服务器的网络限制。它继承 `HTTPS_PROXY`、`PIP_INDEX_URL` 等设置，不关闭 TLS 校验。PyTorch CUDA wheel 仍从 requirements 中的官方源安装。
+旧项目 `.venv` 可以保留，脚本不自动读取它。如果当前终端激活的就是该环境，需要先退出该环境或用 `--python` 指向服务器已有的 Python 3.12。选中的 Python 版本错误时会立即停止，不自动切换环境。默认 Blender/MATLAB profile 仍要求 Python 3.11；服务器训练始终使用 `--rtx5090`。
 
-如果系统没有 Python 3.12，uv 还需从 GitHub 下载 Python；若该步骤受阻，配置可用代理，或通过 `LANDING_PYTHON` 指定已经安装的 3.12 解释器：
-
-```bash
-LANDING_PYTHON=/path/to/python3.12 bash shell/check_dependencies.sh --rtx5090
-```
-
-可以单独检查 GPU，或选择其他显卡编号：
+也可用同一 Python 单独检查 GPU：
 
 ```bash
-.venv/bin/python -m visual_training.check_gpu
-.venv/bin/python -m visual_training.check_gpu --device cuda:1
+python -m visual_training.check_gpu
+python -m visual_training.check_gpu --device cuda:1
 ```
 
 ## tmux 后台安装与训练
@@ -81,6 +70,14 @@ bash shell/train_rtx5090.sh -- \
   --data-root /data/visualizedLanding/multi_camera --batch-size 16
 ```
 
+显式指定已有环境并后台启动：
+
+```bash
+bash shell/train_rtx5090.sh --python /opt/conda/bin/python
+```
+
+后台启动前会将解释器固定为绝对路径，并将相同路径传入依赖安装、GPU 检查和训练。即使 tmux 服务保留了以前 SSH 会话的 PATH，也不会误用另一个 Python。
+
 需要在当前终端排查时，使用 `bash shell/train_rtx5090.sh --foreground`，仍会保存日志。`--session NAME` 可指定会话名称，`--log PATH` 可指定日志文件（追加写入）。后台入口将当前 SSH 会话的代理、包源、Python 路径和 `CUDA_VISIBLE_DEVICES` 等设置传入任务，避免已有 tmux 服务保留过期环境。
 
 ## 数据迁移
@@ -90,7 +87,7 @@ bash shell/train_rtx5090.sh -- \
 默认路径是仓库内 `data/multi_camera`。若数据位于独立磁盘，通过 `--data-root` 指定绝对路径：
 
 ```bash
-.venv/bin/python -m visual_training.train \
+python -m visual_training.train \
   --config configs/multi_camera_training_rtx5090.yaml \
   --data-root /data/visualizedLanding/multi_camera
 ```
@@ -116,7 +113,7 @@ BF16 不使用 FP16 的梯度缩放；若通过 CLI 改为 FP16，训练器会�
 batch=16 是起点，尚未在实际 RTX 5090 上测量吞吐或完整训练显存。若显存不足，先改为 batch=8；若 CPU/存储跟不上、容器共享内存不足或加载进程异常，可降低 worker 数。示例：
 
 ```bash
-.venv/bin/python -m visual_training.train \
+python -m visual_training.train \
   --config configs/multi_camera_training_rtx5090.yaml \
   --batch-size 8 --num-workers 4
 ```
@@ -126,13 +123,13 @@ batch=16 是起点，尚未在实际 RTX 5090 上测量吞吐或完整训练显�
 ## 评估与导出
 
 ```bash
-.venv/bin/python -m visual_training.evaluate \
+python -m visual_training.evaluate \
   --root data/multi_camera \
   --checkpoint visual_training/checkpoints/multi_camera/best.pt \
   --image-size 512 --device cuda:0 \
   --output outputs/metrics/multi_camera_vision.json
 
-.venv/bin/python -m visual_training.export_model \
+python -m visual_training.export_model \
   --checkpoint visual_training/checkpoints/multi_camera/best.pt \
   --output visual_training/checkpoints/multi_camera/h_detector.onnx \
   --image-size 512
@@ -143,7 +140,7 @@ batch=16 是起点，尚未在实际 RTX 5090 上测量吞吐或完整训练显�
 ONNX 导出显式选择 `dynamo=False`，保持现有 opset 17、动态 batch 和三个输出的接口。服务器上可以运行针对训练和导出的回归测试（会生成临时小数据，不覆盖正式权重）：
 
 ```bash
-.venv/bin/python -m pytest -q tests/test_gpu_training.py tests/test_training_shell.py
+python -m pytest -q tests/test_gpu_training.py tests/test_training_shell.py
 ```
 
 测试包含版本拒绝、BF16 损失/梯度、spawn 数据加载、1 epoch 训练、权重重载评估、PyTorch/ONNX 数值比对，以及有 RTX 5090 时的真实 CUDA 前向/反向更新。完整分辨率显存和吞吐仍由正式训练日志确认。

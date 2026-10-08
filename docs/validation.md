@@ -116,3 +116,11 @@ RTX 5090 profile 更新为 Python 3.12.x、PyTorch 2.8.0+cu128，完整依赖锁
 在独立 macOS arm64 临时环境实际安装 Python 3.12.14、PyTorch 2.8.0 和服务器锁中全部公共依赖（平台特有 CUDA/Triton 除外）。`pip check` 通过。完整 pytest **66 项通过、1 项 RTX 5090 硬件测试跳过**，耗时约 137 s；包括 CPU BF16 前向/反向、FP32 关键点/损失、spawn 并行加载、1 epoch 训练、权重保存/重载评估、ONNX 导出与 batch=2 数值比对（rtol 1e-4 / atol 1e-5），以及安装器对 3.11/3.12 profile 分支和错误环境保留的检查。ONNX 保留旧导出器弃用提示和 GroupNorm 形状追踪提示，数值验证通过。
 
 Ruff F/E9、格式、Python 编译、shell 语法及 Git whitespace 检查通过；现有 Python 3.11.16 / PyTorch 2.5.1 默认环境的依赖版本检查通过。没有 NVIDIA GPU 或服务器连接，未宣称已在 RTX 5090 上运行 CUDA 训练；服务器安装入口和 tmux 入口会执行版本/SM 120/BF16/fused AdamW 预检查，正式显存、吞吐和模型精度仍需实际训练验证。
+
+### 使用服务器已有 Python 环境（2026-10-08）
+
+`check_dependencies.sh` 和 `train_rtx5090.sh` 默认使用当前 Python，支持 `--python` 与 `LANDING_PYTHON` 显式指定；共享解释器解析函数返回绝对路径并保留环境符号链接。移除 uv/Python 下载与项目 `.venv` 创建流程。所选解释器的 pip 按锁补齐缺失或版本不符的包，随后复查版本、实际导入、项目传递依赖和 GPU；tmux 安装与训练使用同一绝对解释器路径。`--check` 不安装包或 pip；失败时停止训练并保存退出码。
+
+20 项脚本集成测试通过，覆盖当前 Python 与 python3 回退、参数/环境变量优先级、含空格和相对解释器路径、缺包安装与重复执行复用、仅检查不安装、pip 缺失引导、安装/导入/依赖/GPU/Python 版本失败停止、旧项目环境不被自动选中或修改、tmux 陈旧环境修正、安装→GPU 检查→训练顺序、重复会话拒绝和唯一日志/训练失败退出码。安装器、Python 和 tmux 在这些测试中使用受控替身，不连接服务器、不下载 CUDA 包。
+
+另显式指定本机已有 Python 3.11.16 环境，实际执行默认 profile 的只读版本、模块导入与项目传递依赖检查通过。shell 语法、Ruff F/E9、格式和 Git whitespace 检查通过。本次改动集中在安装/启动脚本，未重复模型训练回归，也未在真实 RTX 5090 或 tmux 服务上执行新入口。

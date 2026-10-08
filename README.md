@@ -6,12 +6,11 @@
 
 ```bash
 bash shell/check_dependencies.sh
-source .venv/bin/activate
 bash shell/check_dependencies.sh --check
 pytest -q
 ```
 
-脚本创建项目 `.venv`，自动安装缺失/版本不符的锁定依赖。没有 Python 3.11 时使用 uv 下载；没有 Blender 应用时安装锁定的 `bpy` 4.2 运行时。发现 MATLAB R2024b 后安装其 Engine；MATLAB 应用及许可证需自行提供。可用 `--without-blender --without-matlab` 只安装 CPU 数据/训练/导航基线，`--with-matlab` 强制检查 MATLAB。
+脚本使用当前已有的 Python 环境，通过该解释器的 pip 安装缺失/版本不符的锁定依赖，不创建或自动选择项目 `.venv`。默认 profile 需要 Python 3.11，RTX 5090 profile 需要 Python 3.12；可用 `--python /path/to/python` 显式指定解释器。没有 Blender 应用时安装锁定的 `bpy` 4.2 运行时；发现 MATLAB R2024b 后安装其 Engine，MATLAB 应用及许可证需自行提供。`--without-blender --without-matlab` 只安装核心依赖，`--check` 只检查而不安装。
 
 `requirements.txt` 锁定核心直接和传递依赖；`requirements-blender.txt` 是包含核心依赖的 Blender 扩展锁；`requirements-matlab.txt` 锁定需要本机 MATLAB 的可选 Engine。CUDA 包使用平台条件标记，macOS 无需安装它们。不要把 `bpy` 装进不同版本的 Blender 内置 Python。
 
@@ -19,12 +18,12 @@ Ubuntu 22.04 / RTX 5090 训练使用独立的 Python 3.12 / PyTorch 2.8.0 + CUDA
 
 ```bash
 bash shell/check_dependencies.sh --rtx5090
-.venv/bin/python -m visual_training.train --config configs/multi_camera_training_rtx5090.yaml
+python -m visual_training.train --config configs/multi_camera_training_rtx5090.yaml
 ```
 
 安装时会实际执行 GPU 前向/反向检查。默认 512×512、batch=16、8 个数据加载 worker；服务器数据路径、驱动要求、显存调节和评估命令见 [RTX 5090 训练说明](docs/rtx5090_training.md)。
 
-已安装 tmux 时，可用 `bash shell/train_rtx5090.sh` 在后台依次安装依赖、检查 GPU 并启动训练；安装失败时停止，完整日志保存在 `outputs/logs/`。用 `tmux attach -t landing_train` 查看，按 `Ctrl+b` 后按 `d` 离开且继续运行。安装脚本优先通过 PyPI 获取 uv，再回退到带网络重试的 GitHub 下载；Ubuntu 缺少 pip 时先安装 `python3-pip`。
+已安装 tmux 时，可用 `bash shell/train_rtx5090.sh` 在后台依次检查/补齐当前环境依赖、检查 GPU 并启动训练；安装失败时停止，完整日志保存在 `outputs/logs/`。用 `tmux attach -t landing_train` 查看，按 `Ctrl+b` 后按 `d` 离开且继续运行。可用 `--python /path/to/python` 选择环境；安装、检查和训练使用同一解释器，无需 uv 或项目 `.venv`。
 
 ## 生成数据、训练、导出
 
@@ -37,7 +36,7 @@ python -m visual_training.export_model
 
 默认数据生成器是快速 CPU 针孔投影，提供训练和端到端检查用的简化图像。按**完整序列**划分 train/val/test，至少需要三个独立序列。20 个 epoch 是可调参数，训练完成不代表已达到真实图像精度；应结合独立 Blender/真实数据评估。
 
-三维护卫舰渲染：
+三维护卫舰渲染（现有 Blender shell 包装脚本仍使用 `.venv` 路径；使用它们时需自行准备并激活 Python 3.11 的项目环境，RTX 5090 训练不需要此步骤）：
 
 ```bash
 bash shell/render_sequence.sh --frames 30 --sequence-id sea_001

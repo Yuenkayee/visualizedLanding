@@ -1,4 +1,4 @@
-"""Exercise installer failures and job ordering without downloads or a GPU."""
+"""Run shell entry points with isolated Python/pip/tmux stand-ins; no downloads."""
 
 import json
 import os
@@ -6,7 +6,6 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tarfile
 
 import pytest
 
@@ -21,7 +20,7 @@ def executable(path, source):
 def server(tmp_path):
     root = tmp_path / "server project"
     (root / "shell").mkdir(parents=True)
-    for name in ("check_dependencies.sh", "train_rtx5090.sh"):
+    for name in ("check_dependencies.sh", "train_rtx5090.sh", "python_environment.sh"):
         shutil.copy(Path("shell") / name, root / "shell" / name)
     binary = tmp_path / "bin"
     binary.mkdir()
@@ -30,7 +29,6 @@ def server(tmp_path):
         "cat",
         "dirname",
         "mkdir",
-        "tar",
         "tee",
         "date",
         "mktemp",
@@ -40,110 +38,94 @@ def server(tmp_path):
     ):
         (binary / name).symlink_to(shutil.which(name))
     log = tmp_path / "calls.jsonl"
-    common = """
-import json, os, pathlib, shutil, subprocess, sys
+    python_code = r"""
+import json, os, pathlib, sys
 args = sys.argv[1:]
 root = pathlib.Path(os.environ['MOCK_ROOT'])
 with open(os.environ['MOCK_CALLS'], 'a') as stream:
-    stream.write(json.dumps([pathlib.Path(sys.argv[0]).name, args]) + '\\n')
-"""
-    interpreter = tmp_path / "mock-python"
-    executable(
-        interpreter,
-        common
-        + """
-if args[:1] == ['-'] and len(args) > 1:
-    sys.exit(0 if (root / '.installed').exists() else 2)
-if args[:1] == ['-c'] and 'expected = tuple' in args[1]:
-    actual = os.environ.get('MOCK_VENV_VERSION', args[2])
-    if actual != args[2]:
-        print(f'Move the old .venv aside: expected Python {args[2]}, got {actual}', file=sys.stderr)
-        sys.exit(1)
-if 'visual_training.train' in args:
-    assert os.environ.get('CUDA_VISIBLE_DEVICES') != 'stale'
-    assert os.environ.get('HTTPS_PROXY') != 'stale'
-    print('TRAINING_STARTED')
-sys.exit(0)
-""",
-    )
-    uv = tmp_path / "mock-uv"
-    executable(
-        uv,
-        common
-        + """
-if args[0] == '--version':
-    print('uv 0.9.5')
-elif args[0] == 'venv':
-    if os.environ.get('MOCK_PYTHON_FAIL'):
-        print('Python download failed', file=sys.stderr)
-        sys.exit(1)
-    dest = root / '.venv/bin/python'
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(os.environ['MOCK_PYTHON'], dest)
-elif args[:2] == ['pip', 'install']:
-    (root / '.installed').touch()
-""",
-    )
-    executable(
-        binary / "python3",
-        common
-        + """
-if args == ['-m', 'pip', '--version']:
+    stream.write(json.dumps([os.path.abspath(sys.argv[0]), args]) + '\n')
+if args[:1] == ['-c'] and 'os.path.abspath(sys.executable)' in args[1]:
+    print(os.path.abspath(sys.argv[0]))
     sys.exit(0)
-if os.environ.get('MOCK_PIP_FAIL'):
+if args[:1] == ['-c'] and 'expected = tuple' in args[1]:
+    actual = os.environ.get('MOCK_PYTHON_VERSION', args[2])
+    if actual != args[2]:
+        print(f'expected Python {args[2]}, got {actual}; use --python', file=sys.stderr)
+        sys.exit(2)
+if args[:1] == ['-']:
+    source = sys.stdin.read()
+    if 'missing=[]' in source:
+        sys.exit(0 if (root / '.installed').exists() else 2)
+    if 'selected=set()' in source and os.environ.get('MOCK_TRANSITIVE_FAIL'):
+        sys.exit(2)
+if args == ['-m', 'pip', '--version']:
+    sys.exit(1 if os.environ.get('MOCK_NO_PIP') and not (root / '.pip_ready').exists() else 0)
+if args[:2] == ['-m', 'ensurepip']:
+    if os.environ.get('MOCK_ENSUREPIP_FAIL'):
+        sys.exit(1)
+    (root / '.pip_ready').touch()
+if args[:3] == ['-m', 'pip', 'install']:
+    if os.environ.get('MOCK_INSTALL_FAIL'):
+        print('pip download/permission error', file=sys.stderr)
+        sys.exit(1)
+    if not os.environ.get('MOCK_INSTALL_NO_EFFECT'):
+        (root / '.installed').touch()
+if args[:1] == ['-c'] and 'import numpy,scipy' in args[1] and os.environ.get('MOCK_IMPORT_FAIL'):
     sys.exit(1)
-target = pathlib.Path(args[args.index('--target') + 1]) / 'bin/uv'
-target.parent.mkdir(parents=True, exist_ok=True)
-shutil.copy(os.environ['MOCK_UV'], target)
-""",
-    )
+if 'visual_training.check_gpu' in args and os.environ.get('MOCK_GPU_FAIL'):
+    sys.exit(1)
+if 'visual_training.train' in args:
+    for name in ('HTTPS_PROXY', 'CUDA_VISIBLE_DEVICES', 'CONDA_PREFIX', 'PYTHONPATH', 'LD_LIBRARY_PATH', 'PIP_REQUIRE_VIRTUALENV'):
+        assert os.environ.get(name) != 'stale', name
+    print('TRAINING_STARTED')
+    sys.exit(int(os.environ.get('MOCK_TRAIN_EXIT', '0')))
+"""
+    for name in ("python", "python3"):
+        executable(binary / name, python_code)
     executable(
         binary / "uname",
         "import sys\nprint('Linux' if sys.argv[1] == '-s' else 'x86_64')\n",
     )
-    archive = tmp_path / "uv.tar.gz"
-    with tarfile.open(archive, "w:gz") as bundle:
-        bundle.add(uv, arcname="uv-x86_64-unknown-linux-gnu/uv")
-    executable(
-        binary / "curl",
-        common
-        + """
-if os.environ.get('MOCK_CURL_FAIL'):
-    print('curl: (56) unexpected eof while reading', file=sys.stderr)
-    sys.exit(56)
-shutil.copy(os.environ['MOCK_ARCHIVE'], args[args.index('-o') + 1])
-""",
-    )
     executable(
         binary / "tmux",
-        common
-        + """
+        r"""
+import json, os, subprocess, sys
+args = sys.argv[1:]
+with open(os.environ['MOCK_CALLS'], 'a') as stream:
+    stream.write(json.dumps(['tmux', args]) + '\n')
 if args[0] == 'has-session':
     sys.exit(0 if os.environ.get('MOCK_SESSION_EXISTS') else 1)
 if args[0] == 'new-session':
-    # Execute the detached payload synchronously to inspect its result in tests.
-    child_env = dict(os.environ, HTTPS_PROXY='stale', CUDA_VISIBLE_DEVICES='stale')
-    subprocess.run(args[args.index('env'):], env=child_env, check=False)
+    # An old tmux server can have a different interpreter and environment.
+    child_env = dict(os.environ, PATH='/invalid/stale/path', LANDING_PYTHON='/invalid/python')
+    for name in ('HTTPS_PROXY', 'CUDA_VISIBLE_DEVICES', 'CONDA_PREFIX', 'PYTHONPATH', 'LD_LIBRARY_PATH', 'PIP_REQUIRE_VIRTUALENV'):
+        child_env[name] = 'stale'
+    command = args[args.index('env'):]
+    command[0] = os.path.join(os.environ['PATH'], 'env')
+    subprocess.run(command, env=child_env, check=False)
 """,
     )
     environment = dict(
-        os.environ,
-        PATH=str(binary),
-        MOCK_ROOT=str(root),
-        MOCK_CALLS=str(log),
-        MOCK_PYTHON=str(interpreter),
-        MOCK_UV=str(uv),
-        MOCK_ARCHIVE=str(archive),
+        os.environ, PATH=str(binary), MOCK_ROOT=str(root), MOCK_CALLS=str(log)
     )
-    environment.pop("CUDA_VISIBLE_DEVICES", None)
-    environment.pop("HTTPS_PROXY", None)
+    for name in (
+        "LANDING_PYTHON",
+        "CUDA_VISIBLE_DEVICES",
+        "HTTPS_PROXY",
+        "CONDA_PREFIX",
+        "PYTHONPATH",
+        "LD_LIBRARY_PATH",
+        "PIP_REQUIRE_VIRTUALENV",
+    ):
+        environment.pop(name, None)
     return root, environment, log
 
 
-def run(server, script, *args, **overrides):
+def run(server, script, *args, cwd=None, **overrides):
     root, env, _ = server
     return subprocess.run(
         [shutil.which("bash"), str(root / "shell" / script), *args],
+        cwd=cwd,
         env=dict(env, **overrides),
         text=True,
         capture_output=True,
@@ -155,37 +137,77 @@ def calls(server):
     return [json.loads(line) for line in server[2].read_text().splitlines()]
 
 
-def test_pypi_bootstrap_avoids_github_and_reuses_local_uv(server):
-    result = run(server, "check_dependencies.sh", "--rtx5090", MOCK_CURL_FAIL="1")
+def installs(server):
+    return [
+        (name, args)
+        for name, args in calls(server)
+        if args[:3] == ["-m", "pip", "install"]
+    ]
+
+
+def test_installs_into_active_environment_then_reuses_it(server):
+    result = run(server, "check_dependencies.sh", "--rtx5090")
     assert result.returncode == 0, result.stderr
-    commands = calls(server)
-    assert not any(name == "curl" for name, _ in commands)
-    install = next(
-        args for name, args in commands if name == "python3" and "install" in args
-    )
-    assert install[install.index("--target") + 1] == str(
-        server[0] / ".tools/uv-bootstrap"
-    )
-    assert any("visual_training.check_gpu" in args for _, args in commands)
+    commands = installs(server)
+    assert len(commands) == 1
+    name, args = commands[0]
+    assert name == str(Path(server[1]["PATH"]) / "python")
+    assert args[args.index("--requirement") + 1] == "requirements-rtx5090.txt"
+    assert "--retries" in args and "--timeout" in args
+    assert not (server[0] / ".venv").exists()
+    assert not (server[0] / ".tools").exists()
     server[2].write_text("")
     result = run(server, "check_dependencies.sh", "--rtx5090")
     assert result.returncode == 0, result.stderr
-    assert not any(name in ("python3", "curl") for name, _ in calls(server))
+    assert not installs(server)
+    assert any("visual_training.check_gpu" in args for _, args in calls(server))
 
 
-def test_failed_pypi_download_falls_back_to_retried_github(server):
-    result = run(server, "check_dependencies.sh", "--rtx5090", MOCK_PIP_FAIL="1")
+def test_check_only_does_not_install_missing_packages_or_pip(server):
+    result = run(
+        server, "check_dependencies.sh", "--rtx5090", "--check", MOCK_NO_PIP="1"
+    )
+    assert result.returncode == 2
+    assert "Rerun without --check" in result.stderr
+    assert not installs(server)
+    assert not any("ensurepip" in args for _, args in calls(server))
+    assert not (server[0] / ".venv").exists()
+
+
+def test_check_only_validates_imports_and_gpu(server):
+    (server[0] / ".installed").touch()
+    result = run(server, "check_dependencies.sh", "--rtx5090", "--check")
     assert result.returncode == 0, result.stderr
-    curl = next(args for name, args in calls(server) if name == "curl")
-    assert "--retry-all-errors" in curl and "--connect-timeout" in curl
-    assert (server[0] / ".venv/bin/python").is_file()
+    assert any(
+        args[:1] == ["-c"] and "import numpy,scipy" in args[1]
+        for _, args in calls(server)
+    )
+    assert any("visual_training.check_gpu" in args for _, args in calls(server))
+    assert not installs(server)
+
+
+def test_bootstraps_pip_only_in_selected_interpreter(server):
+    result = run(server, "check_dependencies.sh", "--rtx5090", MOCK_NO_PIP="1")
+    assert result.returncode == 0, result.stderr
+    bootstrap = [(name, args) for name, args in calls(server) if "ensurepip" in args]
+    assert len(bootstrap) == 1
+    assert bootstrap[0][0] == installs(server)[0][0]
+    assert not (server[0] / ".venv").exists()
 
 
 @pytest.mark.parametrize(
     "failure",
-    [{"MOCK_PIP_FAIL": "1", "MOCK_CURL_FAIL": "1"}, {"MOCK_PYTHON_FAIL": "1"}],
+    [
+        {"MOCK_INSTALL_FAIL": "1"},
+        {"MOCK_NO_PIP": "1", "MOCK_ENSUREPIP_FAIL": "1"},
+        {"MOCK_INSTALL_NO_EFFECT": "1"},
+        {"MOCK_IMPORT_FAIL": "1"},
+        {"MOCK_TRANSITIVE_FAIL": "1"},
+        {"MOCK_GPU_FAIL": "1"},
+        {"MOCK_PYTHON_VERSION": "3.11"},
+    ],
 )
-def test_failed_setup_never_starts_training_and_records_exit(server, failure):
+def test_failed_prerequisite_never_starts_training_and_records_exit(server, failure):
     log = server[0] / "logs/failed.log"
     result = run(
         server, "train_rtx5090.sh", "--foreground", "--log", str(log), **failure
@@ -194,18 +216,19 @@ def test_failed_setup_never_starts_training_and_records_exit(server, failure):
     assert "TRAINING_STARTED" not in log.read_text()
     assert not any("visual_training.train" in args for _, args in calls(server))
     assert int(Path(str(log) + ".exit_code").read_text()) == result.returncode
-    if "MOCK_CURL_FAIL" in failure:
-        assert "unexpected eof" in log.read_text()
-        assert "python3-pip" in log.read_text()
-    else:
-        assert "LANDING_PYTHON" in log.read_text()
+    assert not (server[0] / ".venv").exists()
 
 
-def test_tmux_job_checks_before_training_preserves_arguments_and_environment(server):
+def test_tmux_job_uses_same_interpreter_and_orders_install_check_train(server):
+    chosen = server[0].parent / "conda environment/bin/python"
+    chosen.parent.mkdir(parents=True)
+    shutil.copy(Path(server[1]["PATH"]) / "python", chosen)
     log = server[0] / "logs/training.log"
     result = run(
         server,
         "train_rtx5090.sh",
+        "--python",
+        str(chosen),
         "--log",
         str(log),
         "--",
@@ -218,13 +241,24 @@ def test_tmux_job_checks_before_training_preserves_arguments_and_environment(ser
     assert "TRAINING_STARTED" in log.read_text()
     assert Path(str(log) + ".exit_code").read_text() == "0\n"
     commands = calls(server)
+    install = next(
+        i
+        for i, (_, args) in enumerate(commands)
+        if args[:3] == ["-m", "pip", "install"]
+    )
     check = next(
         i for i, (_, args) in enumerate(commands) if "visual_training.check_gpu" in args
     )
     training = next(
         i for i, (_, args) in enumerate(commands) if "visual_training.train" in args
     )
-    assert check < training
+    assert install < check < training
+    assert (
+        commands[install][0]
+        == commands[check][0]
+        == commands[training][0]
+        == str(chosen)
+    )
     assert commands[training][1][-4:] == [
         "--data-root",
         "/data/landing images",
@@ -233,52 +267,64 @@ def test_tmux_job_checks_before_training_preserves_arguments_and_environment(ser
     ]
 
 
-def test_duplicate_tmux_session_is_not_started(server):
-    result = run(server, "train_rtx5090.sh", MOCK_SESSION_EXISTS="1")
-    assert result.returncode == 2
-    assert "Session already exists" in result.stderr
-    assert not any(name == "python3" for name, _ in calls(server))
-    assert not (server[0] / "outputs/logs").exists()
+@pytest.mark.parametrize("selector", ["option", "environment", "python3_fallback"])
+def test_interpreter_selection_and_relative_paths(server, selector):
+    binary = Path(server[1]["PATH"])
+    args, env = [], {}
+    if selector == "option":
+        args = ["--python", "bin/python3"]
+        env = {"LANDING_PYTHON": "/invalid/should-not-be-used"}
+    elif selector == "environment":
+        env = {"LANDING_PYTHON": str(binary / "python3")}
+    else:
+        (binary / "python").unlink()
+    result = run(
+        server, "check_dependencies.sh", "--rtx5090", *args, cwd=binary.parent, **env
+    )
+    assert result.returncode == 0, result.stderr
+    assert installs(server)[0][0] == str(binary / "python3")
 
 
-def test_default_log_names_are_unique_and_persist_after_completion(server):
-    for _ in range(2):
-        result = run(server, "train_rtx5090.sh")
-        assert result.returncode == 0, result.stderr
-    logs = list((server[0] / "outputs/logs").glob("rtx5090_*.log"))
-    assert len(logs) == 2
-    for log in logs:
-        assert "TRAINING_STARTED" in log.read_text()
-        assert Path(str(log) + ".exit_code").read_text() == "0\n"
+def test_unused_project_venv_is_never_selected_or_modified(server):
+    old = server[0] / ".venv/bin/python"
+    executable(old, "raise SystemExit('Old project Python must not run')\n")
+    before = old.read_bytes()
+    result = run(server, "train_rtx5090.sh", "--foreground")
+    assert result.returncode == 0, result.stderr
+    assert old.read_bytes() == before
+    assert all(name != str(old) for name, _ in calls(server))
 
 
 @pytest.mark.parametrize(
     "profile,version",
     [(["--rtx5090"], "3.12"), (["--without-blender", "--without-matlab"], "3.11")],
 )
-def test_installer_selects_python_for_profile(server, profile, version):
+def test_profile_checks_python_without_creating_environment(server, profile, version):
     result = run(server, "check_dependencies.sh", *profile)
     assert result.returncode == 0, result.stderr
-    commands = calls(server)
-    creation = next(args for _, args in commands if args[:1] == ["venv"])
-    assert creation[creation.index("--python") + 1] == version
     check = next(
         args
-        for _, args in commands
+        for _, args in calls(server)
         if args[:1] == ["-c"] and "expected = tuple" in args[1]
     )
     assert check[-1] == version
+    assert not (server[0] / ".venv").exists()
 
 
-def test_existing_wrong_python_is_preserved_and_training_stops(server):
-    root, env, _ = server
-    python = root / ".venv/bin/python"
-    python.parent.mkdir(parents=True)
-    shutil.copy(env["MOCK_PYTHON"], python)
-    before = python.read_bytes()
-    result = run(server, "train_rtx5090.sh", "--foreground", MOCK_VENV_VERSION="3.11")
-    assert result.returncode != 0
-    assert "expected Python 3.12" in result.stdout
-    assert python.read_bytes() == before
-    assert not any("visual_training.train" in args for _, args in calls(server))
-    assert not any(args[:1] == ["venv"] for _, args in calls(server))
+def test_duplicate_tmux_session_is_not_started(server):
+    result = run(server, "train_rtx5090.sh", MOCK_SESSION_EXISTS="1")
+    assert result.returncode == 2
+    assert "Session already exists" in result.stderr
+    assert not installs(server)
+    assert not (server[0] / "outputs/logs").exists()
+
+
+def test_default_logs_are_unique_and_record_training_failure(server):
+    for _ in range(2):
+        result = run(server, "train_rtx5090.sh", MOCK_TRAIN_EXIT="7")
+        assert result.returncode == 0, result.stderr  # tmux launch succeeded
+    logs = list((server[0] / "outputs/logs").glob("rtx5090_*.log"))
+    assert len(logs) == 2
+    for log in logs:
+        assert "TRAINING_STARTED" in log.read_text()
+        assert Path(str(log) + ".exit_code").read_text() == "7\n"
