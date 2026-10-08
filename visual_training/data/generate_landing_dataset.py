@@ -202,7 +202,9 @@ def _cpu_image(cal, pose, rng, marker, weather, mount, primitives):
     return image, mask
 
 
-def render_dataset(config, plan, output, renderer="blender", preview=False):
+def render_dataset(
+    config, plan, output, renderer="blender", preview=False, write_splits=True
+):
     root = Path(output).resolve()
     paths = {name: [] for name in ["train", "val", "test"]}
     summary = []
@@ -402,7 +404,7 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
                 ),
                 flush=True,
             )
-    if not preview:
+    if not preview and write_splits:
         for split, labels in paths.items():
             if not labels:
                 raise ValueError(f"empty {split} split")

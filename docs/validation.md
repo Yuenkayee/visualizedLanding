@@ -124,3 +124,13 @@ Ruff F/E9、格式、Python 编译、shell 语法及 Git whitespace 检查通过
 20 项脚本集成测试通过，覆盖当前 Python 与 python3 回退、参数/环境变量优先级、含空格和相对解释器路径、缺包安装与重复执行复用、仅检查不安装、pip 缺失引导、安装/导入/依赖/GPU/Python 版本失败停止、旧项目环境不被自动选中或修改、tmux 陈旧环境修正、安装→GPU 检查→训练顺序、重复会话拒绝和唯一日志/训练失败退出码。安装器、Python 和 tmux 在这些测试中使用受控替身，不连接服务器、不下载 CUDA 包。
 
 另显式指定本机已有 Python 3.11.16 环境，实际执行默认 profile 的只读版本、模块导入与项目传递依赖检查通过。shell 语法、Ruff F/E9、格式和 Git whitespace 检查通过。本次改动集中在安装/启动脚本，未重复模型训练回归，也未在真实 RTX 5090 或 tmux 服务上执行新入口。
+
+### 服务器多相机数据生成入口（2026-10-08）
+
+`generate_multi_camera_dataset.sh` 改用所选现有 Python；生产渲染使用官方便携 Blender 4.5.3 LTS、自带 Python 3.11 和独立渲染依赖目录。新增四包精确锁 `requirements-render.txt`，不向 Python 3.12 训练环境安装 bpy。下载含重试、SHA256 校验和安全解压；启动明确选择 Cycles 设备，实际小图渲染通过后才规划数据。Blender 的 Python 异常通过 `--python-exit-code 1` 传递。全套四视角和 LiDAR 完成后才发布三个 split，已有数据索引拒绝覆盖。
+
+Python 3.12.14 下相关回归共 56 项通过（`test_render_runtime.py`、`test_training_shell.py`、`test_multi_camera.py`、`test_landing_dataset.py`）。包括解释器路径传递、默认无参数启动、跨 Python ABI 隔离、嵌入式解释器安装目标、下载中断/损坏校验、解压路径逃逸拒绝、仅启用指定 GPU、GPU 探针失败阻断生成、单路相机完成后故障不发布 split、完整数据训练加载和覆盖保护。设备枚举及 Linux 安装器使用替身验证，不代表真实 NVIDIA 驱动测试。
+
+实际使用 Python 3.12 shell 入口生成 72 张简化 CPU 图及 18 个同步图像组。另通过临时安装的 macOS bpy **4.5.3 LTS** 实际执行 Cycles CPU 探针和完整小型数据生成：72 张 RGB/mask/标注、18 个图像组，train/val/test 各 24 张，全部由 Python 3.12 / PyTorch 2.8 的 `HDataset` 成功读取，航次互斥。再实际渲染晴朗/雾/眩光/夜间/夜雾 × 三阶段 × 四相机共 60 张预览，并目视检查；预览不发布训练 split。测试采用缩短轨迹、96×72 / 160×120、1 sample 和较小海面网格，仅检查渲染与数据合同兼容性，不作为训练质量样例。macOS 沙箱内的 Blender Metal 初始化会崩溃，实际 CPU 渲染在获准的沙箱外执行。
+
+未执行全量 43,200 张渲染或重新训练模型；本机无 NVIDIA 设备，也未运行 Linux 便携 Blender 二进制。服务器需执行 `--setup-only` 确认真实 OptiX/CUDA 渲染，再进行正式生成。用户提供的 RTX PRO 6000 Blackwell / PyTorch GPU 检查通过记录不能代替此项检查。

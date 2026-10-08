@@ -36,7 +36,7 @@ python -m visual_training.export_model
 
 默认数据生成器是快速 CPU 针孔投影，提供训练和端到端检查用的简化图像。按**完整序列**划分 train/val/test，至少需要三个独立序列。20 个 epoch 是可调参数，训练完成不代表已达到真实图像精度；应结合独立 Blender/真实数据评估。
 
-三维护卫舰渲染（现有 Blender shell 包装脚本仍使用 `.venv` 路径；使用它们时需自行准备并激活 Python 3.11 的项目环境，RTX 5090 训练不需要此步骤）：
+三维护卫舰渲染（旧 `render_sequence.sh` 和单相机 `generate_landing_dataset.sh` 仍使用 `.venv` 路径；下方多相机生成入口已支持服务器现有 Python 环境）：
 
 ```bash
 bash shell/render_sequence.sh --frames 30 --sequence-id sea_001
@@ -93,9 +93,12 @@ python -m visual_training.train --config configs/landing_training.yaml
 
 ```bash
 bash shell/generate_multi_camera_dataset.sh --plan-only
+bash shell/generate_multi_camera_dataset.sh --setup-only
 bash shell/generate_multi_camera_dataset.sh
-.venv/bin/python -m visual_training.train --config configs/multi_camera_training.yaml
+python -m visual_training.train --config configs/multi_camera_training.yaml
 ```
+
+多相机脚本使用当前 Python（可选 `--python`），在 Linux x86_64 自动下载校验 Blender 4.5.3 LTS，并把锁定渲染依赖装入独立 `.tools/` 目录，不创建 `.venv` 或改动训练 PyTorch。默认 OptiX GPU，实际小图渲染检查通过后才生成数据。`--setup-only` 只安装检查；`--preview`、`--plan-only` 不产生训练 split。完整生成后才可训练；RTX PRO 6000 / RTX 5090 的服务器步骤与 tmux 命令见 [服务器训练说明](docs/rtx5090_training.md#在服务器直接生成训练数据)。
 
 默认规划 60 航次、43,200 张图，完整航次分组并包含偏心触舰样本。本次已验证小型生成/训练、同步回放和四视角 Blender 预览，正式全量生成和训练需要运行上述命令。采样轨迹中至少一路可见 H 中心的比例为 100%，末端至少一路四角齐全的航次平均比例约 89.98%；当前版本尚无跨视角部分关键点联合 PnP，不能保证每帧都有有效导航。配置、回放/闭环命令及验证限制见 [多相机实现说明](docs/multi_camera_navigation.md)，效果见 [四视角预览](output/figure/multi_camera_training_preview.png)。
 

@@ -322,19 +322,38 @@ def generate_lidar_and_bundles(config, root, indexes, views):
         write_json(root / "bundles" / f"{sequence}.json", bundles)
 
 
-def generate(config, output, renderer="blender", plan_only=False, preview=False):
+def generate(
+    config,
+    output,
+    renderer="blender",
+    plan_only=False,
+    preview=False,
+    render_runtime=None,
+):
     root = Path(output).resolve()
+    # Do not overwrite a completed dataset with a preview or a partially rendered rig.
+    if (root / "splits").exists():
+        raise FileExistsError(
+            f"{root}/splits already exists. Choose a new --output directory; "
+            "existing training data will not be overwritten."
+        )
+    print(json.dumps(dict(event="planning_started", output=str(root))), flush=True)
     views, configs, summary = plan_multi_dataset(config, root)
+    print(json.dumps(dict(event="planning_complete", **summary)), flush=True)
     if plan_only:
         return summary
     indexes = []
     for key, entries in views.items():
-        report = render_dataset(configs[key], entries, root, renderer, preview)
+        print(json.dumps(dict(event="camera_started", camera=key)), flush=True)
+        report = render_dataset(
+            configs[key], entries, root, renderer, preview, write_splits=False
+        )
         indexes.extend(report["frames_index"])
     groups = {}
     for item in indexes:
         groups.setdefault(item["bundle_id"], []).append(item)
     generate_lidar_and_bundles(config, root, indexes, views)
+    split_paths = {}
     if not preview:
         for split in ("train", "val", "test"):
             paths = [
@@ -348,7 +367,9 @@ def generate(config, output, renderer="blender", plan_only=False, preview=False)
                 for x in indexes
                 if x["split"] == split
             ]
-            write_json(root / "splits" / f"{split}.json", paths)
+            if not paths:
+                raise ValueError(f"empty {split} split")
+            split_paths[split] = paths
     report = dict(
         renderer=renderer,
         preview_only=preview,
@@ -361,9 +382,17 @@ def generate(config, output, renderer="blender", plan_only=False, preview=False)
         ),
         frames_index=indexes,
         planning=summary,
+        render_runtime=render_runtime,
+        split_image_counts={name: len(paths) for name, paths in split_paths.items()},
     )
     write_json(root / "multi_dataset_report.json", report)
     write_json(root / "dataset_report.json", report)
+    if split_paths:
+        # Publish all three indexes only after all views and LiDAR bundles succeed.
+        staging = root / ".splits_pending"
+        for name, paths in split_paths.items():
+            write_json(staging / f"{name}.json", paths)
+        staging.rename(root / "splits")
     if preview:
         tiles = []
         for bundle, items in sorted(groups.items()):
@@ -392,7 +421,7 @@ def generate(config, output, renderer="blender", plan_only=False, preview=False)
     return {k: v for k, v in report.items() if k != "frames_index"}
 
 
-def main(argv=None):
+def main(argv=None, render_runtime=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", default="configs/multi_camera_dataset.yaml")
     p.add_argument("--output")
@@ -415,7 +444,14 @@ def main(argv=None):
         c["render"]["samples"] = a.samples
     print(
         json.dumps(
-            generate(c, a.output or c["output"], a.renderer, a.plan_only, a.preview),
+            generate(
+                c,
+                a.output or c["output"],
+                a.renderer,
+                a.plan_only,
+                a.preview,
+                render_runtime=render_runtime,
+            ),
             indent=2,
         )
     )

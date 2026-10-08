@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT"
-for arg in "$@"; do
-  if [[ "$arg" == '--plan-only' || "$arg" == cpu ]]; then
-    exec .venv/bin/python -m visual_training.data.generate_multi_camera_dataset "$@"
-  fi
+source "$ROOT/shell/python_environment.sh"
+PYTHON_OVERRIDE=""
+ARGS=()
+while (($#)); do
+  case "$1" in
+    --python)
+      if (($# < 2)); then echo '--python needs a path' >&2; exit 2; fi
+      PYTHON_OVERRIDE="$2"; shift 2 ;;
+    --python=*) PYTHON_OVERRIDE="${1#*=}"; shift ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
 done
-if command -v blender >/dev/null 2>&1; then BLENDER="$(command -v blender)";
-elif [[ -x /Applications/Blender.app/Contents/MacOS/Blender ]]; then BLENDER=/Applications/Blender.app/Contents/MacOS/Blender;
-else exec .venv/bin/python -m visual_training.data.generate_multi_camera_dataset "$@"; fi
-export LANDING_SITE_PACKAGES="$(.venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("platlib"))')"
-export LANDING_DATASET_MODULE=visual_training.data.generate_multi_camera_dataset
-exec "$BLENDER" --background --python visual_training/data/blender_landing_entry.py -- "$@"
+# Resolve before cd, so relative executable paths refer to the caller's directory.
+resolve_landing_python "$PYTHON_OVERRIDE"
+cd "$ROOT"
+echo "Launcher Python: $LANDING_PYTHON"
+exec "$LANDING_PYTHON" -u -m visual_training.data.blender_runtime ${ARGS[@]+"${ARGS[@]}"}

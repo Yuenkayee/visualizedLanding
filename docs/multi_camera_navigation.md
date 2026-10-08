@@ -71,26 +71,29 @@ multi_dataset_report.json         # 渲染结果及图像组索引
 
 ## 运行
 
-所有命令在仓库根目录执行，使用现有锁定依赖即可。
+所有命令在仓库根目录执行。多相机生成脚本使用当前 Python，自动准备独立的 Blender 4.5 LTS 及锁定渲染依赖，无需 `.venv`。Linux 默认使用 OptiX；其他平台需通过 `--blender` 指定 Blender 4.5，并选择可用的 `--cycles-device`（如 macOS 的 METAL 或 CPU）。
 
-Ubuntu 22.04 / RTX 5090 使用 `shell/check_dependencies.sh --rtx5090` 和 `configs/multi_camera_training_rtx5090.yaml`，启用 CUDA 12.8、BF16 及并行加载；安装和数据迁移步骤见 [服务器训练说明](rtx5090_training.md)。下方 CPU 配置保留作小型执行检查。
+Ubuntu 22.04 / RTX 5090 或 RTX PRO 6000 Blackwell 使用 `shell/check_dependencies.sh --rtx5090` 和 `configs/multi_camera_training_rtx5090.yaml`，启用 CUDA 12.8、BF16 及并行加载；渲染安装、GPU 检查、tmux 数据生成和数据迁移步骤见 [服务器训练说明](rtx5090_training.md)。下方 CPU 配置保留作小型执行检查。
 
 ```bash
 # 全量轨迹/覆盖规划，无需渲染
 bash shell/generate_multi_camera_dataset.sh --plan-only
+
+# 首次安装渲染依赖并检查 GPU（不生成训练集）
+bash shell/generate_multi_camera_dataset.sh --setup-only
 
 # 查看四视角预览（五类天气 × 三阶段，共 60 图）
 bash shell/generate_multi_camera_dataset.sh --preview --width 640 --samples 8 --output data/multi_camera_preview
 
 # 正式 Blender 数据（较耗时），随后训练共享网络
 bash shell/generate_multi_camera_dataset.sh
-.venv/bin/python -m visual_training.train --config configs/multi_camera_training.yaml
-.venv/bin/python -m visual_training.evaluate --root data/multi_camera --checkpoint visual_training/checkpoints/multi_camera/best.pt --image-size 512 --output outputs/metrics/multi_camera_vision.json
-.venv/bin/python -m visual_training.export_model --checkpoint visual_training/checkpoints/multi_camera/best.pt --output visual_training/checkpoints/multi_camera/h_detector.onnx --image-size 512
+python -m visual_training.train --config configs/multi_camera_training.yaml
+python -m visual_training.evaluate --root data/multi_camera --checkpoint visual_training/checkpoints/multi_camera/best.pt --image-size 512 --output outputs/metrics/multi_camera_vision.json
+python -m visual_training.export_model --checkpoint visual_training/checkpoints/multi_camera/best.pt --output visual_training/checkpoints/multi_camera/h_detector.onnx --image-size 512
 
 # CPU 小型数据/训练执行检查
 bash shell/generate_multi_camera_dataset.sh --renderer cpu --sorties-per-weather 3 --frames-per-stage 3 --width 320 --output data/multi_camera_smoke
-.venv/bin/python -m visual_training.train --config configs/multi_camera_training.yaml --data-root data/multi_camera_smoke --output visual_training/checkpoints/multi_camera_smoke --image-size 64 --epochs 1
+python -m visual_training.train --config configs/multi_camera_training.yaml --data-root data/multi_camera_smoke --output visual_training/checkpoints/multi_camera_smoke --image-size 64 --epochs 1
 ```
 
 评估同时提供相机、阶段、天气分组，关键点可见性 accuracy/precision/recall，以及图像组“至少一路预测四角可用”的误报/漏报数量。图像组可见性指标不等价于定位正确率；必须进一步评估 NED 距离误差、健康比例、失效时长及切换时的误差变化。中距 H 在缩放图像中很小，应根据实测目标像素尺度选择训练分辨率或后续加入 ROI 放大。

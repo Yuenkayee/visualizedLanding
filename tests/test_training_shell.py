@@ -20,7 +20,12 @@ def executable(path, source):
 def server(tmp_path):
     root = tmp_path / "server project"
     (root / "shell").mkdir(parents=True)
-    for name in ("check_dependencies.sh", "train_rtx5090.sh", "python_environment.sh"):
+    for name in (
+        "check_dependencies.sh",
+        "train_rtx5090.sh",
+        "python_environment.sh",
+        "generate_multi_camera_dataset.sh",
+    ):
         shutil.copy(Path("shell") / name, root / "shell" / name)
     binary = tmp_path / "bin"
     binary.mkdir()
@@ -143,6 +148,38 @@ def installs(server):
         for name, args in calls(server)
         if args[:3] == ["-m", "pip", "install"]
     ]
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_dataset_launcher_uses_current_python_without_venv(server, explicit):
+    args = ["--renderer", "cpu", "--output", "/data/images with spaces"]
+    chosen = str(Path(server[1]["PATH"]) / "python")
+    if explicit:
+        chosen = str(server[0].parent / "selected python")
+        shutil.copy(Path(server[1]["PATH"]) / "python", chosen)
+        args += ["--python", "./selected python"]
+    result = run(
+        server, "generate_multi_camera_dataset.sh", *args, cwd=server[0].parent
+    )
+    assert result.returncode == 0, result.stderr
+    launch = calls(server)[-1]
+    assert launch[0] == chosen
+    assert launch[1] == [
+        "-u",
+        "-m",
+        "visual_training.data.blender_runtime",
+        "--renderer",
+        "cpu",
+        "--output",
+        "/data/images with spaces",
+    ]
+    assert not (server[0] / ".venv").exists()
+
+
+def test_dataset_default_launch_with_no_options(server):
+    result = run(server, "generate_multi_camera_dataset.sh")
+    assert result.returncode == 0, result.stderr
+    assert calls(server)[-1][1] == ["-u", "-m", "visual_training.data.blender_runtime"]
 
 
 def test_installs_into_active_environment_then_reuses_it(server):
