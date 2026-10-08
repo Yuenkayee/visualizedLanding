@@ -15,12 +15,18 @@ import tarfile
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = "4.5.3"
 ARCHIVE = f"blender-{VERSION}-linux-x64.tar.xz"
 URL = f"https://download.blender.org/release/Blender4.5/{ARCHIVE}"
+DOWNLOAD_URLS = (
+    URL,
+    f"https://mirrors.nju.edu.cn/blender/release/Blender4.5/{ARCHIVE}",
+    f"https://mirrors.ocf.berkeley.edu/blender/release/Blender4.5/{ARCHIVE}",
+)
 SHA256 = "975c58fcb244273838534bba771e64ad87739216b0f9b39a888531a49a72d845"
 LOCK = ROOT / "requirements-render.txt"
 ENTRY = ROOT / "visual_training/data/blender_multi_camera_entry.py"
@@ -46,44 +52,83 @@ def run(command, **kwargs):
     return subprocess.run([str(x) for x in command], check=True, **kwargs)
 
 
-def download_archive(path):
-    """Retry interrupted HTTPS transfers; publish only a checksum-verified file."""
-    if path.exists():
-        with path.open("rb") as cached:
-            if hashlib.file_digest(cached, "sha256").hexdigest() == SHA256:
-                return
+def archive_matches(path):
+    if not path.is_file():
+        return False
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest() == SHA256
+
+
+def https_url(value):
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise argparse.ArgumentTypeError("Blender download URL must be an https:// URL")
+    return value
+
+
+def download_archive(path, urls=None):
+    """Try mirrors on permanent errors, retry transient errors, and verify SHA256."""
+    if archive_matches(path):
+        print(f"Using verified Blender archive: {path}", flush=True)
+        return
     partial = path.with_suffix(path.suffix + ".part")
-    for attempt in range(1, 6):
-        try:
-            print(f"Downloading {URL} (attempt {attempt}/5)", flush=True)
-            digest = hashlib.sha256()
-            with (
-                urllib.request.urlopen(URL, timeout=90) as source,
-                partial.open("wb") as dest,
-            ):
-                while chunk := source.read(1024 * 1024):
-                    dest.write(chunk)
-                    digest.update(chunk)
-            if digest.hexdigest() != SHA256:
-                raise ValueError("Blender archive SHA256 mismatch; refusing to extract")
-            partial.replace(path)
-            return
-        except (
-            OSError,
-            http.client.HTTPException,
-            urllib.error.URLError,
-            ValueError,
-        ) as error:
-            if attempt == 5:
-                raise RuntimeError(
-                    f"Blender download failed: {error}. Retry this command, or download "
-                    f"{URL} separately and pass --blender /path/to/blender."
-                ) from error
-            print(f"Download interrupted: {error}; retrying", flush=True)
-            time.sleep(min(2 ** (attempt - 1), 8))
+    failures = []
+    for url in urls if urls is not None else DOWNLOAD_URLS:
+        https_url(url)
+        request = urllib.request.Request(
+            url, headers={"User-Agent": "visualizedLanding/0.1 BlenderInstaller"}
+        )
+        for attempt in range(1, 4):
+            try:
+                print(f"Downloading {url} (attempt {attempt}/3)", flush=True)
+                digest = hashlib.sha256()
+                with (
+                    urllib.request.urlopen(request, timeout=60) as source,
+                    partial.open("wb") as dest,
+                ):
+                    while chunk := source.read(1024 * 1024):
+                        dest.write(chunk)
+                        digest.update(chunk)
+                if digest.hexdigest() != SHA256:
+                    raise ValueError(
+                        "Blender archive SHA256 mismatch; refusing to extract"
+                    )
+                partial.replace(path)
+                print(f"Blender archive SHA256 verified: {path}", flush=True)
+                return
+            except (
+                OSError,
+                http.client.HTTPException,
+                urllib.error.URLError,
+                ValueError,
+            ) as error:
+                # An HTML block page or a wrong archive will not improve on retry.
+                permanent = isinstance(error, ValueError) or (
+                    isinstance(error, urllib.error.HTTPError)
+                    and 400 <= error.code < 500
+                    and error.code not in (408, 429)
+                )
+                if permanent or attempt == 3:
+                    failures.append(f"{url}: {error}")
+                    print(
+                        f"Download source failed: {error}; trying next source if available",
+                        flush=True,
+                    )
+                    break
+                print(
+                    f"Download interrupted: {error}; retrying this source", flush=True
+                )
+                time.sleep(2 ** (attempt - 1))
+    raise RuntimeError(
+        "Blender download failed from all configured sources:\n"
+        + "\n".join(failures)
+        + f"\nDownload {ARCHIVE} on another machine, copy it to this server and pass "
+        "--blender-archive /path/to/the.tar.xz, or use --blender-download-url HTTPS_URL "
+        "for a reachable mirror. An extracted installation can use --blender /path/to/blender."
+    )
 
 
-def portable_blender(tools_dir):
+def portable_blender(tools_dir, *, archive_path=None, download_url=None):
     if (platform.system(), platform.machine()) != ("Linux", "x86_64"):
         raise RuntimeError(
             "Automatic Blender installation supports Linux x86_64. "
@@ -92,8 +137,19 @@ def portable_blender(tools_dir):
     folder = ARCHIVE.removesuffix(".tar.xz")
     executable = tools_dir / folder / "blender"
     if not executable.is_file():
-        archive = tools_dir / ARCHIVE
-        download_archive(archive)
+        if archive_path:
+            archive = Path(archive_path).expanduser().resolve()
+            if not archive.is_file():
+                raise FileNotFoundError(f"Local Blender archive not found: {archive}")
+            if not archive_matches(archive):
+                raise RuntimeError(
+                    f"Blender archive SHA256 mismatch: {archive}. Expected {ARCHIVE}, "
+                    f"SHA256={SHA256}; refusing to extract."
+                )
+            print(f"Using verified local Blender archive: {archive}", flush=True)
+        else:
+            archive = tools_dir / ARCHIVE
+            download_archive(archive, [download_url] if download_url else None)
         with tempfile.TemporaryDirectory(prefix="extract-", dir=tools_dir) as staging:
             with tarfile.open(archive) as bundle:
                 bundle.extractall(staging, filter="data")
@@ -213,10 +269,21 @@ def main(argv=None):
             "CPU renderer is simplified test imagery; use Blender for training."
         ),
     )
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument(
         "--blender",
         default=os.environ.get("LANDING_BLENDER"),
         help="existing Blender 4.5 executable; default downloads pinned 4.5.3 on Linux x86_64",
+    )
+    source.add_argument(
+        "--blender-archive",
+        type=Path,
+        help=f"local {ARCHIVE}; verify SHA256 and extract without downloading Blender",
+    )
+    source.add_argument(
+        "--blender-download-url",
+        type=https_url,
+        help="use this archive URL instead of default mirrors; the fixed SHA256 still applies",
     )
     parser.add_argument(
         "--cycles-device", choices=["OPTIX", "CUDA", "CPU", "METAL"], default="OPTIX"
@@ -235,6 +302,9 @@ def main(argv=None):
     parser.add_argument("--renderer", choices=["blender", "cpu"], default="blender")
     parser.add_argument("--plan-only", action="store_true")
     args, forwarded = parser.parse_known_args(argv)
+    # Explicit installation options take precedence over an existing environment hint.
+    if args.blender_archive or args.blender_download_url:
+        args.blender = None
     if args.gpu_index < 0:
         parser.error("--gpu-index must be nonnegative")
     forwarded += ["--renderer", args.renderer]
@@ -252,7 +322,11 @@ def main(argv=None):
             if not executable:
                 raise RuntimeError(f"Cannot execute Blender: {args.blender}")
         else:
-            executable = portable_blender(tools_dir)
+            executable = portable_blender(
+                tools_dir,
+                archive_path=args.blender_archive,
+                download_url=args.blender_download_url,
+            )
         info = blender_info(executable)
         site = tools_dir / "blender-4.5-py311-site"
         ensure_dependencies(info["executable"], site)

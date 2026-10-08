@@ -29,7 +29,9 @@ def test_plan_and_cpu_do_not_require_blender(monkeypatch, options):
 
 def test_blender_launch_isolates_python_and_propagates_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime, "ROOT", tmp_path)
-    monkeypatch.setattr(runtime, "portable_blender", lambda p: "/portable/blender")
+    monkeypatch.setattr(
+        runtime, "portable_blender", lambda p, **kw: "/portable/blender"
+    )
     monkeypatch.setattr(
         runtime, "blender_info", lambda p: {"executable": "/embedded/python3.11"}
     )
@@ -146,10 +148,147 @@ def test_bad_archive_never_published(monkeypatch, tmp_path):
     assert not path.exists()
 
 
+@pytest.mark.parametrize("status", [403, 404])
+def test_http_denial_immediately_uses_next_mirror(monkeypatch, tmp_path, status):
+    payload = b"verified archive"
+    monkeypatch.setattr(runtime, "SHA256", hashlib.sha256(payload).hexdigest())
+    calls = []
+
+    def response(request, **kwargs):
+        calls.append(request.full_url)
+        assert request.get_header("User-agent").startswith("visualizedLanding/")
+        if len(calls) == 1:
+            raise runtime.urllib.error.HTTPError(
+                request.full_url, status, "denied", {}, None
+            )
+        return io.BytesIO(payload)
+
+    monkeypatch.setattr(runtime.urllib.request, "urlopen", response)
+    monkeypatch.setattr(
+        runtime.time, "sleep", lambda s: pytest.fail("retrying permanent denial")
+    )
+    path = tmp_path / "blender.tar.xz"
+    runtime.download_archive(path)
+    assert calls == list(runtime.DOWNLOAD_URLS[:2])
+    assert path.read_bytes() == payload
+
+
+def test_transient_failure_is_bounded_then_uses_next_mirror(monkeypatch, tmp_path):
+    payload = b"verified archive"
+    monkeypatch.setattr(runtime, "SHA256", hashlib.sha256(payload).hexdigest())
+    calls, delays = [], []
+
+    def response(request, **kwargs):
+        calls.append(request.full_url)
+        if request.full_url == runtime.DOWNLOAD_URLS[0]:
+            raise TimeoutError("connection timed out")
+        return io.BytesIO(payload)
+
+    monkeypatch.setattr(runtime.urllib.request, "urlopen", response)
+    monkeypatch.setattr(runtime.time, "sleep", delays.append)
+    runtime.download_archive(tmp_path / "blender.tar.xz")
+    assert calls == [runtime.DOWNLOAD_URLS[0]] * 3 + [runtime.DOWNLOAD_URLS[1]]
+    assert delays == [1, 2]
+
+
+def test_custom_source_does_not_fall_back_and_reports_offline_option(
+    monkeypatch, tmp_path
+):
+    calls = []
+
+    def response(request, **kwargs):
+        calls.append(request.full_url)
+        raise runtime.urllib.error.HTTPError(request.full_url, 403, "denied", {}, None)
+
+    monkeypatch.setattr(runtime.urllib.request, "urlopen", response)
+    custom = "https://downloads.example.test/blender.tar.xz"
+    with pytest.raises(RuntimeError, match="--blender-archive") as error:
+        runtime.download_archive(tmp_path / "blender.tar.xz", [custom])
+    assert calls == [custom]
+    assert custom in str(error.value) and "403" in str(error.value)
+
+
+def test_local_archive_is_verified_and_installed_without_network(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(runtime.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(runtime, "download_archive", lambda *a: pytest.fail("download"))
+    archive_path = tmp_path / "local download.tar.xz"
+    folder = runtime.ARCHIVE.removesuffix(".tar.xz")
+    with tarfile.open(archive_path, "w:xz") as archive:
+        member = tarfile.TarInfo(f"{folder}/blender")
+        member.size, member.mode = 7, 0o755
+        archive.addfile(member, io.BytesIO(b"blender"))
+    payload = archive_path.read_bytes()
+    monkeypatch.setattr(runtime, "SHA256", hashlib.sha256(payload).hexdigest())
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    executable = runtime.portable_blender(tools, archive_path=archive_path)
+    assert executable.read_bytes() == b"blender"
+    assert executable.stat().st_mode & 0o111
+    assert archive_path.read_bytes() == payload
+    assert not (tools / runtime.ARCHIVE).exists()
+
+
+@pytest.mark.parametrize("exists", [False, True])
+def test_local_bad_archive_fails_without_download_or_extraction(
+    monkeypatch, tmp_path, exists
+):
+    monkeypatch.setattr(runtime.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(runtime.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(runtime, "download_archive", lambda *a: pytest.fail("download"))
+    monkeypatch.setattr(runtime.tarfile, "open", lambda *a: pytest.fail("extract"))
+    archive = tmp_path / "bad.tar.xz"
+    if exists:
+        archive.write_bytes(b"not Blender")
+    with pytest.raises((FileNotFoundError, RuntimeError), match="SHA256|not found"):
+        runtime.portable_blender(tmp_path, archive_path=archive)
+
+
+@pytest.mark.parametrize(
+    "flag,value,key",
+    [
+        ("--blender-archive", "/tmp/offline package.tar.xz", "archive_path"),
+        (
+            "--blender-download-url",
+            "https://downloads.example.test/blender.tar.xz",
+            "download_url",
+        ),
+    ],
+)
+def test_cli_passes_source_options_and_overrides_environment(
+    monkeypatch, tmp_path, flag, value, key
+):
+    monkeypatch.setattr(runtime, "ROOT", tmp_path)
+    monkeypatch.setenv("LANDING_BLENDER", "/old/blender")
+    sources = []
+
+    def portable(directory, **kwargs):
+        sources.append(kwargs)
+        return "/portable/blender"
+
+    monkeypatch.setattr(runtime, "portable_blender", portable)
+    monkeypatch.setattr(
+        runtime, "blender_info", lambda p: {"executable": "/embedded/python3.11"}
+    )
+    monkeypatch.setattr(runtime, "ensure_dependencies", lambda *a: None)
+    monkeypatch.setattr(runtime, "run", lambda *a, **kw: None)
+    runtime.main(["--setup-only", flag, value])
+    assert str(sources[0][key]) == value
+
+
+def test_cli_rejects_insecure_download_url_before_setup(monkeypatch):
+    monkeypatch.setattr(
+        runtime, "portable_blender", lambda *a, **kw: pytest.fail("setup")
+    )
+    with pytest.raises(SystemExit) as error:
+        runtime.main(["--blender-download-url", "http://example.test/blender.tar.xz"])
+    assert error.value.code == 2
+
+
 def test_archive_extraction_rejects_traversal(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime.platform, "system", lambda: "Linux")
     monkeypatch.setattr(runtime.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(runtime, "download_archive", lambda p: None)
+    monkeypatch.setattr(runtime, "download_archive", lambda *a: None)
     with tarfile.open(tmp_path / runtime.ARCHIVE, "w:xz") as archive:
         member = tarfile.TarInfo("../../escaped")
         member.size = 1

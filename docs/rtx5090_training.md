@@ -103,7 +103,25 @@ bash shell/generate_multi_camera_dataset.sh \
 bash shell/generate_multi_camera_dataset.sh --python /root/miniconda3/bin/python
 ```
 
-解释器路径按服务器实际位置调整；省略 `--python` 时采用当前环境，选择顺序同训练脚本。Linux x86_64 首次运行会从 Blender 官方 HTTPS 源下载 **Blender 4.5.3 LTS** 便携版，校验固定 SHA256，并解压至项目 `.tools/`。中断下载自动重试，成功下载的压缩包会复用。无需 sudo，也不会替换系统 Blender 或 NVIDIA 驱动。已有 Blender 4.5 LTS 时可用 `--blender /opt/blender-4.5.3/blender` 跳过下载；其他版本会明确报错。
+解释器路径按服务器实际位置调整；省略 `--python` 时采用当前环境，选择顺序同训练脚本。Linux x86_64 首次运行会依次尝试 Blender 官方源、南京大学和 Berkeley OCF 的 HTTPS 镜像，下载 **Blender 4.5.3 LTS** 便携版，校验固定 SHA256，并解压至项目 `.tools/`。403/404 等永久错误会立即切换来源；网络中断、超时、408/429 或服务端故障每个来源最多尝试三次。压缩包校验不符也会换源，绝不解压未通过校验的文件。成功下载的压缩包会复用。无需 sudo，也不会替换系统 Blender 或 NVIDIA 驱动。已有 Blender 4.5 LTS 时可用 `--blender /opt/blender-4.5.3/blender` 跳过下载；其他版本会明确报错。
+
+出现 `HTTP Error 403: Forbidden` 表示下载请求被站点或中间代理拒绝，尚未开始检查 GPU。仅凭这条日志无法区分出口 IP、代理规则或站点策略。更新脚本后重新运行原命令即可自动换源；也可以只使用服务器可访问的指定镜像：
+
+```bash
+bash shell/generate_multi_camera_dataset.sh \
+  --python /root/miniconda3/bin/python --setup-only \
+  --blender-download-url https://mirrors.nju.edu.cn/blender/release/Blender4.5/blender-4.5.3-linux-x64.tar.xz
+```
+
+`--blender-download-url` 替换默认下载源列表。所有来源仍必须通过项目固定的官方 SHA256，不关闭 HTTPS 证书验证。如果服务器访问所有下载源都失败，在另一台可联网的机器下载同一 Linux x64 压缩包，复制到服务器后执行：
+
+```bash
+bash shell/generate_multi_camera_dataset.sh \
+  --python /root/miniconda3/bin/python --setup-only \
+  --blender-archive /root/downloads/blender-4.5.3-linux-x64.tar.xz
+```
+
+本地包同样验证 SHA256，错误或缺失时停止，不回退联网下载 Blender。路径可替换为实际位置；相对路径以仓库根目录为基准。该选项只省去 Blender 程序包下载，首次安装缺少的 NumPy 等渲染依赖仍需要访问 pip 源。安装成功后无需重复提供来源参数，后续直接复用 `.tools/` 中的 Blender。
 
 Blender 4.5 自带 Python 3.11，渲染用 NumPy/SciPy/OpenCV/PyYAML 按 `requirements-render.txt` 安装到 `.tools/blender-4.5-py311-site/`，使用其内置 Python 选择二进制包。Python 3.12 只负责启动和安装调度；渲染不加载训练环境的 site-packages，不修改已有 PyTorch/CUDA。`.tools/` 是便携程序及渲染包目录，不是 `.venv`。
 
