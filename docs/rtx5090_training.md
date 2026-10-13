@@ -63,7 +63,7 @@ bash shell/train_rtx5090.sh
 tmux attach -t landing_train
 ```
 
-查看时按 `Ctrl+b`，松开后按 `d`，即可离开会话并保持任务运行。任务完成或失败后，会话自动结束，此时查看启动脚本输出的日志路径。tmux 保持 SSH 断开后的进程运行，不提供服务器重启后的自动恢复；现有训练入口也没有断点续训参数。
+查看时按 `Ctrl+b`，松开后按 `d`，即可离开会话并保持任务运行。任务完成或失败后，会话自动结束，此时查看启动脚本输出的日志路径。tmux 保持 SSH 断开后的进程运行，不提供服务器重启后的自动恢复；新版训练器可用 `--resume` 从已完成的 epoch 恢复，见下文。
 
 可以把数据路径、批量、轮数等训练参数放在 `--` 后：
 
@@ -191,7 +191,8 @@ python -m visual_training.train \
 | --- | --- | --- |
 | 图像尺寸 | 512×512 | 保持现有训练尺度 |
 | batch size | 16 | 单卡起始批量，需要在服务器实测显存 |
-| epoch / learning rate | 40 / 0.001 | 沿用现有优化设置 |
+| 最大 epoch / 初始 learning rate | 40 / 0.001 | 验证损失停滞时降低学习率，可提前停止 |
+| scheduler / early stopping | ReduceLROnPlateau / patience=8 | 学习率连续 3 轮无显著改善减半；早停以 0.001 为显著改善阈值 |
 | device / precision | cuda:0 / BF16 | 卷积混合精度；模型参数、关键点坐标和损失使用 FP32 |
 | CPU threads / loader workers | 8 / 8 | 并行读取、缩放和光度增强，worker 随机流独立 |
 | multiprocessing context | spawn | 避免在 CUDA 初始化后 fork 子进程 |
@@ -201,7 +202,7 @@ python -m visual_training.train \
 
 BF16 不使用 FP16 的梯度缩放；若通过 CLI 改为 FP16，训练器会启用 GradScaler。空间 softargmax、分割 Dice 归约和关键点监督使用 FP32，避免低精度坐标网格及大图像的 FP16 求和溢出。此设置保留网络与 checkpoint 接口，不改变导航的 PnP/LiDAR/ESKF 定义。
 
-训练日志包含设备、PyTorch/CUDA 版本、每轮耗时和 CUDA 峰值已分配显存；`history.json` 保存在权重目录。默认输出 `visual_training/checkpoints/multi_camera/{best,last}.pt`，与多相机导航的权重位置一致。随机种子固定数据顺序和增强，但 cuDNN benchmark/TF32 不承诺逐位可复现。
+训练日志包含设备、PyTorch/CUDA 版本、每轮耗时、学习率、分项指标和 CUDA 峰值已分配显存；每 100 batch 输出一次进度，`history.json` 每轮更新。默认输出 `visual_training/checkpoints/multi_camera/{best,last}.pt`，与多相机导航的权重位置一致。新实验若遇到已有权重/历史会拒绝覆盖；使用新 `--output` 或恢复已有实验。随机种子固定数据顺序和增强，但 cuDNN benchmark/TF32 不承诺逐位可复现。
 
 batch=16 是起点，尚未在实际 RTX 5090 上测量吞吐或完整训练显存。若显存不足，先改为 batch=8；若 CPU/存储跟不上、容器共享内存不足或加载进程异常，可降低 worker 数。示例：
 
@@ -212,6 +213,76 @@ python -m visual_training.train \
 ```
 
 服务器 CPU 至少应能提供配置所需的线程和内存；CPU 较少时同时调整 YAML 中的 `threads`。显卡有余量时可实测 batch=24/32，暂不自动增大学习率。512 缩放后中距 H 仍可能很小，GPU 加速不替代小目标定位精度评估。
+
+## 验证损失停滞后的微调
+
+现有日志中，验证损失在第 17 轮达到约 0.6203，之后训练损失继续下降，验证损失却在 0.67–0.70 波动，说明泛化收益已停滞，并有过拟合迹象。原训练器全程固定学习率 0.001，未在平台期自动降速或早停。不能仅凭总损失判定是雾天、关键点、分割还是可见性分支出了问题；相邻帧相关性和完整航次之间的差异也需要分组评估。43,200 张图不等于 43,200 个独立场景，不要打散航次重新划分来人为降低验证损失。
+
+先保留原数据和 `multi_camera/best.pt`，使用新配置微调。在仓库根目录运行：
+
+```bash
+bash shell/train_rtx5090.sh --session landing_finetune -- \
+  --config configs/multi_camera_finetune_rtx5090.yaml \
+  --init-checkpoint visual_training/checkpoints/multi_camera/best.pt
+
+tmux attach -t landing_finetune
+```
+
+脚本仍检查并安装当前 Python 环境中缺少的依赖，不创建 `.venv`。若数据不在默认位置，追加 `--data-root /实际路径/multi_camera`。微调输出到 `visual_training/checkpoints/multi_camera_finetune/`，原权重不覆盖。再次开展新实验须另加 `--output` 指向新目录。该配置要求显式指定 `--init-checkpoint`，缺失时停止，避免误从随机权重开始。
+
+- `--init-checkpoint` 兼容原来的 checkpoint，只加载网络权重，重新建立 AdamW 和学习率调度器。微调第 1 轮是新增训练的第 1 轮，不继承旧的 epoch 编号。
+- 初始学习率由 0.001 降为 **0.0001**；保留 512 分辨率、batch=16、BF16、原损失函数与增强，weight decay 仍为 0.0001。最多新增 **20 轮**。
+- `ReduceLROnPlateau` 的 `patience=2` 表示连续 **3** 轮未超过历史显著最优值 0.001 时，学习率乘 0.5，最低 0.000001。
+- 早停 `patience=8`：连续 8 轮未获得至少约 0.001 的显著改善则结束。保存 `best.pt` 使用严格更低的验证损失，不受 0.001 阈值限制，较小改善也会保存。
+- 更新参数前先跑一次完整验证，打印 `event=baseline, epoch=0`，把旧模型作为新实验的初始 `best.pt`。若微调全程更差，最终 `best.pt` 仍是这份旧权重。原验证设置一致时，基准应接近旧最佳验证损失；若差别很大，先核对权重、split、图像尺寸及数据是否相同。
+
+新日志的 `train_metrics` / `val_metrics` 包括：
+
+| 指标 | 含义 |
+| --- | --- |
+| bce / dice / keypoint / heatmap / visibility | 各项原始损失；总损失 = bce + dice + 10×keypoint + heatmap + visibility |
+| mask_iou | 以 0.5 为阈值，整轮像素累计的 H 分割 IoU |
+| keypoint_error_px | 真实可见关键点的平均欧氏误差，单位是 **512×512 网络输入像素** |
+| keypoint_pck_2px / keypoint_pck_5px | 真实可见关键点误差不超过 2 / 5 输入像素的比例 |
+| visibility_precision / visibility_recall | 可见性预测的精确率 / 召回率，无有效分母时为 null |
+| learning_rate / next_learning_rate | 本轮使用的学习率 / 调度后下一轮使用的学习率 |
+
+损失仍按原来的 batch 损失、样本数加权汇总，以便比较；可见关键点指标按整轮真实可见点数汇总，不筛掉模型漏检的点。日志内 `dice` 是 Dice **损失**，越低越好。像素误差不可直接当作米级导航误差，也不等于 PnP 成功率。
+
+若任务中断，新版 `last.pt` 保存模型、优化器、调度器、混合精度 scaler、最佳损失、早停计数及历史。恢复命令：
+
+```bash
+bash shell/train_rtx5090.sh --session landing_finetune -- \
+  --resume visual_training/checkpoints/multi_camera_finetune/last.pt
+```
+
+`--resume` 恢复 checkpoint 内的配置，忽略 shell 自动传入的默认 `--config`，继续写原目录；如提供 `--epochs 20`，表示该实验总共最多 20 轮，不是再加 20 轮。可调整设备、worker 数和数据根路径；需要改变学习率/损失等实验设置时，应从 `best.pt` 新建微调实验。恢复时校验 best/last 属于同一次实验，并处理两份权重写入之间的中断。原版 checkpoint 不含完整恢复状态，只支持 `--init-checkpoint`。已触发早停的实验不允许用 resume 重置计数；多 worker 的增强随机流不保存，恢复不承诺与不中断训练逐位相同。
+
+比较新旧权重时，先评估 **val split**，按阶段、天气、相机查看原有分组指标。示例：
+
+```bash
+python -m visual_training.evaluate \
+  --root data/multi_camera --split data/multi_camera/splits/val.json \
+  --checkpoint visual_training/checkpoints/multi_camera/best.pt \
+  --image-size 512 --device cuda:0 \
+  --output outputs/metrics/multi_camera_original_val.json
+
+python -m visual_training.evaluate \
+  --root data/multi_camera --split data/multi_camera/splits/val.json \
+  --checkpoint visual_training/checkpoints/multi_camera_finetune/best.pt \
+  --image-size 512 --device cuda:0 \
+  --output outputs/metrics/multi_camera_finetune_val.json
+```
+
+评估入口采用 FP32；与训练 BF16 的数值可略有差异，新旧模型应使用相同评估设置。先固定模型选择，再使用 test split 做最终一次评估，不反复用测试集调参。若低学习率仍无改善，依据分项/分组结果检查困难天气标签、远距离小目标和末端局部可见样本，再针对性调整增强或补充独立航次。不能保证仅靠降学习率达到某个固定 loss 阈值。导航闭环还需验证 PnP、相对位置误差以及视觉失效时的滤波行为。
+
+训练调度和恢复的针对性回归可执行：
+
+```bash
+python -m pytest -q tests/test_training_refinement.py tests/test_gpu_training.py tests/test_training_pipeline.py tests/test_training_shell.py
+```
+
+本次针对上述范围在 macOS / Python 3.12.14 / PyTorch 2.8.0 下验证，共 47 项通过、1 项 NVIDIA 硬件测试跳过。包含旧权重微调、基准模型保留、降学习率与早停、恢复训练、保存中断恢复、损失分项数值一致性，以及 CPU BF16 / spawn / ONNX 兼容性。尚未取得服务器的完整数据和训练权重，未验证微调后的实际精度提升。
 
 ## 评估与导出
 

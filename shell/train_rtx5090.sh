@@ -20,6 +20,8 @@ while [[ $# -gt 0 ]]; do
       echo 'Usage: bash shell/train_rtx5090.sh [--python PATH] [--session NAME] [--foreground] [--log PATH] [-- TRAIN_ARGS...]'
       echo 'Uses the current Python environment (no .venv creation). Installs/checks dependencies before training in tmux.'
       echo 'Example: bash shell/train_rtx5090.sh -- --data-root /data/multi_camera --batch-size 8'
+      echo 'Fine-tune: pass -- --config configs/multi_camera_finetune_rtx5090.yaml --init-checkpoint visual_training/checkpoints/multi_camera/best.pt'
+      echo 'Resume: pass -- --resume visual_training/checkpoints/multi_camera_finetune/last.pt (saved config is restored)'
       exit 0 ;;
     --) shift; break ;;
     *) break ;;

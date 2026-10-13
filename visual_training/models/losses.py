@@ -3,7 +3,12 @@ from torch.nn import functional as F
 
 
 def segmentation_keypoint_loss(
-    output, target, keypoint_weight=10.0, heatmap_weight=1.0, return_metrics=True
+    output,
+    target,
+    keypoint_weight=10.0,
+    heatmap_weight=1.0,
+    return_metrics=True,
+    metrics_as_tensors=False,
 ):
     # Compute reductions and landmark supervision in FP32 under mixed precision.
     logits = output["mask_logits"].float()
@@ -37,10 +42,16 @@ def segmentation_keypoint_loss(
         total = total + visibility_loss
     if not return_metrics:
         return total, {}
-    return total, dict(
-        bce=float(bce.detach()),
-        dice=float(dice.detach()),
-        keypoint=float(kp.detach()),
-        heatmap=float(heat_loss.detach()),
-        visibility=float(visibility_loss.detach()),
-    )
+    metrics = {
+        "bce": bce,
+        "dice": dice,
+        "keypoint": kp,
+        "heatmap": heat_loss,
+        "visibility": visibility_loss,
+    }
+    # Training accumulates on-device; scalar conversion would synchronize CUDA
+    # five times per batch. Preserve the existing public float-metric API.
+    return total, {
+        k: v.detach() if metrics_as_tensors else float(v.detach())
+        for k, v in metrics.items()
+    }
