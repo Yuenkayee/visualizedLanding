@@ -25,6 +25,7 @@ def server(tmp_path):
         "train_rtx5090.sh",
         "python_environment.sh",
         "generate_multi_camera_dataset.sh",
+        "benchmark_training.sh",
     ):
         shutil.copy(Path("shell") / name, root / "shell" / name)
     binary = tmp_path / "bin"
@@ -79,7 +80,7 @@ if args[:1] == ['-c'] and 'import numpy,scipy' in args[1] and os.environ.get('MO
     sys.exit(1)
 if 'visual_training.check_gpu' in args and os.environ.get('MOCK_GPU_FAIL'):
     sys.exit(1)
-if 'visual_training.train' in args:
+if 'visual_training.train' in args or 'visual_training.benchmark' in args:
     for name in ('HTTPS_PROXY', 'CUDA_VISIBLE_DEVICES', 'CONDA_PREFIX', 'PYTHONPATH', 'LD_LIBRARY_PATH', 'PIP_REQUIRE_VIRTUALENV'):
         assert os.environ.get(name) != 'stale', name
     print('TRAINING_STARTED')
@@ -180,6 +181,48 @@ def test_dataset_default_launch_with_no_options(server):
     result = run(server, "generate_multi_camera_dataset.sh")
     assert result.returncode == 0, result.stderr
     assert calls(server)[-1][1] == ["-u", "-m", "visual_training.data.blender_runtime"]
+
+
+@pytest.mark.parametrize("foreground", [False, True])
+def test_benchmark_launcher_checks_dependencies_and_forwards_arguments(
+    server, foreground
+):
+    args = (["--foreground"] if foreground else []) + [
+        "--",
+        "--batch-sizes",
+        "16",
+        "32",
+        "--checkpoint",
+        "/data/weights with spaces/best.pt",
+    ]
+    result = run(server, "benchmark_training.sh", *args)
+    assert result.returncode == 0, result.stderr
+    commands = calls(server)
+    gpu = next(
+        i
+        for i, (_, values) in enumerate(commands)
+        if "visual_training.check_gpu" in values
+    )
+    bench = next(
+        i
+        for i, (_, values) in enumerate(commands)
+        if "visual_training.benchmark" in values
+    )
+    assert gpu < bench
+    assert commands[bench][1][-5:] == [
+        "--batch-sizes",
+        "16",
+        "32",
+        "--checkpoint",
+        "/data/weights with spaces/best.pt",
+    ]
+    assert "visual_training.train" not in commands[bench][1]
+    if not foreground:
+        assert any(
+            name == "tmux" and "landing_benchmark" in values
+            for name, values in commands
+        )
+    assert not (server[0] / ".venv").exists()
 
 
 def test_installs_into_active_environment_then_reuses_it(server):

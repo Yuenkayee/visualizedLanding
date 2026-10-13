@@ -187,6 +187,8 @@ python -m visual_training.train \
 
 ## 训练参数
 
+需要根据实际服务器选择 batch size、worker、CPU 线程和预取参数时，运行 `bash shell/benchmark_training.sh`。它使用真实 train/val 数据进行独立进程筛选和重复测量，并生成推荐训练配置，见 [服务器压力测试说明](training_benchmark.md)。
+
 | 参数 | 初始值 | 用途 |
 | --- | --- | --- |
 | 图像尺寸 | 512×512 | 保持现有训练尺度 |

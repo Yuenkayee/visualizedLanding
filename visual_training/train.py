@@ -93,44 +93,61 @@ def training_device(config):
     return device, precision
 
 
+def process_batch(
+    model, sample, optimizer, scaler, device, precision, config, metrics, training
+):
+    """Shared by training and benchmarking; caller sets model/gradient mode."""
+    sample = {
+        k: v.to(
+            device,
+            non_blocking=device.type == "cuda" and config.get("pin_memory", False),
+        )
+        for k, v in sample.items()
+    }
+    if config.get("channels_last", False):
+        sample["image"] = sample["image"].contiguous(memory_format=torch.channels_last)
+    if training:
+        optimizer.zero_grad(set_to_none=True)
+    dtype = torch.bfloat16 if precision == "bf16" else torch.float16
+    with (
+        torch.autocast(device_type=device.type, dtype=dtype)
+        if precision != "fp32"
+        else nullcontext()
+    ):
+        prediction = model(sample["image"])
+    loss, components = segmentation_keypoint_loss(
+        prediction, sample, metrics_as_tensors=True
+    )
+    if training:
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+        scaler.step(optimizer)
+        scaler.update()
+    metrics.update(prediction, sample, loss, components)
+
+
 def run_epoch(
     model, loader, optimizer, scaler, device, precision, config, epoch, phase
 ):
     training = phase == "train"
     model.train(training)
     metrics = EpochMetrics(device, config.get("image_size", 256))
-    dtype = torch.bfloat16 if precision == "bf16" else torch.float16
-    non_blocking = device.type == "cuda" and config.get("pin_memory", False)
     log_every = int(config.get("log_every_batches", 100))
     started = time.perf_counter()
     with torch.set_grad_enabled(training):
         for step, sample in enumerate(loader, 1):
-            sample = {
-                k: v.to(device, non_blocking=non_blocking) for k, v in sample.items()
-            }
-            if config.get("channels_last", False):
-                sample["image"] = sample["image"].contiguous(
-                    memory_format=torch.channels_last
-                )
-            if training:
-                optimizer.zero_grad(set_to_none=True)
-            with (
-                torch.autocast(device_type=device.type, dtype=dtype)
-                if precision != "fp32"
-                else nullcontext()
-            ):
-                prediction = model(sample["image"])
-            # Keep both supervision and accumulated metrics in FP32 or higher.
-            loss, components = segmentation_keypoint_loss(
-                prediction, sample, metrics_as_tensors=True
+            process_batch(
+                model,
+                sample,
+                optimizer,
+                scaler,
+                device,
+                precision,
+                config,
+                metrics,
+                training,
             )
-            if training:
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-                scaler.step(optimizer)
-                scaler.update()
-            metrics.update(prediction, sample, loss, components)
             if log_every > 0 and step % log_every == 0:
                 print(
                     json.dumps(
