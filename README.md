@@ -1,6 +1,6 @@
 # Visualized Landing / 舰载 H 甲板视觉导航
 
-此仓库实现一个可运行的研究基线：参数化护卫舰/H 甲板建模、RGB 与激光数据生成、分割/关键点训练、平面 PnP、误差状态滤波以及离线传感器闭环。Python 3.11，米/秒/弧度，RGB 图像。`external/` 保持原样，MATLAB 适配层只读取其中的舰船运动模型。
+此仓库实现一个可运行的研究基线：参数化护卫舰/H 甲板建模、RGB 与激光数据生成、分割/关键点训练、平面 PnP、误差状态滤波以及离线传感器闭环。Python 3.11，米/秒/弧度，RGB 图像。相机采用有限带宽稳定云台；导航、训练生成与 `external/innerloop/simu` 接口使用同刻动态外参，见 [云台方案](docs/gimbal_navigation.md)。
 
 ## 安装和检查
 
@@ -35,7 +35,7 @@ bash shell/render_sequence.sh --frames 30 --sequence-id sea_003
 python -m visual_training.data.build_dataset --from-rendered
 ```
 
-`configs/scene.yaml` 控制舰船、H 尺寸、海面、天气和光照。输出 RGB、二值 H mask、可见关键点、位姿真值和 LiDAR `.npz`；场景保存至 `visual_modeling/assets/scenes/frigate_landing.blend`。可用 `--trajectory path.json` 读取真实轨迹（数组，每行含 timestamp、T_deck_camera 和可选 T_world_deck）。外部 GLB/OBJ/Blend 模型可配置 `ship.asset_path`；必须已获授权并预先对齐 +X 船首方向。来源与限制见 [开源资产说明](docs/model_sources.md)。
+`configs/scene.yaml` 控制舰船、H 尺寸、海面、天气和光照。输出 RGB、二值 H mask、可见关键点、位姿真值和 LiDAR `.npz`；场景保存至 `visual_modeling/assets/scenes/frigate_landing.blend`。可用 `--trajectory path.json` 读取真实轨迹（数组，每行含 timestamp、T_deck_camera、动态 T_body_camera、gimbal 编码器样本和可选 T_world_deck）。外部 GLB/OBJ/Blend 模型可配置 `ship.asset_path`；必须已获授权并预先对齐 +X 船首方向。来源与限制见 [开源资产说明](docs/model_sources.md)。
 
 安装了 `bpy` 时，`python -m visual_modeling.blender.render_overview` 生成整艘护卫舰预览；`bash shell/fetch_reference_assets.sh` 可选下载固定提交的 VRX 参考船模及许可证。
 
@@ -59,15 +59,15 @@ MATLAB 后端调用现有 `ship_motion_model`，飞机侧默认仍为受限加�
 
 ## 能力边界
 
-H 图案对称，不能独立确定绝对航向；激光平面不观测水平位置/yaw；目前没有 IMU 输入。滤波使用常速度/角速度模型，测量过期会刹车/悬停。接近甲板时完整 H 超出视场，经典检测会失效，系统安全停止下降；此基线不保证触舰，也不代表真实飞行安全验证。终端阶段需要更宽视场、部分标记模型、额外不对称标记或其他传感器。
+H 图案对称，不能独立确定绝对航向；激光平面不观测水平位置/yaw；导航不融合 IMU；云台控制回路假定有同步机载姿态与舰姿遥测。滤波在机体参考点使用常速度、相机常角速度模型，测量过期会刹车/悬停。视场不足、遮挡或云台限幅使完整 H 丢失时，经典检测会失效，系统停止下降；此基线不保证触舰，也不代表真实飞行安全验证。终端阶段需要更宽视场、部分标记模型、额外不对称标记或其他传感器。
 
 所有运行命令在仓库根目录执行。数据、权重、日志和 `.blend` 是运行产物，不纳入 Git；`.gitkeep` 保留目录结构。
 
 ## 三阶段进近、等待窗口、触舰训练数据
 
-使用 `configs/landing_dataset.yaml` 和 `shell/generate_landing_dataset.sh` 生成轮底中心从后方 50 m / 高 50 m 到正上方 5 m、悬停等待、再下降至 0 m 的航次。固定相机安装、舰船直线航行、空气尾流运动残差和五种天气均由同一轨迹生成；每个航次保持在同一个 train/val/test 集合。
+使用 `configs/landing_dataset.yaml` 和 `shell/generate_landing_dataset.sh` 生成轮底中心从后方 50 m / 高 50 m 到正上方 5 m、悬停等待、再下降至 0 m 的航次。固定相机安装位置、有限带宽云台稳定、舰船直线航行、空气尾流运动残差和五种天气均由同一轨迹生成；每个航次保持在同一个 train/val/test 集合。
 
-直升机三轴姿态主波动按仿真数量级设置：第一阶段单边幅值从约 0.6 rad 衰减至 0.05 rad，第二阶段暂用 0.05 rad，第三阶段升至约 0.3 rad；周期 2.7–3.3 s，20 Hz 稠密轨迹、连续相位和平滑阶段切换。保留大姿态引起的出画与遮挡样本，`planning_report.json` 汇总几何可见率及最长不可见时长。
+直升机三轴姿态主波动按仿真数量级设置：第一阶段单边幅值从约 0.6 rad 衰减至 0.05 rad，第二阶段暂用 0.05 rad，第三阶段升至约 0.3 rad；周期 2.7–3.3 s，20 Hz 稠密轨迹、连续相位和平滑阶段切换。保留云台残余运动、限幅、出画与机体遮挡样本，`planning_report.json` 汇总几何可见率及最长不可见时长。
 
 ```bash
 bash shell/generate_landing_dataset.sh --plan-only

@@ -29,6 +29,9 @@ from visual_modeling.blender.export_annotations import (
 from visual_modeling.sensors.landing_camera import apply_landing_effects
 from visual_training.data.build_dataset import synthetic_frame
 from navigation.common.frames import invert, transform_points
+from navigation.common.contracts import GimbalSample
+from visual_modeling.sensors.lidar_raycast import raycast_deck, raycast_scene, beam_directions
+from visual_modeling.sensors.lidar_degradation import degrade_lidar
 from visual_modeling.sensors.airframe_visibility import (
     airframe_primitives,
     airframe_occlusion,
@@ -49,6 +52,7 @@ def summarize_plan(config, plan):
         design_camera=config["camera"],
         design_geometry=config["geometry"],
         attitude_design=config["motion"]["attitude"],
+        gimbal_design=config.get("gimbal", {}),
         trajectory_hz=config["trajectory_hz"],
         sorties=len(plan),
         stages={},
@@ -124,6 +128,7 @@ def plan_dataset(config, output):
                 )
             )
     calibration, mount = camera_geometry(config)
+    from navigation.common.gimbal import gimbal_config
     write_json(
         root / "calibration" / "design.json",
         dict(
@@ -131,10 +136,13 @@ def plan_dataset(config, output):
             geometry=config["geometry"],
             K=calibration.K.tolist(),
             T_body_camera=mount.tolist(),
+            gimbal=gimbal_config(config.get("gimbal")),
+            lidar_mount=calibration.lidar_mount,
+            T_body_lidar=calibration.T_body_lidar.tolist() if calibration.T_body_lidar is not None else None,
             note="Provisional design geometry; replace with calibrated installation",
         ),
     )
-    write_json(root / "plan.json", dict(schema_version=2, config=config, sorties=plan))
+    write_json(root / "plan.json", dict(schema_version=3, config=config, sorties=plan))
     write_json(root / "planning_report.json", summarize_plan(config, plan))
     return plan
 
@@ -205,6 +213,8 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
         raise ValueError("unknown renderer")
     points = marker_points(config["marker"]["width"], config["marker"]["length"])
     scene = None
+    lidar = yaml.safe_load(Path(config.get("lidar_config", "configs/lidar.yaml")).read_text())
+    directions = beam_directions(**{k: lidar[k] for k in ("horizontal_fov", "vertical_fov", "columns", "rows")})
     preview_weather = set()
     for entry in plan:
         if preview:
@@ -221,7 +231,9 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
         if renderer == "blender":
             scene = _blender_scene(config, weather)
         cal = CameraCalibration(
-            sortie["camera"]["K"], sortie["camera"]["width"], sortie["camera"]["height"]
+            sortie["camera"]["K"], sortie["camera"]["width"], sortie["camera"]["height"],
+            T_camera_lidar=sortie["camera"]["T_camera_lidar"],
+            lidar_mount=sortie["camera"]["lidar_mount"], T_body_lidar=sortie["camera"]["T_body_lidar"]
         )
         mount = np.asarray(sortie["T_body_camera"])
         primitives = airframe_primitives(sortie["geometry"])
@@ -238,6 +250,7 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
             mask_path = f"annotations/{stem}_mask.png"
             label_path = root / f"annotations/{stem}.json"
             pose = np.asarray(row["T_deck_camera"])
+            mount = np.asarray(row["T_body_camera"])
             visibility = None
             self_occluded = airframe_occlusion(
                 mount[:3, 3], transform_points(mount @ invert(pose), points), primitives
@@ -321,7 +334,16 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
                 gear_relative_deck_m=row["gear_relative_deck_m"],
                 T_world_deck=row["T_world_deck"],
                 T_world_body=row["T_world_body"],
-                T_body_camera=sortie["T_body_camera"],
+                T_body_camera=row["T_body_camera"],
+                T_body_camera_neutral=sortie["T_body_camera"],
+                gimbal=row["gimbal"],
+                gimbal_config=sortie["gimbal_config"],
+                gimbal_angles_rad=row["gimbal_angles_rad"],
+                gimbal_rates_rad_s=row["gimbal_rates_rad_s"],
+                gimbal_tracking_error_rad=row["gimbal_tracking_error_rad"],
+                lidar_mount=cal.lidar_mount,
+                T_body_lidar=cal.T_body_lidar.tolist() if cal.T_body_lidar is not None else None,
+                T_camera_lidar=cal.T_camera_lidar.tolist(),
                 geometry=sortie["geometry"],
                 sideslip_rad=row["sideslip_rad"],
                 touchdown=row["touchdown"],
@@ -340,6 +362,7 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
             pixels = int((mask > 127).sum())
             v = sum(annotation["visibility"])
             annotation["geometric_pnp_ready"] = bool(v == 4 and pixels >= 25)
+            annotation["schema_version"] = 2
             annotation["marker_pixels"] = pixels
             foreground = mask > 127
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY).astype(float)
@@ -361,6 +384,13 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
                 np.asarray(annotation["visibility"]) & observable
             ).tolist()
             export_annotations(label_path, annotation)
+            T_deck_lidar = pose @ cal.camera_lidar_at(GimbalSample(row["timestamp"], mount), row["timestamp"])
+            if renderer == "blender":
+                cloud = raycast_scene(np.array(row["T_world_deck"]) @ T_deck_lidar, directions, max_range=lidar["max_range"])
+            else:
+                cloud = raycast_deck(T_deck_lidar, directions, max_range=lidar["max_range"])
+            cloud = degrade_lidar(cloud, rng=rng, **{k: lidar[k] for k in ("range_std", "dropout", "min_range", "max_range")})
+            np.savez_compressed(label_path.with_name(label_path.stem + "_lidar.npz"), timestamp=row["timestamp"], points=cloud)
             paths[entry["split"]].append(str(label_path))
             summary.append(
                 dict(

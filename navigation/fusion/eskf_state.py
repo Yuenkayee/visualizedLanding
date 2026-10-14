@@ -1,4 +1,8 @@
-"""12D error state [dp,dv,dtheta,domega], right-multiplicative attitude error."""
+"""12D error state: reference-point p/v, camera attitude/rate relative to deck.
+
+The pipeline chooses the fixed BODY translation reference and converts optical
+measurements/outputs; attitude errors remain camera-local and right multiplicative.
+"""
 
 from dataclasses import dataclass, field
 import numpy as np

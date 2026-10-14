@@ -1,0 +1,16 @@
+# Three co-located rotational axes; camera centre remains fixed in BODY.
+# Provisional servo values, to be identified from the actual gimbal.
+enabled: true
+natural_frequency_hz: 10.0
+damping_ratio: 0.9
+max_rate_rad_s: [3.0, 3.0, 3.0]
+max_acceleration_rad_s2: [40.0, 40.0, 40.0]
+angle_limits_rad: [1.3962634016, 1.3962634016, 2.0943951024]
+integration_step_s: 0.002
+rate_feedforward: true
+encoder_std_rad: 0.0005
+# null: level aircraft's nominal optical orientation relative to deck.
+# Fixed attitude, not an ideal look-at camera; translation/FOV still change.
+R_deck_camera_reference: null
+# null: already acquired at start; supply three angles to model acquisition.
+initial_angles_rad: null

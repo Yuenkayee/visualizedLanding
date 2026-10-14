@@ -4,6 +4,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from navigation.common.frames import transform, invert, ned_to_enu, transform_points
 from navigation.common.contracts import CameraCalibration
+from navigation.common.gimbal import Gimbal
 from navigation.pose.solve_pnp import project_points
 from visual_modeling.blender.build_h_marker import marker_points
 from visual_modeling.sensors.airframe_visibility import (
@@ -44,6 +45,9 @@ def camera_geometry(config, rng=None):
     a = np.deg2rad(c["optical_down_deg"])
     # Camera +x right, +y down, +z forward; body forward/right/down.
     R = np.array([[0, -np.sin(a), np.cos(a)], [1, 0, 0], [0, np.cos(a), np.sin(a)]])
+    lidar = config.get("lidar", {})
+    cal = CameraCalibration(cal.K, w, h, lidar_mount=lidar.get("mount", "body"),
+                            T_body_lidar=lidar.get("T_body_lidar", transform(R, c["position_body_m"])))
     if rng is not None:
         R = (
             Rotation.from_rotvec(
@@ -267,11 +271,14 @@ def make_sortie(config, seed, sequence_id, weather, window_wait=None):
         body_velocity[:, 1], np.hypot(body_velocity[:, 0], body_velocity[:, 2])
     )
     cal, mount = camera_geometry(c, rng)
+    gimbal = Gimbal(mount, c.get("gimbal"))
+    encoder_rng = np.random.default_rng(seed + 7919)
     rows = []
     for i in range(len(t)):
         world_deck = transform(A @ deck_R[i], A @ h_ned[i])
         world_body = transform(A @ heli_R[i], A @ heli_cg[i])
-        camera_pose = invert(world_deck) @ world_body @ mount
+        actual_mount = gimbal.advance(float(t[i]), world_body[:3, :3], world_deck[:3, :3])
+        camera_pose = invert(world_deck) @ world_body @ actual_mount.T_body_camera
         rows.append(
             dict(
                 timestamp=float(t[i]),
@@ -289,6 +296,11 @@ def make_sortie(config, seed, sequence_id, weather, window_wait=None):
                 T_world_deck=world_deck.tolist(),
                 T_world_body=world_body.tolist(),
                 T_deck_camera=camera_pose.tolist(),
+                T_body_camera=actual_mount.T_body_camera.tolist(),
+                gimbal=gimbal.sample(encoder_rng).to_dict(),
+                gimbal_angles_rad=gimbal.angles.tolist(),
+                gimbal_rates_rad_s=gimbal.rates.tolist(),
+                gimbal_tracking_error_rad=Rotation.from_matrix(gimbal.reference.T @ camera_pose[:3, :3]).as_rotvec().tolist(),
                 helicopter_cg_ned_m=heli_cg[i].tolist(),
                 helicopter_velocity_body_knots=(
                     body_velocity[i] * 3600 / 1852
@@ -319,12 +331,18 @@ def make_sortie(config, seed, sequence_id, weather, window_wait=None):
         attitude_model=attitude_model,
         trajectory_reference_frame="ship_heading_forward_port_up_gravity_level",
         geometry=c["geometry"],
+        marker=c["marker"],
         T_body_camera=mount.tolist(),
+        gimbal_config=gimbal.config,
+        R_deck_camera_reference=gimbal.reference.tolist(),
         camera=dict(
             width=cal.width,
             height=cal.height,
             K=cal.K.tolist(),
             distortion=cal.distortion.tolist(),
+            lidar_mount=cal.lidar_mount,
+            T_body_lidar=cal.T_body_lidar.tolist() if cal.T_body_lidar is not None else None,
+            T_camera_lidar=cal.T_camera_lidar.tolist(),
         ),
         rows=rows,
     )
@@ -422,6 +440,7 @@ def optical_report(sortie, marker):
                 continue
             timestamps.append(row["timestamp"])
             T = np.array(row["T_deck_camera"])
+            mount = np.asarray(row.get("T_body_camera", sortie["T_body_camera"]))
             pixels = project_points(points, T, cal)
             z = transform_points(invert(T), points)[:, 2]
             inside = (

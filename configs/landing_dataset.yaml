@@ -4,6 +4,9 @@ seed: 20261006
 sorties_per_weather: 12
 frames_per_stage: 60
 trajectory_hz: 20.0
+# Remaining servo defaults come from configs/gimbal.yaml.
+gimbal:
+  enabled: true
 split_ratios: [0.7, 0.15, 0.15]
 camera:
   width: 1280
@@ -14,7 +17,7 @@ camera:
   optical_down_deg: 96.0
   # Forward belly centreline, ~8 cm below the provisional lower skin at x=2.
   position_body_m: [2.0, 0.0, 1.11]
-  # Independent, small fixed misalignment per sortie; no look-at tracking.
+  # Independent neutral calibration perturbation per sortie.
   mounting_error_deg: 0.5
   exposure_s: 0.004
   readout_s: 0.008

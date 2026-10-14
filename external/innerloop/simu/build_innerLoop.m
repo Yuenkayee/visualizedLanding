@@ -45,4 +45,5 @@ Simulink.Annotation(name,['INTERFACE ONLY - no dynamics or controller. ' ...
     'Geometry offsets must be supplied from calibrated UH-60/ship configuration.']);
 save_system(name,fullfile(folder,[name '.slx']));
 close_system(name,0);
+upgrade_innerLoop_gimbal({name});
 end

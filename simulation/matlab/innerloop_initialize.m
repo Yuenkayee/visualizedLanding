@@ -15,11 +15,15 @@ assert(isfield(c,'ship_state') && numel(c.ship_state)==12, ...
 root=fileparts(fileparts(fileparts(mfilename('fullpath'))));
 s.config.interface_root=fullfile(root,'external','innerloop','simu');
 addpath(s.config.interface_root);
+overrides=struct(); if isfield(c,'gimbal'), overrides=c.gimbal; end
+s.config.gimbal=gimbal_defaults(overrides);
 s.config.truth_callback='innerloop_truth';
 s.config.feedback_callback='innerloop_feedback';
 s.config.advance_callback='innerloop_advance';
 s.config.finalize_callback='innerloop_finalize';
 s.helicopter_state=c.helicopter_state(:); s.ship_state=c.ship_state(:);
+s.gimbal_state=[];
+s=innerloop_update_gimbal(s);
 s.phase='read'; s.feedback=[];
 innerloop_evaluate(s); % Validate/compile actual SLX and contracts now.
 end

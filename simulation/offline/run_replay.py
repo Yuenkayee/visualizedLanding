@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import yaml
 from navigation.common.contracts import CameraCalibration, CameraFrame, LidarFrame
+from navigation.common.contracts import GimbalSample
 from navigation.fusion.eskf_state import ESKFState
 from navigation.pipeline import NavigationPipeline
 from simulation.offline.sensor_buffer import SensorBuffer
@@ -24,7 +25,9 @@ def run_replay(root, sequence, output, config=None):
         first["width"],
         first["height"],
         first.get("distortion", [0] * 5),
-        (config or {}).get("T_camera_lidar", np.eye(4)),
+        first.get("T_camera_lidar", (config or {}).get("T_camera_lidar", np.eye(4))),
+        first.get("lidar_mount", (config or {}).get("lidar_mount", "camera")),
+        first.get("T_body_lidar", (config or {}).get("T_body_lidar")),
     )
     c = config or {}
     state = ESKFState(
@@ -38,18 +41,19 @@ def run_replay(root, sequence, output, config=None):
     with JsonlLogger(output) as logger:
         for path in paths:
             row = json.loads(path.read_text())
+            encoder = GimbalSample(**row["gimbal"]) if row.get("gimbal") is not None else None
             image = cv2.imread(str(root / row["image"]))
             if image is None:
                 raise FileNotFoundError(root / row["image"])
             buffer.push(
                 "camera",
-                CameraFrame(row["timestamp"], cv2.cvtColor(image, cv2.COLOR_BGR2RGB)),
+                CameraFrame(row["timestamp"], cv2.cvtColor(image, cv2.COLOR_BGR2RGB), encoder),
             )
             lidar = path.with_name(path.stem + "_lidar.npz")
             if lidar.exists():
                 with np.load(lidar) as cloud:
                     buffer.push(
-                        "lidar", LidarFrame(float(cloud["timestamp"]), cloud["points"])
+                        "lidar", LidarFrame(float(cloud["timestamp"]), cloud["points"], encoder)
                     )
             for kind, frame in buffer.pop_until(row["timestamp"]):
                 getattr(pipe, "process_" + kind)(frame)
@@ -80,6 +84,8 @@ def main():
     c = yaml.safe_load(Path(a.config).read_text())
     camera = yaml.safe_load(Path("configs/camera.yaml").read_text())
     c["T_camera_lidar"] = camera.get("T_camera_lidar", np.eye(4))
+    c["lidar_mount"] = camera.get("lidar_mount", "camera")
+    c["T_body_lidar"] = camera.get("T_body_lidar")
     print(run_replay(a.root, a.sequence, a.output, c))
 
 

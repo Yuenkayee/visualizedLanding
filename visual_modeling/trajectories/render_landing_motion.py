@@ -59,7 +59,7 @@ def render_landing_motion(sortie, output):
     axes[-1].set_xlabel("Time (s)")
     periods = ", ".join(f"{p:.2f}" for p in sortie["attitude_model"]["period_s"])
     fig.suptitle(
-        f"Stage-dependent helicopter Euler offsets: 0.60 → 0.05 → 0.30 rad\nPeriods [phi, theta, psi]: {periods} s; continuous phase, fixed body camera",
+        f"Stage-dependent helicopter Euler offsets: 0.60 → 0.05 → 0.30 rad\nPeriods [phi, theta, psi]: {periods} s; continuous phase, stabilized gimbal camera",
         fontsize=12,
     )
     output = Path(output)

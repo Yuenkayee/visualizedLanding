@@ -5,6 +5,9 @@ initial_rotation:
   - [0, -1, 0]
   - [0, 0, -1]
 checkpoint: null
+require_gimbal: true
+# Position/velocity prior refers to CG; orientation prior still refers to camera.
+filter_point_body: [0.0, 0.0, 0.0]
 pixel_sigma: 1.5
 max_reprojection_error: 5.0
 acceleration_noise: 0.5

@@ -6,6 +6,14 @@ fy: 600.0
 cx: 320.0
 cy: 240.0
 distortion: [0, 0, 0, 0, 0]
+# LiDAR remains fixed on the airframe while only the camera is stabilized.
+# These identity transforms are the mock fixture; use calibrated values on aircraft.
+lidar_mount: body
+T_body_lidar:
+  - [1, 0, 0, 0]
+  - [0, 1, 0, 0]
+  - [0, 0, 1, 0]
+  - [0, 0, 0, 1]
 T_camera_lidar:
   - [1, 0, 0, 0]
   - [0, 1, 0, 0]

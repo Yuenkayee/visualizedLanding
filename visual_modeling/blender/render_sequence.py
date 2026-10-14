@@ -18,6 +18,8 @@ import zlib
 import numpy as np
 import yaml
 from navigation.common.contracts import CameraCalibration
+from navigation.common.contracts import GimbalSample
+from navigation.common.gimbal import Gimbal
 from navigation.common.frames import transform
 from scipy.spatial.transform import Rotation
 from visual_modeling.blender.build_ship import build_ship
@@ -46,6 +48,13 @@ def main(argv=None):
     parser.add_argument("--sequence-id", default="blender_000")
     parser.add_argument("--trajectory")
     args = parser.parse_args(argv)
+    trajectory = None
+    trajectory_metadata = {}
+    if args.trajectory:
+        trajectory = json.loads(Path(args.trajectory).read_text())
+        if isinstance(trajectory, dict):
+            trajectory_metadata = trajectory
+            trajectory = trajectory["rows"]
     config_path = Path(args.config).resolve()
     c = yaml.safe_load(config_path.read_text())
     # Paths in distributed configs are relative to repository root.
@@ -53,6 +62,13 @@ def main(argv=None):
         (ROOT / c.get("camera_config", "configs/camera.yaml")).read_text()
     )
     cal = CameraCalibration.from_config(cam)
+    if "camera" in trajectory_metadata:
+        optics = trajectory_metadata["camera"]
+        cal = CameraCalibration(optics["K"], optics["width"], optics["height"],
+                                optics.get("distortion", [0]*5), optics.get("T_camera_lidar", np.eye(4)),
+                                optics.get("lidar_mount", "camera"), optics.get("T_body_lidar"))
+        cam.update(width=cal.width, height=cal.height, fx=cal.K[0, 0], fy=cal.K[1, 1],
+                   cx=cal.K[0, 2], cy=cal.K[1, 2], distortion=cal.distortion.tolist())
     lidar = yaml.safe_load(
         (ROOT / c.get("lidar_config", "configs/lidar.yaml")).read_text()
     )
@@ -60,6 +76,8 @@ def main(argv=None):
         **{k: lidar[k] for k in ("horizontal_fov", "vertical_fov", "columns", "rows")}
     )
     ship_config = c.get("ship", {}).copy()
+    if "marker" in trajectory_metadata:
+        ship_config["marker"] = trajectory_metadata["marker"]
     if ship_config.get("asset_path"):
         ship_config["asset_path"] = str(ROOT / ship_config["asset_path"])
     bpy.ops.object.select_all(action="SELECT")
@@ -72,9 +90,6 @@ def main(argv=None):
     points = marker_points(marker.get("width", 6), marker.get("length", 6))
     out = Path(args.output or ROOT / "data")
     out.mkdir(parents=True, exist_ok=True)
-    trajectory = None
-    if args.trajectory:
-        trajectory = json.loads(Path(args.trajectory).read_text())
     count = args.frames if args.frames is not None else c.get("frames", 100)
     if trajectory is not None:
         count = min(count, len(trajectory))
@@ -88,6 +103,10 @@ def main(argv=None):
     rate = c.get("fps", 10.0)
     if count < 1 or rate <= 0:
         raise ValueError("frames and fps must be positive")
+    gimbal = Gimbal(np.eye(4), c.get("gimbal"))
+    centre = rng.uniform(-3, 3, 2)
+    altitude = rng.uniform(20, 50)
+    phase = rng.uniform(-np.pi, np.pi, 3)
     for i in range(count):
         t = i / rate
         if trajectory is None:
@@ -95,12 +114,12 @@ def main(argv=None):
                 Rotation.from_euler(
                     "xyz",
                     [
-                        np.pi + rng.uniform(-0.12, 0.12),
-                        rng.uniform(-0.15, 0.15),
-                        rng.uniform(-0.35, 0.35),
+                        np.pi + .6*np.sin(2*np.pi*t/3+phase[0]),
+                        .6*np.sin(2*np.pi*t/3.1+phase[1]),
+                        .6*np.sin(2*np.pi*t/2.9+phase[2]),
                     ],
                 ).as_matrix(),
-                [rng.uniform(-3, 3), rng.uniform(-3, 3), rng.uniform(15, 50)],
+                [*centre, max(10., altitude-.1*t)],
             )
             world = transform(
                 Rotation.from_euler(
@@ -108,11 +127,19 @@ def main(argv=None):
                 ).as_matrix(),
                 [0, 0, 0.4 * np.sin(t * 0.7)],
             )
+            body = world @ T
+            actual = gimbal.advance(t, body[:3, :3], world[:3, :3])
+            T = T @ actual.T_body_camera
+            encoder = gimbal.sample(rng)
         else:
             row = trajectory[i]
             t = row["timestamp"]
             T = np.asarray(row["T_deck_camera"])
             world = np.asarray(row.get("T_world_deck", np.eye(4)))
+            if "T_body_camera" not in row or "gimbal" not in row:
+                raise ValueError("trajectory requires actual mount and encoder telemetry; regenerate rigid-camera trajectories")
+            actual = GimbalSample(t, row["T_body_camera"])
+            encoder = GimbalSample(**row["gimbal"])
         apply_poses(ship, camera, world, T)
         bpy.context.view_layer.update()
         stem = f"{args.sequence_id}/{i:06d}"
@@ -120,15 +147,17 @@ def main(argv=None):
         mask = f"annotations/{stem}_mask.png"
         render_frame(out / image, out / mask, c.get("samples", 32))
         visibility = keypoint_visibility(points, ship, camera)
-        export_annotations(
-            out / f"annotations/{stem}.json",
-            make_annotation(
+        annotation = make_annotation(
                 t, args.sequence_id, i, image, mask, points, T, cal, visibility
-            ),
-        )
+            )
+        annotation.update(schema_version=2, T_world_deck=world.tolist(),
+                          T_body_camera=actual.T_body_camera.tolist(), gimbal=encoder.to_dict(),
+                          lidar_mount=cal.lidar_mount, T_camera_lidar=cal.T_camera_lidar.tolist(),
+                          T_body_lidar=cal.T_body_lidar.tolist() if cal.T_body_lidar is not None else None)
+        export_annotations(out / f"annotations/{stem}.json", annotation)
         cloud = degrade_lidar(
             raycast_scene(
-                world @ T @ cal.T_camera_lidar, directions, max_range=lidar["max_range"]
+                world @ T @ cal.camera_lidar_at(actual, t), directions, max_range=lidar["max_range"]
             ),
             rng=rng,
             **{k: lidar[k] for k in ("range_std", "dropout", "min_range", "max_range")},

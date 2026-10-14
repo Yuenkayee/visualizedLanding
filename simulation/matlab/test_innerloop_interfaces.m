@@ -3,6 +3,7 @@ function result=test_innerloop_interfaces()
 % NOT certified UH-60 dimensions. No aircraft/controller dynamics tested.
 root=fileparts(fileparts(fileparts(mfilename('fullpath')))); setup_paths(root);
 c=struct('initialize_callback','innerloop_initialize','allow_state_hold',true);
+c.gimbal=struct('enabled',false); % Rigid mode remains a coordinate/unit regression.
 c.helicopter_state=[10;20;-30;10;0;0;0;0;pi/2;0;0;0];
 c.ship_state=[1;2;0;0;20;0;0;0;0;0;0;0];
 c.geometry=struct('T_body_camera',[diag([1 -1 -1]) [1;0;2];0 0 0 1], ...
@@ -19,7 +20,7 @@ s=evalin('base','landingState'); o=innerloop_evaluate(s);
 % Installation geometry is now supplied through MATLAB System parameters.
 block='innerLoop/Frame_Unit_ReferencePoint_Conversion';
 assert(strcmp(get_param(block,'System'),'convert'));
-assert(numel(find_system('innerLoop','SearchDepth',1,'BlockType','Inport'))==8);
+assert(numel(find_system('innerLoop','SearchDepth',1,'BlockType','Inport'))==15);
 assert(strcmp(get_param(block,'T_body_camera'),'T_body_camera'));
 changed=s; changed.config.geometry.gear_body=[1;0;2];
 shifted=innerloop_evaluate(changed);
@@ -30,6 +31,7 @@ assert(norm(o.ship_velocity_ned_mps-[0;20*1852/3600;0])<1e-10);
 assert(norm(o.gear_relative_truth_ned-[14;18;-25])<1e-10);
 assert(norm(truth.T_world_deck(1:3,4)-[2;-4;3])<1e-10);
 e.T_deck_camera=truth.T_deck_camera;
+e.gimbal=jsondecode(read_gimbal_telemetry()); e.angular_velocity_camera=[0;0;0];
 write_navigation_estimate(jsonencode(e));
 f=jsondecode(read_innerloop_feedback());
 assert(f.valid && norm(f.gear_relative_ned_m(:)-[14;18;-25])<1e-10);
@@ -40,6 +42,7 @@ advance_external_model(.1);
 expect_error(@()write_navigation_estimate(jsonencode(e)),'landing:Timestamp');
 truth2=jsondecode(read_sensor_truth()); assert(abs(truth2.timestamp-.1)<1e-10);
 e.timestamp=.1; e.T_deck_camera=truth2.T_deck_camera; e.healthy=false;
+e.gimbal=jsondecode(read_gimbal_telemetry());
 write_navigation_estimate(jsonencode(e)); f=jsondecode(read_innerloop_feedback()); assert(~f.valid);
 % No hidden surrogate: missing plant raises explicitly.
 s=evalin('base','landingState'); s.config.allow_state_hold=false; assignin('base','landingState',s);
@@ -56,7 +59,8 @@ assert(norm(T(1:3,4)-A*(s.helicopter_state(1:3)+Rb*c.geometry.T_body_camera(1:3,
 assert(norm(T(1:3,1:3)-A*Rb*c.geometry.T_body_camera(1:3,1:3),'fro')<1e-9);
 % Internal communicated ship attitude must rotate feedback and covariance.
 s.estimate=struct('timestamp',s.timestamp,'T_deck_camera',o.T_deck_camera, ...
-    'velocity',[1;2;3],'covariance',diag([.01 .02 .03 .04 .05 .06]),'healthy',true);
+    'velocity',[1;2;3],'covariance',diag([.01 .02 .03 .04 .05 .06]),'healthy',true, ...
+    'gimbal',s.gimbal_measurement,'angular_velocity_camera',[0;0;0]);
 f=innerloop_evaluate(s);
 assert(f.feedback_valid==1);
 assert(norm(f.gear_relative_estimate_ned-o.gear_relative_truth_ned)<1e-9);

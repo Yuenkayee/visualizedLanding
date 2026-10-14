@@ -15,6 +15,10 @@ elseif exist('ship_motion_model', 'class') == 8
 else
     error('landing:MissingShip', 'external ship_motion_model class is required');
 end
+if ~isfield(s.config,'truth_callback')
+    overrides=struct(); if isfield(c,'gimbal'), overrides=c.gimbal; end
+    s.config.gimbal=gimbal_defaults(overrides); s.gimbal_state=[];
+end
 assignin('base','landingState',s);
 result = jsonencode(struct('initialized',true,'timestamp',s.timestamp));
 end

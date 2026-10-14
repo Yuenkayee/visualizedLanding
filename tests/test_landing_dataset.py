@@ -49,10 +49,12 @@ def test_stages_camera_and_reference_points():
     mount = np.array(s["T_body_camera"])
     gear = np.array(c["geometry"]["gear_body_m"])
     for r in rows:
+        actual_mount = np.array(r["T_body_camera"])
         deck = np.array(r["T_world_deck"])
         body = np.array(r["T_world_body"])
         camera = np.array(r["T_deck_camera"])
-        assert np.allclose(invert(deck) @ body @ mount, camera)
+        assert np.allclose(invert(deck) @ body @ actual_mount, camera)
+        assert np.array_equal(actual_mount[:3, 3], mount[:3, 3])
         gear_world = body[:3, :3] @ gear + body[:3, 3]
         assert np.allclose(
             deck[:3, :3].T @ (gear_world - deck[:3, 3]), r["gear_relative_deck_m"]
@@ -251,7 +253,11 @@ def test_large_attitude_occluded_frames_and_training_loss(tmp_path):
             & ~np.asarray(row["visibility"])
         ).any()
         assert len(row["attitude_oscillation_rad"]) == 3
-    dataset = HDataset(tmp_path / "splits" / "train.json", tmp_path, 32)
+    # Stabilization may make the entire training split visible; select an
+    # actual occlusion across all independent splits to test masked losses.
+    paths = [str(p) for p in (tmp_path / "annotations").rglob("*.json")]
+    (tmp_path / "occlusion_test.json").write_text(json.dumps(paths))
+    dataset = HDataset(tmp_path / "occlusion_test.json", tmp_path, 32)
     sample = next(
         dataset[i] for i in range(len(dataset)) if not dataset[i]["visibility"].all()
     )

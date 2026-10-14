@@ -4,6 +4,7 @@ if nargin == 0
     root = fileparts(fileparts(fileparts(mfilename('fullpath'))));
 end
 addpath(fullfile(root, 'simulation', 'matlab'));
+addpath(fullfile(root, 'external', 'innerloop', 'simu'));
 externalRoot = fullfile(root, 'external', 'inner_loop');
 if isfolder(externalRoot)
     addpath(genpath(externalRoot));

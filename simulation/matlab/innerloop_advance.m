@@ -1,5 +1,6 @@
 function s=innerloop_advance(s,dt)
-assert(strcmp(s.phase,'feedback'),'landing:Order','Write feedback before advancing');
+% Sample-and-hold the most recent CONTROL feedback over intervening sensor ticks.
+assert(~isempty(s.feedback),'landing:Order','Write initial feedback before advancing');
 oldTime=s.timestamp;
 if isfield(s.config,'plant_step_callback') && ~isempty(s.config.plant_step_callback)
     % Implement later: retain plant/controller state inside s, consume
@@ -13,5 +14,6 @@ else
     error('landing:MissingDynamics', ...
         'No dynamics/controller supplied. Configure plant_step_callback; allow_state_hold is test-only.');
 end
+s=innerloop_update_gimbal(s);
 s.phase='read';
 end

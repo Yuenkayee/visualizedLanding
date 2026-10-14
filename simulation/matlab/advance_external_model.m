@@ -11,7 +11,14 @@ else
         if isfield(s.config,'kp'), kp=s.config.kp; end
         if isfield(s.config,'kd'), kd=s.config.kd; end
         if isfield(s.config,'max_acceleration'), limit=s.config.max_acceleration; end
-        a=kp*([0;0;target]-s.estimate.T_deck_camera(1:3,4))-kd*s.estimate.velocity(:);
+        e=s.estimate; p=e.T_deck_camera(1:3,4); v=e.velocity(:);
+        if isfield(e,'gimbal') && ~isempty(e.gimbal)
+            m=e.gimbal; point=zeros(3,1); if isfield(s.config,'gear_body'), point=s.config.gear_body(:); end
+            lever=m.T_body_camera(1:3,1:3)'*(point-m.T_body_camera(1:3,4));
+            p=p+e.T_deck_camera(1:3,1:3)*lever;
+            v=v+e.T_deck_camera(1:3,1:3)*cross(e.angular_velocity_camera(:)-m.angular_velocity_camera(:),lever);
+        end
+        a=kp*([0;0;target]-p)-kd*v;
         a=a*min(1,limit/max(norm(a),1e-9));
         truth=jsondecode(read_sensor_truth()); a=truth.T_world_deck(1:3,1:3)*a;
     end

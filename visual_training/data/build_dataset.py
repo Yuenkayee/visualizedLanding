@@ -9,6 +9,7 @@ import yaml
 from scipy.spatial.transform import Rotation
 from navigation.common.contracts import CameraCalibration
 from navigation.common.frames import transform
+from navigation.common.gimbal import Gimbal
 from navigation.pose.solve_pnp import project_points
 from visual_modeling.blender.build_h_marker import marker_points, marker_polygons
 from visual_modeling.blender.export_annotations import (
@@ -70,18 +71,24 @@ def build_dataset(
         heading = rng.uniform(-0.7, 0.7)
         center = rng.uniform(-2, 2, 2)
         height = rng.uniform(16, 38)
+        neutral = np.eye(4)
+        gimbal = Gimbal(neutral, {"R_deck_camera_reference": (Rotation.from_euler("z", heading).as_matrix() @ np.diag([1., -1., -1.])).tolist()})
+        encoder_rng = np.random.default_rng(seed + 7919 + s)
         for i in range(frames):
             pose = transform(
                 Rotation.from_euler(
                     "xyz",
                     [
-                        np.pi + 0.12 * np.sin(i * 0.09 + s),
-                        0.1 * np.cos(i * 0.1 + s),
-                        heading + 0.03 * np.sin(i * 0.1),
+                        np.pi + 0.6 * np.sin(i * .21 + s),
+                        0.6 * np.cos(i * .20 + s),
+                        heading + 0.6 * np.sin(i * .22),
                     ],
                 ).as_matrix(),
                 [*(center + 0.3 * np.sin(i * 0.1)), height - 0.03 * i],
             )
+            mount = gimbal.advance(i/10, pose[:3, :3], np.eye(3))
+            body = pose.copy()
+            pose = body @ mount.T_body_camera
             image, mask = synthetic_frame(cal, pose, rng, marker)
             stem = f"{seq}/{i:06d}"
             image_path = f"rendered/{stem}.png"
@@ -93,14 +100,17 @@ def build_dataset(
             ) or not cv2.imwrite(str(root / mask_path), mask):
                 raise OSError("image write failed")
             path = root / f"annotations/{stem}.json"
-            export_annotations(
-                path,
-                make_annotation(
+            annotation = make_annotation(
                     i / 10, seq, i, image_path, mask_path, points, pose, cal
-                ),
-            )
+                )
+            annotation.update(schema_version=2, gimbal=gimbal.sample(encoder_rng).to_dict(),
+                              T_body_camera=mount.T_body_camera.tolist(), T_world_body=body.tolist(),
+                              lidar_mount=cal.lidar_mount,
+                              T_body_lidar=cal.T_body_lidar.tolist() if cal.T_body_lidar is not None else None,
+                              T_camera_lidar=cal.T_camera_lidar.tolist())
+            export_annotations(path, annotation)
             paths.append(path)
-            cloud = degrade_lidar(raycast_deck(pose @ cal.T_camera_lidar), rng=rng)
+            cloud = degrade_lidar(raycast_deck(pose @ cal.camera_lidar_at(mount, i/10)), rng=rng)
             np.savez_compressed(
                 root / f"annotations/{stem}_lidar.npz", timestamp=i / 10, points=cloud
             )
@@ -114,6 +124,8 @@ def build_dataset(
                 height=cal.height,
                 distortion=cal.distortion.tolist(),
                 T_camera_lidar=cal.T_camera_lidar.tolist(),
+                lidar_mount=cal.lidar_mount,
+                T_body_lidar=cal.T_body_lidar.tolist() if cal.T_body_lidar is not None else None,
             ),
             indent=2,
         )

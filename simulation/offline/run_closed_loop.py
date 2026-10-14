@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 from navigation.common.contracts import CameraCalibration, CameraFrame, LidarFrame
+from navigation.common.contracts import GimbalSample
 from navigation.fusion.eskf_state import ESKFState
 from navigation.pipeline import NavigationPipeline
 from visual_modeling.blender.build_h_marker import marker_points
@@ -34,6 +35,15 @@ def run_closed_loop(config=None):
     cal = CameraCalibration.from_config(
         yaml.safe_load(Path(c.get("camera_config", "configs/camera.yaml")).read_text())
     )
+    plant_config = dict(c.get("plant", {}))
+    landing = None
+    if c.get("landing_config"):
+        from visual_modeling.trajectories.landing import camera_geometry
+        landing = yaml.safe_load(Path(c["landing_config"]).read_text())
+        cal, neutral = camera_geometry(landing)
+        plant_config.setdefault("T_body_camera", neutral.tolist())
+        plant_config.setdefault("gear_body", landing["geometry"]["gear_body_m"])
+        plant_config.setdefault("gimbal", landing.get("gimbal", {}))
     lidar = yaml.safe_load(
         Path(c.get("lidar_config", "configs/lidar.yaml")).read_text()
     )
@@ -43,6 +53,13 @@ def run_closed_loop(config=None):
     nav = yaml.safe_load(
         Path(c.get("navigation_config", "configs/navigation.yaml")).read_text()
     )
+    if landing is not None:
+        from navigation.common.gimbal import Gimbal
+        nav["initial_rotation"] = Gimbal(plant_config["T_body_camera"], plant_config.get("gimbal")).reference.tolist()
+    # Keep large BODY oscillations out of the translational process model.
+    nav.setdefault("filter_point_body", [0., 0., 0.])
+    if plant_config.get("position_reference") == "gear":
+        nav["filter_point_body"] = plant_config["gear_body"]
     nav.update(c.get("navigation", {}))
     init = ESKFState(
         position=np.array(nav.get("initial_position", [0.0, 0.0, 30.0])),
@@ -55,7 +72,7 @@ def run_closed_loop(config=None):
     log = Path(c.get("log", "outputs/logs/closed_loop.jsonl"))
     metrics = Path(c.get("metrics", "outputs/metrics/closed_loop.json"))
     with (
-        create_adapter(c.get("backend", "mock"), c.get("plant", {})) as plant,
+        create_adapter(c.get("backend", "mock"), plant_config) as plant,
         JsonlLogger(log) as logger,
     ):
         time = 0.0
@@ -64,13 +81,15 @@ def run_closed_loop(config=None):
                 plant.advance(event.timestamp - time)
                 time = event.timestamp
             truth = plant.read_sensor_truth()
+            encoder = plant.read_gimbal()
             if event.kind == "camera":
                 image, _ = synthetic_frame(cal, truth.T_deck_camera, rng, marker)
-                pipe.process_camera(CameraFrame(time, image))
+                pipe.process_camera(CameraFrame(time, image, encoder))
             elif event.kind == "lidar":
                 cloud = degrade_lidar(
                     raycast_deck(
-                        truth.T_deck_camera @ cal.T_camera_lidar,
+                        truth.T_deck_camera @ cal.camera_lidar_at(
+                            GimbalSample(time, truth.T_body_camera), time),
                         directions,
                         max_range=lidar["max_range"],
                     ),
@@ -80,9 +99,9 @@ def run_closed_loop(config=None):
                         for k in ("range_std", "dropout", "min_range", "max_range")
                     },
                 )
-                pipe.process_lidar(LidarFrame(time, cloud))
+                pipe.process_lidar(LidarFrame(time, cloud, encoder))
             else:
-                pipe.advance(time)
+                pipe.process_gimbal(encoder, time)
                 estimate = pipe.estimate()
                 plant.write_navigation_estimate(estimate)
                 row = dict(

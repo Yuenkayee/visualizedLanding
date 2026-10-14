@@ -5,6 +5,8 @@ camera_hz: 10.0
 lidar_hz: 5.0
 control_hz: 20.0
 camera_config: configs/camera.yaml
+# Share the production dataset optics and existing installation centre.
+landing_config: configs/landing_dataset.yaml
 lidar_config: configs/lidar.yaml
 navigation_config: configs/navigation.yaml
 log: outputs/logs/closed_loop.jsonl
@@ -14,6 +16,9 @@ marker:
   length: 6.0
   stroke: 1.2
 plant:
+  # Kinematic point-mass proxy controls the wheel reference independently of
+  # imposed attitude, like the dataset trajectories; not a 6-DoF flight plant.
+  position_reference: gear
   initial_position: [2.0, -1.0, 30.0]
   target_height: 0.8
   kp: 0.25
