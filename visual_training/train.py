@@ -1,7 +1,7 @@
 """Train segmentation/keypoints on CPU or CUDA, with optional short-run checks."""
 
 import argparse
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 import gc
 import json
 from pathlib import Path
@@ -13,10 +13,16 @@ import cv2
 import numpy as np
 import torch
 import yaml
-from torch.utils.data import DataLoader, get_worker_info
+from torch.utils.data import (
+    BatchSampler,
+    RandomSampler,
+    SequentialSampler,
+    get_worker_info,
+)
 
 from visual_training.data.h_dataset import HDataset
 from visual_training.data.augmentations import PhotometricAugmentation
+from visual_training.data.training_loader import LimitedBatchSampler, TrainingDataLoader
 from visual_training.models.h_segmentation_keypoints import HSegmentationKeypoints
 from visual_training.models.losses import segmentation_keypoint_loss
 
@@ -152,10 +158,18 @@ def make_loader(dataset, config, batch, training, device):
     generator = torch.Generator().manual_seed(
         config.get("seed", 42) + int(not training)
     )
-    return DataLoader(
+    sampler = (
+        RandomSampler(dataset, generator=generator)
+        if training
+        else SequentialSampler(dataset)
+    )
+    batch_sampler = BatchSampler(sampler, batch_size=batch, drop_last=False)
+    limit = config.get("max_train_batches" if training else "max_val_batches")
+    if limit is not None:
+        batch_sampler = LimitedBatchSampler(batch_sampler, limit)
+    return TrainingDataLoader(
         dataset,
-        batch_size=batch,
-        shuffle=training,
+        batch_sampler=batch_sampler,
         num_workers=workers,
         pin_memory=config.get("pin_memory", device.type == "cuda"),
         generator=generator,
@@ -260,109 +274,112 @@ def train(config):
     )
     best, history = float("inf"), []
     start = time.monotonic()
-    for epoch in range(c.get("epochs", 20)):
-        phases = []
-        for phase, loader in enumerate(loaders):
-            training = phase == 0
-            name = "train" if training else "val"
-            model.train(training)
-            if device.type == "cuda":
-                torch.cuda.reset_peak_memory_stats(device)
-                torch.cuda.synchronize(device)
-            phase_start = time.monotonic()
-            total = torch.zeros((), device=device)
-            intersection, union, error, visible = [
-                torch.zeros((), device=device) for _ in range(4)
-            ]
-            count = 0
-            limit = c.get(f"max_{name}_batches")
-            with torch.set_grad_enabled(training):
-                for index, sample in enumerate(loader):
-                    sample = move_batch(sample, device, c.get("channels_last", False))
-                    if training:
-                        optimizer.zero_grad(set_to_none=True)
-                    with autocast(c, device):
-                        prediction = model(sample["image"])
-                        loss, _ = segmentation_keypoint_loss(
-                            prediction, sample, return_metrics=False
+    # Close both worker pools before reporting success, also on training errors.
+    with ExitStack() as cleanup:
+        for loader in loaders:
+            cleanup.callback(loader.close)
+        for epoch in range(c.get("epochs", 20)):
+            phases = []
+            for phase, loader in enumerate(loaders):
+                training = phase == 0
+                name = "train" if training else "val"
+                model.train(training)
+                if device.type == "cuda":
+                    torch.cuda.reset_peak_memory_stats(device)
+                    torch.cuda.synchronize(device)
+                phase_start = time.monotonic()
+                total = torch.zeros((), device=device)
+                intersection, union, error, visible = [
+                    torch.zeros((), device=device) for _ in range(4)
+                ]
+                count = 0
+                with torch.set_grad_enabled(training):
+                    for index, sample in enumerate(loader):
+                        sample = move_batch(
+                            sample, device, c.get("channels_last", False)
                         )
-                    if not torch.isfinite(loss):
-                        raise ValueError(
-                            f"Nonfinite {name} loss at epoch {epoch + 1}, batch {index + 1}"
-                        )
-                    if training:
-                        loss.backward()
-                        torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), 5.0, error_if_nonfinite=True
-                        )
-                        optimizer.step()
-                    else:
-                        pred = prediction["mask_logits"] > 0
-                        truth = sample["mask"] > 0.5
-                        intersection += (pred & truth).sum()
-                        union += (pred | truth).sum()
-                        vis = sample["visibility"]
-                        error += torch.linalg.vector_norm(
-                            prediction["keypoints"] - sample["keypoints"], dim=-1
-                        )[vis].sum()
-                        visible += vis.sum()
-                    n = sample["image"].shape[0]
-                    total += loss.detach() * n
-                    count += n
-                    if (index + 1) % c.get("log_every", 20) == 0:
-                        emit(
-                            dict(
-                                event="progress",
-                                epoch=epoch + 1,
-                                phase=name,
-                                batch=index + 1,
-                                samples=count,
-                                loss=float(total / count),
+                        if training:
+                            optimizer.zero_grad(set_to_none=True)
+                        with autocast(c, device):
+                            prediction = model(sample["image"])
+                            loss, _ = segmentation_keypoint_loss(
+                                prediction, sample, return_metrics=False
                             )
-                        )
-                    if limit and index + 1 >= limit:
-                        break
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
-            seconds = time.monotonic() - phase_start
-            phases.append(
-                dict(
-                    loss=float(total / count),
-                    samples=count,
-                    seconds=seconds,
-                    images_per_s=count / seconds,
-                    peak_gpu_reserved_bytes=torch.cuda.max_memory_reserved(device)
-                    if device.type == "cuda"
-                    else 0,
+                        if not torch.isfinite(loss):
+                            raise ValueError(
+                                f"Nonfinite {name} loss at epoch {epoch + 1}, batch {index + 1}"
+                            )
+                        if training:
+                            loss.backward()
+                            torch.nn.utils.clip_grad_norm_(
+                                model.parameters(), 5.0, error_if_nonfinite=True
+                            )
+                            optimizer.step()
+                        else:
+                            pred = prediction["mask_logits"] > 0
+                            truth = sample["mask"] > 0.5
+                            intersection += (pred & truth).sum()
+                            union += (pred | truth).sum()
+                            vis = sample["visibility"]
+                            error += torch.linalg.vector_norm(
+                                prediction["keypoints"] - sample["keypoints"], dim=-1
+                            )[vis].sum()
+                            visible += vis.sum()
+                        n = sample["image"].shape[0]
+                        total += loss.detach() * n
+                        count += n
+                        if (index + 1) % c.get("log_every", 20) == 0:
+                            emit(
+                                dict(
+                                    event="progress",
+                                    epoch=epoch + 1,
+                                    phase=name,
+                                    batch=index + 1,
+                                    samples=count,
+                                    loss=float(total / count),
+                                )
+                            )
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                seconds = time.monotonic() - phase_start
+                phases.append(
+                    dict(
+                        loss=float(total / count),
+                        samples=count,
+                        seconds=seconds,
+                        images_per_s=count / seconds,
+                        peak_gpu_reserved_bytes=torch.cuda.max_memory_reserved(device)
+                        if device.type == "cuda"
+                        else 0,
+                    )
                 )
-            )
-        record = dict(
-            event="epoch",
-            epoch=epoch + 1,
-            train_loss=phases[0]["loss"],
-            val_loss=phases[1]["loss"],
-            phases=dict(train=phases[0], val=phases[1]),
-            val_mask_iou=float(intersection / union.clamp_min(1)),
-            val_normalized_keypoint_error=float(error / visible)
-            if visible > 0
-            else None,
-            visible_keypoints=int(visible),
-        )
-        history.append(record)
-        emit(record)
-        if save_results:
-            payload = dict(
-                model=model.state_dict(),
-                model_config=model.model_config,
+            record = dict(
+                event="epoch",
                 epoch=epoch + 1,
-                optimizer=optimizer.state_dict(),
-                config=c,
+                train_loss=phases[0]["loss"],
+                val_loss=phases[1]["loss"],
+                phases=dict(train=phases[0], val=phases[1]),
+                val_mask_iou=float(intersection / union.clamp_min(1)),
+                val_normalized_keypoint_error=float(error / visible)
+                if visible > 0
+                else None,
+                visible_keypoints=int(visible),
             )
-            save_checkpoint(payload, out / "last.pt")
-            if record["val_loss"] < best:
-                best = record["val_loss"]
-                save_checkpoint(payload, out / "best.pt")
-            (out / "history.json").write_text(json.dumps(history, indent=2) + "\n")
+            history.append(record)
+            emit(record)
+            if save_results:
+                payload = dict(
+                    model=model.state_dict(),
+                    model_config=model.model_config,
+                    epoch=epoch + 1,
+                    optimizer=optimizer.state_dict(),
+                    config=c,
+                )
+                save_checkpoint(payload, out / "last.pt")
+                if record["val_loss"] < best:
+                    best = record["val_loss"]
+                    save_checkpoint(payload, out / "best.pt")
+                (out / "history.json").write_text(json.dumps(history, indent=2) + "\n")
     emit(
         dict(
             event="training_complete",

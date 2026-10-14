@@ -21,6 +21,21 @@ from visual_training.server_train import (
     build_config,
 )
 from visual_training.train import train, choose_batch, fit_shared_memory, seed_worker
+from visual_training.data.training_loader import TrainingDataLoader
+
+
+class OnlyFirstBatchDataset(torch.utils.data.Dataset):
+    """Fail if prefetch reads beyond the requested short-run batch."""
+
+    augmentation = None
+
+    def __len__(self):
+        return 20
+
+    def __getitem__(self, index):
+        if index >= 2:
+            raise RuntimeError("prefetched beyond the requested batch limit")
+        return index
 
 
 @pytest.fixture
@@ -245,3 +260,150 @@ def test_modes_and_training_dependency_profile(tmp_path):
         for r in requirements("requirements-training-server.txt")
     }
     assert profile["torch"] == "==2.8.0" and "bpy" not in profile
+
+
+@pytest.mark.parametrize("persistent", [True, False])
+def test_short_loader_limits_prefetch_and_closes_workers(persistent):
+    from visual_training.train import make_loader
+
+    config = dict(
+        num_workers=2,
+        persistent_workers=persistent,
+        prefetch_factor=4,
+        max_val_batches=1,
+    )
+    loader = make_loader(OnlyFirstBatchDataset(), config, 2, False, torch.device("cpu"))
+    workers = []
+    try:
+        assert len(loader) == 1
+        for _ in range(2):
+            iterator = iter(loader)
+            workers.extend(iterator._workers)
+            assert [item.tolist() for item in iterator] == [[0, 1]]
+    finally:
+        loader.close()
+    assert all(not w.is_alive() and w.exitcode == 0 for w in workers)
+    loader.close()  # Idempotent; no fallback to destructor cleanup.
+
+
+def test_limited_sampler_keeps_shuffle_and_final_partial_batch():
+    from visual_training.train import make_loader
+
+    dataset = torch.utils.data.TensorDataset(torch.arange(11))
+    config = dict(max_train_batches=2, max_val_batches=10, seed=42)
+    loader = make_loader(dataset, config, 4, True, torch.device("cpu"))
+    first = torch.cat([sample[0] for sample in loader]).tolist()
+    second = torch.cat([sample[0] for sample in loader]).tolist()
+    assert len(first) == len(second) == 8 and first != second
+    assert len(set(first)) == 8
+    validation = make_loader(dataset, config, 4, False, torch.device("cpu"))
+    assert len(validation) == 3
+    assert [sample[0].tolist() for sample in validation] == [
+        list(range(4)),
+        list(range(4, 8)),
+        [8, 9, 10],
+    ]
+
+
+def test_cleanup_error_fails_job_without_completion_event(
+    dataset, tmp_path, monkeypatch
+):
+    config = tiny_config(dataset, tmp_path)
+    config.update(save_checkpoints=False, num_workers=0)
+    job = tmp_path / "job.json"
+    job.write_text(json.dumps(dict(mode="pretrain", config=config)))
+    closed = []
+    original = TrainingDataLoader.close
+
+    def fail_first_close(self):
+        original(self)
+        closed.append(self)
+        if len(closed) == 1:
+            raise RuntimeError("injected worker shutdown failure")
+
+    monkeypatch.setattr(TrainingDataLoader, "close", fail_first_close)
+    with pytest.raises(RuntimeError, match="shutdown failure"):
+        execute_job(job)
+    assert len(closed) == 2  # Both pools must be cleaned even when the first fails.
+    assert json.loads((tmp_path / "status.json").read_text())["status"] == "failed"
+    metrics = (tmp_path / "logs/metrics.jsonl").read_text()
+    assert (
+        '"event": "epoch"' in metrics and '"event": "training_complete"' not in metrics
+    )
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(),
+                reason="CUDA required to exercise pinned-memory thread shutdown",
+            ),
+        ),
+    ],
+)
+def test_pretrain_process_exits_cleanly_after_completion(dataset, tmp_path, device):
+    config = tiny_config(dataset, tmp_path)
+    config.update(
+        save_checkpoints=False,
+        device=device,
+        pin_memory=device == "cuda",
+        prefetch_factor=4,
+    )
+    job = tmp_path / "job.json"
+    job.write_text(json.dumps(dict(mode="pretrain", config=config)))
+    process = subprocess.run(
+        [sys.executable, "-m", "visual_training.server_train", "--run-job", str(job)],
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert process.returncode == 0, process.stdout + process.stderr
+    assert "Exception ignored" not in process.stderr
+    assert "Traceback" not in process.stderr and "Aborted" not in process.stderr
+    assert (
+        json.loads(process.stdout.strip().splitlines()[-1])["event"]
+        == "training_complete"
+    )
+    assert json.loads((tmp_path / "status.json").read_text())["status"] == "complete"
+    assert not (tmp_path / "weights").exists()
+
+
+def test_training_failure_reaps_all_started_workers(dataset, tmp_path, monkeypatch):
+    import visual_training.train as module
+
+    config = tiny_config(dataset, tmp_path)
+    config["save_checkpoints"] = False
+    closed_workers = []
+    original = TrainingDataLoader.close
+
+    def record_close(self):
+        iterator = getattr(self, "_training_iterator", None)
+        if iterator is not None:
+            closed_workers.extend(iterator._workers)
+        original(self)
+
+    def fail_loss(*args, **kwargs):
+        raise ValueError("injected training failure")
+
+    monkeypatch.setattr(module, "segmentation_keypoint_loss", fail_loss)
+    monkeypatch.setattr(TrainingDataLoader, "close", record_close)
+    with pytest.raises(ValueError, match="training failure"):
+        train(config)
+    assert len(closed_workers) == 2
+    assert all(not worker.is_alive() for worker in closed_workers)
+
+
+def test_close_rejects_worker_abort_even_if_torch_shutdown_does_not_raise():
+    worker = SimpleNamespace(
+        pid=123, exitcode=-6, join=lambda timeout: None, is_alive=lambda: False
+    )
+    iterator = SimpleNamespace(_workers=[worker], _shutdown_workers=lambda: None)
+    loader = TrainingDataLoader(OnlyFirstBatchDataset(), num_workers=1)
+    loader._training_iterator = iterator
+    with pytest.raises(RuntimeError, match=r"123, -6"):
+        loader.close()
+    assert loader._training_iterator is None and loader._iterator is None

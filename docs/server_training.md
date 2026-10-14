@@ -35,6 +35,8 @@ bash shell/train_landing_server.sh pretrain --data-root data/landing_server_test
 
 这里的“预训练”是短程训练检查，不是预训练权重阶段。正式训练从固定随机种子初始化，不继承短程检查的参数。GPU batch 探测中也会执行真实优化器更新，但这些参数随后被丢弃。
 
+短程 batch 上限在采样器中生效，worker 不会预取超过上限的 batch；每轮仍按配置重新打乱训练样本。训练结束时显式关闭 train/val 加载进程并检查退出码，正常退出后才输出 `training_complete` 和写入 `status: complete`。加载进程清理异常会记录为失败，不依赖 Python 析构器忽略异常。
+
 ## 查看后台任务与日志
 
 ```bash
@@ -92,3 +94,15 @@ watch -n 1 nvidia-smi
 ```
 
 建议数据生成结束后再开始训练，避免 Blender 与训练竞争 GPU 显存。`--output` 要求新目录或空目录，脚本不会覆盖旧模型，也不提供自动断点续训。既有评估、ONNX 导出与导航推理接口仍读取相同 checkpoint 格式，使用本次实际 `best.pt` 路径即可。
+
+## 训练结束后的 DataLoader worker 异常
+
+旧版在达到预训练 batch 上限后直接退出迭代，worker 可能仍有预取任务；打印 `training_complete` 后才在析构时关闭进程。如果此时看到 `_MultiProcessingDataLoaderIter.__del__` / `worker ... Aborted`，说明训练循环已完成，但加载进程退出异常；旧版仍可能记录 `complete`。SIGABRT 的底层原因不能仅由这段 Python 堆栈确定，不能据此认定是 CUDA 显存不足。
+
+更新代码后重新执行原预训练命令，确认结束时没有 worker 清理异常。若需要在更新之前临时验证训练，可关闭多进程加载（GPU 训练仍启用，但数据加载可能较慢）：
+
+```bash
+bash shell/train_landing_server.sh pretrain --num-workers 0
+```
+
+若修正后仍有异常，应保留对应 `train.log` 和 `resolved_config.json`，检查首次 worker 原生错误、共享内存及系统日志；不要只依据最后一行 `training_complete` 判断通过。

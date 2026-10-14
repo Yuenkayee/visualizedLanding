@@ -91,3 +91,11 @@ Blender 4.2 的 macOS cp311 wheel 内部 WHEEL 标记错误地写成 cp39；pip/
 - 51 项 pytest 全部通过。新增测试实际执行两轮 CPU 短程训练和多进程数据加载，确认参数更新、有限损失与验证指标、预训练不写权重/优化器/history、正式 checkpoint 可被现有评估器加载。覆盖失败状态、shell 管道返回码和错误日志、数据划分泄漏与未完成数据拒绝、显存不足时 batch 候选选择、容器共享内存限制、独立增强随机种子以及 BF16 输入的 FP32 损失/梯度。
 - Shell 语法、F/E9 静态检查和 Git whitespace 检查通过。tmux detached 启动参数、带空格路径和环境变量传递经过单元检查；本机未执行实际 tmux 会话或 CUDA 训练，不将 CPU 测试报告为 RTX 4090 的吞吐率/收敛验证。正式服务器运行时先执行 CUDA 检查与真实 batch 探测，预训练日志用于确认完整训练路径。
 - 训练记录验证 IoU、归一化关键点误差、损失、阶段吞吐率和峰值显存；保留 512 输入、原网络规模，默认 BF16/FP32 混合计算。短程通过仅证明训练可运行，不代表真实场景精度或着舰闭环验收。两种运行模式均不含关机操作。完整命令见 [服务器训练指南](server_training.md)。
+
+### 预训练结束后的 worker 清理（2026-10-15）
+
+用户在服务器观察到两轮预训练完成后 `_MultiProcessingDataLoaderIter.__del__` 报 worker SIGABRT，随后仍打印成功。代码确认旧版使用循环内 `break` 限制 batch，预取任务可能尚未完成，且完成事件早于析构清理；仅凭 Python 堆栈无法定位 SIGABRT 的原生原因。
+
+修改为采样器限制 batch 数量，正常耗尽迭代；使用显式关闭的训练 DataLoader，在成功和异常路径均回收 train/val worker，检查退出码，清理成功后才发布完成事件。PyTorch 没有公共 DataLoader.close()，私有关闭接口封装于 `training_loader.py`；已核对 2.8.0 源码中的关闭实现。
+
+本机 PyTorch 2.5.1 的完整回归为 58 项通过、1 项 CUDA 测试跳过。新增实际多进程测试覆盖超限数据不被预取、持久/非持久 worker 正常退出、子进程结束无析构异常、训练异常后进程回收，并测试清理失败时任务状态为 failed 且不发布 training_complete。新增 CUDA/锁页内存退出测试需在服务器运行；本机未复现或验证远程原生 SIGABRT。静态 F/E9 和 Git whitespace 检查通过。
