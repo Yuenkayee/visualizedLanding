@@ -1,0 +1,247 @@
+import json
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+import torch
+
+from shell.server_dependencies import requirements
+from visual_training.data.build_dataset import build_dataset
+from visual_training.evaluate import evaluate
+from visual_training.models.losses import segmentation_keypoint_loss
+from visual_training.server_train import (
+    execute_job,
+    tmux_command,
+    validate_data,
+    parser,
+    build_config,
+)
+from visual_training.train import train, choose_batch, fit_shared_memory, seed_worker
+
+
+@pytest.fixture
+def dataset(tmp_path):
+    root = tmp_path / "data"
+    build_dataset(root, sequences=3, frames=4)
+    return root
+
+
+def tiny_config(dataset, tmp_path):
+    return dict(
+        seed=42,
+        data_root=str(dataset),
+        image_size=32,
+        batch_size=2,
+        model=dict(channels=4),
+        epochs=2,
+        device="cpu",
+        threads=1,
+        output=str(tmp_path / "weights"),
+        log_dir=str(tmp_path / "logs"),
+        max_train_batches=1,
+        max_val_batches=1,
+        num_workers=2,
+        persistent_workers=True,
+        channels_last=True,
+        log_every=1,
+    )
+
+
+def test_pretrain_updates_weights_but_saves_logs_only(dataset, tmp_path, monkeypatch):
+    config = tiny_config(dataset, tmp_path)
+    config["save_checkpoints"] = False
+    steps = []
+    original = torch.optim.AdamW.step
+
+    def step(self, *args, **kwargs):
+        before = self.param_groups[0]["params"][0].detach().clone()
+        result = original(self, *args, **kwargs)
+        steps.append(not torch.equal(before, self.param_groups[0]["params"][0]))
+        return result
+
+    monkeypatch.setattr(torch.optim.AdamW, "step", step)
+    assert train(config) is None
+    assert steps == [True, True]
+    assert not Path(config["output"]).exists()
+    assert not list(tmp_path.rglob("*.pt"))
+    assert not list(tmp_path.rglob("history.json"))
+    metrics = [
+        json.loads(line)
+        for line in (tmp_path / "logs/metrics.jsonl").read_text().splitlines()
+    ]
+    epochs = [row for row in metrics if row["event"] == "epoch"]
+    assert len(epochs) == 2 and all(
+        row["phases"]["train"]["samples"] == 2 for row in epochs
+    )
+    assert all(0 <= row["val_mask_iou"] <= 1 for row in epochs)
+    assert metrics[-1]["event"] == "training_complete"
+
+
+def test_full_checkpoint_can_be_loaded_by_existing_evaluator(dataset, tmp_path):
+    config = tiny_config(dataset, tmp_path)
+    config.update(epochs=1, num_workers=0)
+    job_path = tmp_path / "job.json"
+    job_path.write_text(json.dumps(dict(mode="full", config=config)))
+    execute_job(job_path)
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert status["status"] == "complete" and status["exit_code"] == 0
+    payload = torch.load(status["checkpoint"], weights_only=True)
+    assert payload["epoch"] == 1 and payload["optimizer"]["state"]
+    result = evaluate(status["checkpoint"], dataset / "splits/test.json", dataset, 32)
+    assert np.isfinite(result["mask_iou"])
+    assert (tmp_path / "weights/last.pt").is_file()
+    assert (tmp_path / "weights/history.json").is_file()
+
+
+def test_failed_training_keeps_failure_status(tmp_path):
+    config = tiny_config(tmp_path / "missing", tmp_path)
+    config.update(save_checkpoints=False, num_workers=0)
+    job_path = tmp_path / "job.json"
+    job_path.write_text(json.dumps(dict(mode="pretrain", config=config)))
+    with pytest.raises(FileNotFoundError):
+        execute_job(job_path)
+    assert json.loads((tmp_path / "status.json").read_text())["status"] == "failed"
+    assert not (tmp_path / "weights").exists()
+
+
+def test_dataset_gate_rejects_leakage_and_generation_test(dataset):
+    assert validate_data(dataset) == dict(train=4, val=4, test=4)
+    (dataset / "server_run.json").write_text(
+        json.dumps(dict(status="complete", mode="test"))
+    )
+    with pytest.raises(ValueError, match="incomplete"):
+        validate_data(dataset)
+    (dataset / "SUCCESS.json").write_text("{}")
+    with pytest.raises(ValueError, match="90-frame"):
+        validate_data(dataset, formal=True)
+    paths = json.loads((dataset / "splits/train.json").read_text())
+    (dataset / "splits/val.json").write_text(json.dumps(paths))
+    with pytest.raises(ValueError, match="Repeated"):
+        validate_data(dataset)
+
+
+def test_batch_probe_selects_throughput_with_memory_headroom(monkeypatch):
+    import visual_training.train as module
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (1000, 1000))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+
+    def probe(config, dataset, device, batch):
+        if batch == 16:
+            raise torch.cuda.OutOfMemoryError("test")
+        return dict(
+            batch_size=batch,
+            images_per_s={8: 150, 4: 100}[batch],
+            peak_reserved_bytes=batch * 100,
+        )
+
+    monkeypatch.setattr(module, "probe_batch", probe)
+    events = []
+    assert (
+        choose_batch(
+            dict(batch_size="auto", max_batch_size=16),
+            None,
+            torch.device("cuda"),
+            events.append,
+        )
+        == 8
+    )
+    assert events[0]["status"] == "out_of_memory"
+    assert events[-1]["event"] == "batch_selected"
+
+
+def test_shared_memory_budget_and_independent_augmentation(monkeypatch):
+    import visual_training.train as module
+
+    monkeypatch.setattr(module.Path, "is_dir", lambda self: True)
+    monkeypatch.setattr(
+        module.shutil, "disk_usage", lambda path: SimpleNamespace(free=64 * 1024**2)
+    )
+    config = dict(num_workers=8, image_size=512, prefetch_factor=2)
+    events = []
+    fit_shared_memory(config, 16, events.append)
+    assert config["num_workers"] == 0 and events
+    augmentation = SimpleNamespace(rng=None)
+    monkeypatch.setattr(
+        module,
+        "get_worker_info",
+        lambda: SimpleNamespace(dataset=SimpleNamespace(augmentation=augmentation)),
+    )
+    monkeypatch.setattr(torch, "initial_seed", lambda: 123)
+    seed_worker(0)
+    first = augmentation.rng.random()
+    monkeypatch.setattr(torch, "initial_seed", lambda: 124)
+    seed_worker(1)
+    assert first != augmentation.rng.random()
+
+
+def test_bf16_heatmap_loss_remains_finite_in_fp32():
+    heatmaps = torch.randn(2, 4, 64, 64, dtype=torch.bfloat16, requires_grad=True)
+    prediction = dict(
+        heatmap_logits=heatmaps,
+        mask_logits=heatmaps[:, :1],
+        keypoints=torch.rand(2, 4, 2, requires_grad=True),
+    )
+    target = dict(
+        mask=torch.zeros(2, 1, 64, 64),
+        keypoints=torch.rand(2, 4, 2),
+        visibility=torch.ones(2, 4, dtype=torch.bool),
+    )
+    loss, metrics = segmentation_keypoint_loss(prediction, target, return_metrics=False)
+    loss.backward()
+    assert loss.dtype == torch.float32 and torch.isfinite(loss)
+    assert torch.isfinite(heatmaps.grad).all() and metrics == {}
+
+
+def test_tmux_command_preserves_paths_and_runtime_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    job = tmp_path / "job with spaces.json"
+    log = tmp_path / "train with spaces.log"
+    command = tmux_command("landing_train", job, log)
+    assert command[:5] == ["tmux", "new-session", "-d", "-s", "landing_train"]
+    argv = shlex.split(command[-1])
+    assert "CUDA_VISIBLE_DEVICES=0" in argv
+    assert argv[-3:] == [sys.executable, str(job), str(log)]
+
+
+def test_shell_worker_preserves_failure_exit_and_log(tmp_path):
+    config = tiny_config(tmp_path / "missing", tmp_path)
+    config.update(save_checkpoints=False, num_workers=0)
+    job = tmp_path / "job with spaces.json"
+    job.write_text(json.dumps(dict(mode="pretrain", config=config)))
+    log = tmp_path / "error.log"
+    process = subprocess.run(
+        ["bash", "shell/run_training_job.sh", sys.executable, str(job), str(log)],
+        capture_output=True,
+        text=True,
+    )
+    assert process.returncode != 0
+    assert "FileNotFoundError" in log.read_text()
+    assert json.loads((tmp_path / "status.json").read_text())["status"] == "failed"
+
+
+def test_modes_and_training_dependency_profile(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "data_root: data/landing\nbatch_size: auto\nepochs: 40\nmax_train_batches: 1\n"
+    )
+    args = parser().parse_args(["pretrain", "--config", str(config)])
+    c = build_config(args, tmp_path)
+    assert c["epochs"] == 2 and c["max_train_batches"] == 50
+    assert not c["save_checkpoints"] and "output" not in c
+    args = parser().parse_args(
+        ["full", "--config", str(config), "--output", str(tmp_path / "out")]
+    )
+    c = build_config(args, tmp_path)
+    assert c["epochs"] == 40 and "max_train_batches" not in c and c["save_checkpoints"]
+    with pytest.raises(ValueError, match="not empty"):
+        build_config(args, tmp_path)
+    profile = {
+        r.name: str(r.specifier)
+        for r in requirements("requirements-training-server.txt")
+    }
+    assert profile["torch"] == "==2.8.0" and "bpy" not in profile

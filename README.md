@@ -25,6 +25,15 @@ bash shell/generate_landing_dataset_server.sh full  # 10,800 帧正式生成
 
 默认 OptiX、最多 16 个轨迹进程、2 个渲染进程；保留镜像 PyTorch/CUDA，用隔离 Python 3.11 运行官方 bpy 4.5 LTS。配置、检查命令和输出说明见 [服务器生成指南](docs/server_dataset.md)。
 
+正式数据生成完成后，服务器训练使用以下入口；两种模式都自动检查依赖并保存日志，均不执行关机：
+
+```bash
+bash shell/train_landing_server.sh pretrain  # 前台短程检查，不保存权重
+bash shell/train_landing_server.sh full      # 自动 tmux 后台训练，保存最佳/最后权重
+```
+
+默认 512 像素输入、CUDA BF16、自动选择 batch size 和并行数据加载。日志、tmux 操作和参数说明见 [服务器训练指南](docs/server_training.md)。
+
 ## 生成数据、训练、导出
 
 ```bash

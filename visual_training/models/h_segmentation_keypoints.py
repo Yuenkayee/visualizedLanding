@@ -58,7 +58,9 @@ class HSegmentationKeypoints(nn.Module):
         )
         heatmaps = self.kp(d)
         n, k, h, w = heatmaps.shape
-        prob = heatmaps.flatten(2).softmax(-1).reshape(n, k, h, w)
+        # Wide 512x512 heatmaps need FP32 probabilities and reductions under
+        # BF16 autocast; otherwise small per-pixel probabilities lose precision.
+        prob = heatmaps.float().flatten(2).softmax(-1).reshape(n, k, h, w)
         xs = (torch.arange(w, device=image.device, dtype=image.dtype) + 0.5) / w
         ys = (torch.arange(h, device=image.device, dtype=image.dtype) + 0.5) / h
         x = (prob.sum(2) * xs).sum(2)

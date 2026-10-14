@@ -171,6 +171,49 @@ def ensure_libraries(check):
     run([*prefix, *command], env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
 
 
+def setup_training(check=False, need_tmux=False):
+    """Training needs neither bpy nor a second Python runtime."""
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        raise RuntimeError("Training server profile requires Linux x86_64")
+    if sys.version_info[:2] != (3, 12):
+        raise RuntimeError("Use the image's Python 3.12 via PYTHON_BIN")
+    run([sys.executable, "-m", "pip", "--version"])
+    ensure_torch(check)
+    ensure_requirements(
+        sys.executable, ROOT / "requirements-training-server.txt", check
+    )
+    run(
+        [
+            sys.executable,
+            "-c",
+            "import torch, cv2, numpy, scipy, yaml; "
+            "assert torch.__version__.split('+')[0] == '2.8.0' and torch.version.cuda == '12.8'; "
+            "assert torch.cuda.is_available(), 'CUDA unavailable'; "
+            "x=torch.ones(16, device='cuda'); assert (x @ x).item() == 16; "
+            "assert torch.cuda.is_bf16_supported(), 'BF16 unsupported on selected GPU'; "
+            "print('Training GPU:', torch.cuda.get_device_name(0), 'Torch:', torch.__version__)",
+        ]
+    )
+    if need_tmux and not shutil.which("tmux"):
+        command = ["apt-get", "install", "-y", "--no-install-recommends", "tmux"]
+        prefix = []
+        if check:
+            raise RuntimeError("Missing tmux; run: sudo " + " ".join(command))
+        if os.geteuid() != 0:
+            if (
+                not shutil.which("sudo")
+                or subprocess.run(["sudo", "-n", "true"]).returncode
+            ):
+                raise RuntimeError("Install tmux then rerun: sudo " + " ".join(command))
+            prefix = ["sudo", "-n"]
+        run([*prefix, "apt-get", "update"])
+        run(
+            [*prefix, *command], env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+        )
+    if need_tmux:
+        run(["tmux", "-V"])
+
+
 def setup(check=False, device="OPTIX", gpu_index=0, threads=8):
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise RuntimeError("Server profile requires Linux x86_64 (Ubuntu 22.04)")
@@ -248,6 +291,16 @@ def main():
     parser.add_argument("--device", choices=["OPTIX", "CUDA"], default="OPTIX")
     parser.add_argument("--gpu-index", type=int, default=0)
     parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument(
+        "--training",
+        action="store_true",
+        help="check/install training dependencies only",
+    )
+    parser.add_argument(
+        "--with-tmux",
+        action="store_true",
+        help="also check/install tmux (training mode)",
+    )
     parser.add_argument("--audit", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.audit:
@@ -256,7 +309,10 @@ def main():
     if args.threads < 1 or args.gpu_index < 0:
         parser.error("--threads must be positive and --gpu-index must be nonnegative")
     try:
-        setup(args.check, args.device, args.gpu_index, args.threads)
+        if args.training:
+            setup_training(args.check, args.with_tmux)
+        else:
+            setup(args.check, args.device, args.gpu_index, args.threads)
     except (RuntimeError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f"Environment check failed: {exc}\n")
 

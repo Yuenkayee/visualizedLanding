@@ -1,0 +1,22 @@
+seed: 20261006
+data_root: data/landing
+image_size: 512
+epochs: 40
+learning_rate: 0.001
+model: {channels: 16, keypoints: 4}
+device: cuda
+# Benchmark real forward/backward/AdamW steps; cap batch size to limit changes
+# to the optimization dynamics. Never lower resolution to fit more samples.
+batch_size: auto
+max_batch_size: 16
+memory_fraction: 0.85
+precision: bf16
+channels_last: true
+tf32: true
+cudnn_benchmark: true
+num_workers: 8
+threads: 4
+prefetch_factor: 2
+pin_memory: true
+persistent_workers: true
+log_every: 20

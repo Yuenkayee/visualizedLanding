@@ -89,3 +89,5 @@ watch -n 1 nvidia-smi
 协调器核对计划中的每一帧和 split，拒绝漏帧、重复帧与遗漏架次。校验器检查所有标注、文件存在性、动态外参、固定安装点、云台时间戳、阶段/天气/划分覆盖。test 解码全部 RGB/mask/LiDAR，full 对每个 split×天气×阶段解码至少一组。最后用实际 `HDataset` 和分割/关键点网络在 CUDA 上执行三个 split 的小型前向、损失与反向计算；这用于接口检查，不是训练精度评估。
 
 本次开发在 macOS 上完成 CPU 并行/回归测试和 Blender 4.5.3 LTS 的实际 CPU 渲染，并对 Linux x86_64 / Python 3.12、3.11 两组依赖进行解析。远程 RTX 4090 的驱动、OptiX 与实际吞吐率需以服务器 test 的结果为准。
+
+正式数据生成完成后，可运行 `bash shell/train_landing_server.sh pretrain` 检查训练，再运行 `bash shell/train_landing_server.sh full` 自动启动 tmux 后台训练。两种模式均保存日志，均不关机，详见 [服务器训练指南](server_training.md)。
