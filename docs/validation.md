@@ -77,3 +77,10 @@ Blender 4.2 的 macOS cp311 wheel 内部 WHEEL 标记错误地写成 cp39；pip/
 - Blender bpy 4.2 实际渲染晴天的 approach/window_hold/touchdown 三张 320×240 样本，包含 RGB、独立 mask、动态标注与雷达 NPZ，并检查预览。前两张满足四角条件，末端样本有部分出画/遮挡，按真实标签保留。
 
 本次未重新训练正式网络、未生成全量 10,800 张图像、未做真实机型或接触动力学验证。原刚性相机统计与权重不能直接用于证明云台版本性能。仿真云台控制输入目前采用理想同步机载/舰姿；MATLAB 接口测试编码器采用零误差值和配置协方差，Python 生成器/代理则额外采样编码器角度噪声。
+
+## Ubuntu / RTX 4090 生成入口（2026-10-14）
+
+- 新增服务器专用依赖检查、自动安装和 `test` / `full` 入口。Linux x86_64（manylinux 2.35）下 Python 3.12 主环境、Python 3.11 bpy 环境的依赖均解析成功；主环境解析到 PyTorch 2.8.0+cu128。验证了 bpy 4.5.3 的 Linux wheel 为 cp311，而非 cp312。
+- 41 项 pytest 通过。新增回归验证并行/串行轨迹和标注一致、图像一致、划分无泄漏、真实训练加载与梯度、失败子进程传播、损坏分片拒绝、GPU 显式选择及 PyTorch CUDA 构建检查。Shell 语法、F/E9 静态检查和 Git whitespace 检查通过。
+- macOS arm64 上使用独立 bpy 4.5.3 LTS，两个 CPU 渲染进程实际生成五种天气×三阶段×三个独立架次，共 45 帧 320×240 样本，2 samples、sea_grid=12、短时 4 Hz 轨迹，仅用于管线验证。全部 RGB/mask/LiDAR 解码通过，动态外参、固定安装位置、编码器时间戳及三个 split 的训练前后向检查通过。运行保持 RGB 去噪，标注通道关闭去噪，导出时二值化抗锯齿边缘。
+- 本机没有 NVIDIA GPU，未执行 RTX 4090 / CUDA 12.8 / OptiX 实机测试，也未测定其最优进程数或生成全量数据。服务器入口在生成前实际执行 CUDA 张量操作与 Cycles 探测渲染，在生成后用 CUDA 执行小型训练接口检查。完整命令见 [服务器生成指南](server_dataset.md)。

@@ -6,7 +6,9 @@ python -m visual_training.data.generate_landing_dataset --renderer blender
 import argparse
 import copy
 import json
+import multiprocessing
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import cv2
 import numpy as np
@@ -42,7 +44,9 @@ from visual_modeling.sensors.airframe_visibility import (
 def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+    temporary.replace(path)
 
 
 def summarize_plan(config, plan):
@@ -77,7 +81,16 @@ def summarize_plan(config, plan):
     return report
 
 
-def plan_dataset(config, output):
+def _plan_sortie(task):
+    config, seed, sequence, weather, wait, split, path = task
+    sortie = make_sortie(config, seed, sequence, weather, wait)
+    write_json(path, sortie)
+    return dict(sequence_id=sequence, weather=weather, split=split,
+                trajectory=str(path), optics=optical_report(sortie, config["marker"]),
+                attitude=attitude_report(sortie))
+
+
+def plan_dataset(config, output, workers=1):
     root = Path(output).resolve()
     count = config["sorties_per_weather"]
     ratios = np.array(config["split_ratios"], float)
@@ -95,7 +108,9 @@ def plan_dataset(config, output):
     if event_path:
         events = json.loads(Path(event_path).read_text())
     rng = np.random.default_rng(config["seed"])
-    plan = []
+    if workers < 1:
+        raise ValueError("planning workers must be positive")
+    tasks = []
     for weather in config["weather"]:
         indices = np.arange(count)
         rng.shuffle(indices)
@@ -113,20 +128,16 @@ def plan_dataset(config, output):
                 if sequence not in events:
                     raise ValueError(f"missing window wait for {sequence}")
                 wait = events[sequence]
-            sortie = make_sortie(config, seed, sequence, weather, wait)
-            report = optical_report(sortie, config["marker"])
             path = root / "trajectories" / f"{sequence}.json"
-            write_json(path, sortie)
-            plan.append(
-                dict(
-                    sequence_id=sequence,
-                    weather=weather,
-                    split=assignment.get(i, "train"),
-                    trajectory=str(path),
-                    optics=report,
-                    attitude=attitude_report(sortie),
-                )
-            )
+            tasks.append((config, seed, sequence, weather, wait,
+                          assignment.get(i, "train"), path))
+    # Assign seeds/splits in the parent; worker scheduling cannot change them.
+    if workers == 1:
+        plan = list(map(_plan_sortie, tasks))
+    else:
+        with ProcessPoolExecutor(max_workers=workers,
+                                 mp_context=multiprocessing.get_context("spawn")) as pool:
+            plan = list(pool.map(_plan_sortie, tasks))
     calibration, mount = camera_geometry(config)
     from navigation.common.gimbal import gimbal_config
     write_json(
@@ -159,6 +170,8 @@ def _blender_scene(config, weather):
     from visual_modeling.blender.build_airframe_proxy import build_airframe_proxy
 
     bpy.ops.object.select_all(action="SELECT")
+    persistent = bpy.context.scene.render.use_persistent_data
+    bpy.context.scene.render.use_persistent_data = False
     bpy.ops.object.delete(use_global=False)
     ship = build_ship(dict(marker=config["marker"]))
     r = config["render"]
@@ -184,6 +197,10 @@ def _blender_scene(config, weather):
     prepare_weather(weather, ship, camera)
     make_visual_wake(ship)
     helicopter = build_airframe_proxy(config["geometry"])
+    # Objects, meshes, materials and worlds from earlier sorties are no longer
+    # needed. Bound memory usage over long multi-weather generation jobs.
+    bpy.data.orphans_purge(do_recursive=True)
+    bpy.context.scene.render.use_persistent_data = persistent
     return ship, camera, ocean, helicopter
 
 
@@ -205,7 +222,8 @@ def _cpu_image(cal, pose, rng, marker, weather, mount, primitives):
     return image, mask
 
 
-def render_dataset(config, plan, output, renderer="blender", preview=False):
+def render_dataset(config, plan, output, renderer="blender", preview=False, *, finalize=True,
+                   progress_path=None):
     root = Path(output).resolve()
     paths = {name: [] for name in ["train", "val", "test"]}
     summary = []
@@ -318,6 +336,9 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
                 dt,
                 cal,
             )
+            # Cycles reconstructs antialiased edge pixels even in the emission
+            # pass. Export the binary target used by HDataset and pixel counts.
+            mask = np.where(mask > 127, 255, 0).astype(np.uint8)
             (root / image_path).parent.mkdir(parents=True, exist_ok=True)
             (root / mask_path).parent.mkdir(parents=True, exist_ok=True)
             if not cv2.imwrite(
@@ -419,10 +440,21 @@ def render_dataset(config, plan, output, renderer="blender", preview=False):
                 ),
                 flush=True,
             )
+            if progress_path:
+                write_json(progress_path, dict(frames=len(summary), sequence=sequence,
+                                               stage=row["stage"], frame=i))
+    if not finalize:
+        return dict(paths=paths, summary=summary)
+    return finalize_dataset(config, paths, summary, root, renderer, preview)
+
+
+def finalize_dataset(config, paths, summary, output, renderer, preview=False):
+    """Only the coordinator publishes split/report files for parallel renders."""
+    root = Path(output).resolve()
     if not preview:
+        if any(not labels for labels in paths.values()):
+            raise ValueError("empty train/val/test split")
         for split, labels in paths.items():
-            if not labels:
-                raise ValueError(f"empty {split} split")
             write_json(root / "splits" / f"{split}.json", labels)
     report = dict(
         renderer=renderer,

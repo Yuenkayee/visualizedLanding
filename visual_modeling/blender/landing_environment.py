@@ -80,12 +80,16 @@ def update_environment(ocean, ship, camera, timestamp, sea_config):
     ocean.location.x = ship.matrix_world.translation.x
     ocean.location.y = ship.matrix_world.translation.y
     amplitude = sea_config.get("wave_amplitude_m", 0.4)
-    for v in ocean.data.vertices:
-        x, y = v.co.x + ocean.location.x, v.co.y + ocean.location.y
-        v.co.z = sea_config.get("sea_level_m", -6) + amplitude * (
-            np.sin(0.12 * x + 0.04 * y - 0.9 * timestamp)
-            + 0.5 * np.sin(0.2 * y - 0.03 * x - 1.2 * timestamp)
-        )
+    coordinates = np.empty(len(ocean.data.vertices) * 3, dtype=np.float32)
+    ocean.data.vertices.foreach_get("co", coordinates)
+    coordinates = coordinates.reshape(-1, 3)
+    x = coordinates[:, 0].astype(float) + ocean.location.x
+    y = coordinates[:, 1].astype(float) + ocean.location.y
+    coordinates[:, 2] = sea_config.get("sea_level_m", -6) + amplitude * (
+        np.sin(0.12 * x + 0.04 * y - 0.9 * timestamp)
+        + 0.5 * np.sin(0.2 * y - 0.03 * x - 1.2 * timestamp)
+    )
+    ocean.data.vertices.foreach_set("co", coordinates.ravel())
     ocean.data.update()
     fog = bpy.data.objects.get("FogVolume")
     if fog:

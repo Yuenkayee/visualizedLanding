@@ -1,0 +1,13 @@
+# Ubuntu 22.04 x86_64 / Python 3.12. Direct pins, not the old cu124 lock.
+-r requirements-data.txt
+# Installed/checked against https://download.pytorch.org/whl/cu128 by the script.
+# PEP 440 also accepts the image's 2.8.0+cu128 build.
+torch==2.8.0
+Pillow==11.0.0
+matplotlib==3.9.2
+pytest==8.3.3
+onnx==1.17.0
+onnxruntime==1.20.1
+protobuf==5.28.3
+packaging==25.0
+uv==0.9.5

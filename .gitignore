@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.venv-render-server/
 *.egg-info/
 .tools/
 data/rendered/*
@@ -11,6 +12,7 @@ data/calibration/*
 data/trajectories/*
 data/splits/*
 data/landing/
+data/landing_server_test/
 outputs/figures/*
 outputs/logs/*
 outputs/metrics/*

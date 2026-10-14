@@ -15,6 +15,16 @@ pytest -q
 
 `requirements.txt` 锁定核心直接和传递依赖；`requirements-blender.txt` 是包含核心依赖的 Blender 扩展锁；`requirements-matlab.txt` 锁定需要本机 MATLAB 的可选 Engine。CUDA 包使用平台条件标记，macOS 无需安装它们。不要把 `bpy` 装进不同版本的 Blender 内置 Python。
 
+**Ubuntu 22.04 / Python 3.12 / PyTorch 2.8.0 / CUDA 12.8 / RTX 4090 服务器**使用专用入口，不运行上面的本地 Python 3.11 安装脚本：
+
+```bash
+export PYTHON_BIN=python
+bash shell/generate_landing_dataset_server.sh test  # 自动安装依赖，90 帧 GPU 测试
+bash shell/generate_landing_dataset_server.sh full  # 10,800 帧正式生成
+```
+
+默认 OptiX、最多 16 个轨迹进程、2 个渲染进程；保留镜像 PyTorch/CUDA，用隔离 Python 3.11 运行官方 bpy 4.5 LTS。配置、检查命令和输出说明见 [服务器生成指南](docs/server_dataset.md)。
+
 ## 生成数据、训练、导出
 
 ```bash

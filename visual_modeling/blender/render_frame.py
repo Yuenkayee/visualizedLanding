@@ -39,6 +39,7 @@ def render_frame(image_path, mask_path=None, samples=32):
     old_samples = scene.cycles.samples
     old_path = scene.render.filepath
     old_view = scene.view_settings.view_transform
+    old_denoising = scene.cycles.use_denoising
     try:
         if bg:
             bg.inputs["Strength"].default_value = 0
@@ -53,6 +54,7 @@ def render_frame(image_path, mask_path=None, samples=32):
             obj.data.materials.clear()
             obj.data.materials.append(white if obj.pass_index == 1 else black)
         scene.cycles.samples = 1
+        scene.cycles.use_denoising = False
         scene.view_settings.view_transform = "Standard"
         Path(mask_path).parent.mkdir(parents=True, exist_ok=True)
         scene.render.filepath = str(Path(mask_path).resolve())
@@ -67,6 +69,7 @@ def render_frame(image_path, mask_path=None, samples=32):
         if bg:
             bg.inputs["Strength"].default_value = strength
         scene.cycles.samples = old_samples
+        scene.cycles.use_denoising = old_denoising
         scene.render.filepath = old_path
         scene.view_settings.view_transform = old_view
         bpy.data.materials.remove(black)

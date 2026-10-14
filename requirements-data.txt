@@ -1,0 +1,5 @@
+# Shared numerical/image dependencies for Python 3.12 planning and 3.11 rendering.
+numpy==1.26.4
+scipy==1.13.1
+opencv-python-headless==4.10.0.84
+PyYAML==6.0.2

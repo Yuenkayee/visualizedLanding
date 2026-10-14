@@ -90,6 +90,8 @@ Blender 另有随时间传播的海面正弦波和简化艉部水面尾迹。水
 
 ## 运行
 
+远程 Ubuntu 22.04 / Python 3.12 / PyTorch 2.8 / CUDA 12.8 / RTX 4090 请使用 [服务器生成指南](server_dataset.md) 中的 `shell/generate_landing_dataset_server.sh test|full`，自动检查依赖并启用 GPU 并行渲染。下面是原本地 Python 3.11 入口。
+
 ```bash
 source .venv/bin/activate
 # 根据当前配置重绘安装侧视示意（不代表三维无遮挡保证）
