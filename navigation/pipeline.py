@@ -10,6 +10,7 @@ from navigation.fusion.eskf_update_lidar import update_lidar
 from navigation.vision.infer_h import HDetector
 from navigation.vision.associate_keypoints import associate_keypoints
 from navigation.vision.geometric_constraints import valid_keypoints
+from navigation.vision.mask_geometry import recover_from_mask
 from navigation.lidar.associate_deck import associate_deck, plane_matches_deck
 from navigation.lidar.extract_deck_plane import extract_deck_plane
 from navigation.pose.estimate_covariance import estimate_covariance
@@ -22,7 +23,7 @@ class NavigationPipeline:
         self.marker_points = np.asarray(marker_points, float)
         self.config = config or {}
         self.state = state or ESKFState()
-        self.detector = HDetector(self.config.get("checkpoint"))
+        self.detector = HDetector(self.config.get("checkpoint"), self.config.get("device", "cpu"))
         self.health = HealthMonitor(
             self.config.get("max_measurement_age", 1.0),
             self.config.get("max_position_std", 5.0),
@@ -90,8 +91,12 @@ class NavigationPipeline:
                 transform(R, measurement.T_deck_camera[:3, 3] - R @ lever), P,
                 measurement.reprojection_error, measurement.source,
             )
+        before = self.state.position.copy()
         ok, d2 = update_vision(self.state, measurement)
-        self.diagnostics.update(vision_accepted=ok, vision_mahalanobis=d2)
+        self.diagnostics.update(vision_accepted=ok, vision_mahalanobis=d2,
+                                vision_position_correction_m=float(np.linalg.norm(self.state.position - before)))
+        if not ok:
+            self.diagnostics["vision_rejection"] = "innovation_gate"
         if ok:
             self.health.record(measurement.timestamp)
         return self.estimate()
@@ -99,7 +104,29 @@ class NavigationPipeline:
     def process_camera(self, frame):
         self.process_gimbal(frame.gimbal, frame.timestamp)
         self.diagnostics["vision_accepted"] = False
+        for key in ("vision_rejection", "reprojection_error", "vision_mahalanobis", "mask_iou", "mask_keypoint_difference_px"):
+            self.diagnostics.pop(key, None)
+        self.diagnostics["vision_source"] = "learned"
+        self.diagnostics["vision_position_correction_m"] = 0.0
         detection = self.detector(frame.image)
+        pixel_sigma = self.config.get("pixel_sigma", 1.5)
+        if detection is None:
+            self.diagnostics["vision_rejection"] = "no_target"
+            return self.estimate()
+        if self.config.get("mask_geometry", True) and detection.ordered:
+            recovery = recover_from_mask(detection, frame.image.shape, self.marker_points,
+                                         self.calibration, self.estimate().T_deck_camera, self.config)
+            if recovery is not None:
+                pixels, iou, disagreement, scale = recovery
+                self.diagnostics.update(mask_iou=iou, mask_keypoint_difference_px=disagreement)
+                if disagreement > self.config.get("mask_recovery_difference_px", 3):
+                    detection.keypoints = pixels
+                    detection.visibility = None  # Independent, complete silhouette evidence.
+                    self.diagnostics["vision_source"] = "mask_recovery"
+                    pixel_sigma = max(pixel_sigma, float(scale.max()) * self.config.get("mask_pixel_sigma", 1.))
+        if detection.visibility is not None and np.min(detection.visibility) < self.config.get("minimum_keypoint_visibility", .5):
+            self.diagnostics["vision_rejection"] = "invisible_keypoint"
+            return self.estimate()
         if detection is not None and valid_keypoints(
             detection.keypoints, frame.image.shape
         ):
@@ -109,6 +136,7 @@ class NavigationPipeline:
                 self.calibration,
                 self.estimate().T_deck_camera,
                 detection.ordered,
+                refine=self.config.get("refine_pnp", True),
             )
             if match is not None:
                 T, error, _ = match
@@ -118,17 +146,23 @@ class NavigationPipeline:
                         self.marker_points,
                         T,
                         self.calibration,
-                        self.config.get("pixel_sigma", 1.5),
+                        max(pixel_sigma, error / np.sqrt(2)) if self.config.get("adaptive_pixel_noise", True) else pixel_sigma,
                     )
                     return self.process_pose(
                         PoseMeasurement(frame.timestamp, T, P, error)
                     )
+                self.diagnostics["vision_rejection"] = "reprojection"
+            else:
+                self.diagnostics["vision_rejection"] = "pnp_failed"
+        else:
+            self.diagnostics["vision_rejection"] = "invalid_quad"
         return self.estimate()
 
     def process_lidar(self, frame):
         synchronized = self.process_gimbal(frame.gimbal, frame.timestamp)
         self.diagnostics["lidar_accepted"] = False
-        self.diagnostics.pop("lidar_rejection", None)
+        for key in ("lidar_rejection", "lidar_mahalanobis", "plane_rms"):
+            self.diagnostics.pop(key, None)
         if self.calibration.lidar_mount == "body" and not synchronized:
             self.diagnostics["lidar_rejection"] = "missing_or_stale_gimbal"
             return self.estimate()
@@ -166,7 +200,11 @@ class NavigationPipeline:
             self.diagnostics.update(
                 lidar_accepted=ok, lidar_mahalanobis=d2, plane_rms=plane.rms
             )
+            if not ok:
+                self.diagnostics["lidar_rejection"] = "innovation_gate"
             # A plane does not observe x/y/yaw: only full pose refreshes global health.
+        else:
+            self.diagnostics["lidar_rejection"] = "no_deck_plane" if plane is None else "plane_inconsistent"
         return self.estimate()
 
     def estimate(self):

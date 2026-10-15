@@ -50,9 +50,13 @@ def run_logged(command, log):
             raise RuntimeError(f"Command exited {result}; see {log}")
 
 
-def validate_data(root, formal=False):
+def validate_data(root, formal=False, allow_incomplete_preparation=False, weathers=None):
     """Validate split membership before launching a detached training process."""
     root = Path(root)
+    if (root / "preparation.json").exists() and not allow_incomplete_preparation:
+        prepared = json.loads((root / "preparation.json").read_text())
+        if prepared.get("status") != "complete" or not (root / "SUCCESS.json").is_file():
+            raise ValueError("Prepared dataset is incomplete; require SUCCESS.json")
     if (root / "server_run.json").exists():
         run = json.loads((root / "server_run.json").read_text())
         if run.get("status") != "complete" or not (root / "SUCCESS.json").is_file():
@@ -71,12 +75,10 @@ def validate_data(root, formal=False):
         paths = json.loads((root / "splits" / f"{split}.json").read_text())
         if not paths:
             raise ValueError(f"Empty {split} split")
-        counts[split] = len(paths)
+        counts[split] = 0
         for path in paths:
-            label = Path(path)
-            if not label.is_absolute():
-                label = ROOT / label  # Same semantics as HDataset's manifest paths.
-            label = label.resolve()
+            from visual_training.data.manifest import resolve_annotation
+            label = resolve_annotation(path, root).resolve()
             if label in seen:
                 raise ValueError(f"Repeated annotation across splits: {label}")
             seen.add(label)
@@ -87,10 +89,15 @@ def validate_data(root, formal=False):
                 or row.get("split", split) != split
             ):
                 raise ValueError(f"Sortie leaks across splits: {sequence}")
+            if weathers is not None and row.get("weather") not in weathers:
+                continue
+            counts[split] += 1
             for key in ("image", "mask"):
                 artifact = root / row[key]
                 if not artifact.is_file() or artifact.stat().st_size == 0:
                     raise ValueError(f"Missing/empty {key}: {artifact}")
+        if counts[split] == 0:
+            raise ValueError(f"Empty {split} split after weather selection")
     return counts
 
 
@@ -216,7 +223,7 @@ def parser():
     p.add_argument("--config", default="configs/landing_training_server.yaml")
     p.add_argument(
         "--data-root",
-        help="default data/landing; pretrain may use data/landing_server_test",
+        help="default data/landing_four_weather; pretrain may use data/landing_server_test",
     )
     p.add_argument("--output", help="full mode checkpoint directory; must be new/empty")
     p.add_argument("--log-root", default="outputs/logs/training")
@@ -309,7 +316,9 @@ def main(argv=None):
             import yaml
 
             root = yaml.safe_load(Path(args.config).read_text())["data_root"]
-        counts = validate_data(Path(root).resolve(), formal=args.mode == "full")
+        import yaml
+        selected_weather = yaml.safe_load(Path(args.config).read_text()).get("weathers")
+        counts = validate_data(Path(root).resolve(), formal=args.mode == "full", weathers=selected_weather)
         config = build_config(args, run_dir)
         write_json(
             run_dir / "job.json",

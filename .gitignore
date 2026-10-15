@@ -12,6 +12,7 @@ data/calibration/*
 data/trajectories/*
 data/splits/*
 data/landing/
+data/landing_server/
 data/landing_server_test/
 outputs/figures/*
 outputs/logs/*
@@ -20,3 +21,9 @@ visual_training/checkpoints/*
 visual_modeling/assets/scenes/*.blend*
 visual_modeling/assets/ships/downloads/
 !**/.gitkeep
+
+# Four-weather preparation and portable replay outputs
+data/landing_four_weather/
+data/landing_robust/
+data/landing_robust_test/
+outputs/replay/

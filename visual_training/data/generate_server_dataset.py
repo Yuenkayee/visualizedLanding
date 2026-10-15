@@ -156,7 +156,7 @@ def parser():
     p.add_argument(
         "mode",
         choices=["test", "full"],
-        help="test: 90 frames, 640x480, 4 samples; full: config defaults (10800 frames)",
+        help="test: 72 frames, 640x480, 4 samples; full: config defaults (8640 frames)",
     )
     p.add_argument("--config", default="configs/landing_dataset.yaml")
     p.add_argument(

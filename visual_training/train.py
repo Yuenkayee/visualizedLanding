@@ -17,6 +17,7 @@ from torch.utils.data import (
     BatchSampler,
     RandomSampler,
     SequentialSampler,
+    WeightedRandomSampler,
     get_worker_info,
 )
 
@@ -25,6 +26,7 @@ from visual_training.data.augmentations import PhotometricAugmentation
 from visual_training.data.training_loader import LimitedBatchSampler, TrainingDataLoader
 from visual_training.models.h_segmentation_keypoints import HSegmentationKeypoints
 from visual_training.models.losses import segmentation_keypoint_loss
+from visual_training.metrics import grouped_metrics, training_report
 
 
 def seed_worker(worker_id):
@@ -87,7 +89,7 @@ def probe_batch(config, dataset, device, batch_size):
         with autocast(config, device):
             prediction = model(sample["image"])
             loss, _ = segmentation_keypoint_loss(
-                prediction, sample, return_metrics=False
+                prediction, sample, return_metrics=False, **config.get("loss", {})
             )
         if not torch.isfinite(loss):
             raise ValueError("Nonfinite batch probe loss")
@@ -163,6 +165,10 @@ def make_loader(dataset, config, batch, training, device):
         if training
         else SequentialSampler(dataset)
     )
+    if training and config.get("touchdown_sampling_weight", 1) != 1:
+        weights = [config["touchdown_sampling_weight"] if row.get("stage") == "touchdown" else 1.
+                   for row in dataset.rows]
+        sampler = WeightedRandomSampler(weights, len(dataset), replacement=True, generator=generator)
     batch_sampler = BatchSampler(sampler, batch_size=batch, drop_last=False)
     limit = config.get("max_train_batches" if training else "max_val_batches")
     if limit is not None:
@@ -246,15 +252,16 @@ def train(config):
         if c.get(name) is not None and c[name] < 1:
             raise ValueError(f"{name} must be positive")
     train_set = HDataset(
-        root / "splits/train.json", root, size, PhotometricAugmentation(seed)
+        root / "splits/train.json", root, size,
+        PhotometricAugmentation(seed, c.get("difficult_augmentation", False)), c.get("weathers")
     )
-    val_set = HDataset(root / "splits/val.json", root, size)
+    val_set = HDataset(root / "splits/val.json", root, size, weathers=c.get("weathers"))
     batch = choose_batch(c, train_set, device, emit)
     c["batch_size"] = batch
     fit_shared_memory(c, batch, emit)
     # Probes do not contribute trained weights or consume actual training RNGs.
     seed_all(seed)
-    train_set.augmentation = PhotometricAugmentation(seed)
+    train_set.augmentation = PhotometricAugmentation(seed, c.get("difficult_augmentation", False))
     loaders = [
         make_loader(d, c, batch, i == 0, device)
         for i, d in enumerate((train_set, val_set))
@@ -273,6 +280,12 @@ def train(config):
         )
     )
     best, history = float("inf"), []
+    best_keypoint = (float("inf"),) * 3
+    stale = 0
+    schedule = c.get("scheduler")
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, **schedule
+    ) if schedule else None
     start = time.monotonic()
     # Close both worker pools before reporting success, also on training errors.
     with ExitStack() as cleanup:
@@ -293,6 +306,9 @@ def train(config):
                     torch.zeros((), device=device) for _ in range(4)
                 ]
                 count = 0
+                component_sums = {}
+                gradient_norm_sum = torch.zeros((), device=device)
+                tails, visibility_rows, sample_indices = [], [], []
                 with torch.set_grad_enabled(training):
                     for index, sample in enumerate(loader):
                         sample = move_batch(
@@ -302,8 +318,8 @@ def train(config):
                             optimizer.zero_grad(set_to_none=True)
                         with autocast(c, device):
                             prediction = model(sample["image"])
-                            loss, _ = segmentation_keypoint_loss(
-                                prediction, sample, return_metrics=False
+                            loss, components = segmentation_keypoint_loss(
+                                prediction, sample, return_metrics="tensor", **c.get("loss", {})
                             )
                         if not torch.isfinite(loss):
                             raise ValueError(
@@ -311,9 +327,9 @@ def train(config):
                             )
                         if training:
                             loss.backward()
-                            torch.nn.utils.clip_grad_norm_(
+                            gradient_norm_sum += torch.nn.utils.clip_grad_norm_(
                                 model.parameters(), 5.0, error_if_nonfinite=True
-                            )
+                            ).detach()
                             optimizer.step()
                         else:
                             pred = prediction["mask_logits"] > 0
@@ -325,7 +341,13 @@ def train(config):
                                 prediction["keypoints"] - sample["keypoints"], dim=-1
                             )[vis].sum()
                             visible += vis.sum()
+                            tails.append((torch.linalg.vector_norm(
+                                prediction["keypoints"].float() - sample["keypoints"], dim=-1) * size).detach())
+                            visibility_rows.append(vis)
+                            sample_indices.append(sample["index"])
                         n = sample["image"].shape[0]
+                        for key, value in components.items():
+                            component_sums[key] = component_sums.get(key, 0) + value * n
                         total += loss.detach() * n
                         count += n
                         if (index + 1) % c.get("log_every", 20) == 0:
@@ -345,6 +367,8 @@ def train(config):
                 phases.append(
                     dict(
                         loss=float(total / count),
+                        loss_components={key: float(value / count) for key, value in component_sums.items()},
+                        gradient_norm_before_clip=float(gradient_norm_sum / (index + 1)) if training else None,
                         samples=count,
                         seconds=seconds,
                         images_per_s=count / seconds,
@@ -353,6 +377,9 @@ def train(config):
                         else 0,
                     )
                 )
+            tail_metrics = grouped_metrics(
+                torch.cat(tails).cpu().numpy(), torch.cat(visibility_rows).cpu().numpy(),
+                [val_set.rows[i] for i in torch.cat(sample_indices).cpu().tolist()])
             record = dict(
                 event="epoch",
                 epoch=epoch + 1,
@@ -364,9 +391,21 @@ def train(config):
                 if visible > 0
                 else None,
                 visible_keypoints=int(visible),
+                keypoint_metrics=tail_metrics,
+                learning_rate=optimizer.param_groups[0]["lr"],
             )
             history.append(record)
             emit(record)
+            improved = record["val_loss"] < best
+            stale = 0 if improved else stale + 1
+            if improved:
+                best = record["val_loss"]
+            if scheduler:
+                scheduler.step(record["val_loss"])
+            tail = tail_metrics["all"]
+            score = (1 - (tail["four_point_success_5px"] or 0),
+                     tail["p99_px"] if tail["p99_px"] is not None else float("inf"),
+                     tail["mean_px"] if tail["mean_px"] is not None else float("inf"))
             if save_results:
                 payload = dict(
                     model=model.state_dict(),
@@ -376,10 +415,19 @@ def train(config):
                     config=c,
                 )
                 save_checkpoint(payload, out / "last.pt")
-                if record["val_loss"] < best:
-                    best = record["val_loss"]
+                if improved:
                     save_checkpoint(payload, out / "best.pt")
+                    save_checkpoint(payload, out / "best_loss.pt")
+                if score < best_keypoint:
+                    best_keypoint = score
+                    save_checkpoint(payload, out / "best_keypoint.pt")
                 (out / "history.json").write_text(json.dumps(history, indent=2) + "\n")
+            if c.get("early_stopping_patience", 0) and stale >= c["early_stopping_patience"]:
+                emit(dict(event="early_stopping", epoch=epoch + 1, stale_epochs=stale))
+                break
+    # Pretrain produces logs only, including diagnostics, never training results.
+    if save_results:
+        training_report(history, out / "metrics")
     emit(
         dict(
             event="training_complete",

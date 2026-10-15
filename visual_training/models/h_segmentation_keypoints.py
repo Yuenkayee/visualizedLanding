@@ -17,14 +17,23 @@ def block(i, o):
 
 
 class HSegmentationKeypoints(nn.Module):
-    def __init__(self, channels=16, keypoints=4):
+    def __init__(self, channels=16, keypoints=4, context=False, visibility_head=False):
         super().__init__()
         if channels % 4:
             raise ValueError("channels must be divisible by four")
-        self.model_config = dict(channels=channels, keypoints=keypoints)
+        self.model_config = dict(channels=channels, keypoints=keypoints,
+                                 context=context, visibility_head=visibility_head)
         self.e1 = block(3, channels)
         self.e2 = block(channels, channels * 2)
         self.e3 = block(channels * 2, channels * 4)
+        self.context = nn.Sequential(
+            nn.AdaptiveAvgPool2d(4),
+            nn.Conv2d(channels * 4, channels * 4, 3, padding=1), nn.SiLU(),
+        ) if context else None
+        self.visibility = nn.Sequential(
+            nn.AdaptiveAvgPool2d(4), nn.Flatten(),
+            nn.Linear(channels * 4 * 16, keypoints),
+        ) if visibility_head else None
         self.d2 = block(channels * 6, channels * 2)
         self.d1 = block(channels * 3, channels)
         self.seg = nn.Conv2d(channels, 1, 1)
@@ -34,6 +43,11 @@ class HSegmentationKeypoints(nn.Module):
         a = self.e1(image)
         b = self.e2(F.max_pool2d(a, 2))
         c = self.e3(F.max_pool2d(b, 2))
+        # Pool visibility before context resize so ONNX retains static spatial
+        # dimensions with dynamic batch size (legacy exporter compatibility).
+        visibility_logits = self.visibility(c) if self.visibility is not None else None
+        if self.context is not None:
+            c = c + F.interpolate(self.context(c), size=c.shape[-2:], mode="bilinear", align_corners=False)
         d = self.d2(
             torch.cat(
                 [
@@ -65,8 +79,11 @@ class HSegmentationKeypoints(nn.Module):
         ys = (torch.arange(h, device=image.device, dtype=image.dtype) + 0.5) / h
         x = (prob.sum(2) * xs).sum(2)
         y = (prob.sum(3) * ys).sum(2)
-        return dict(
+        output = dict(
             mask_logits=self.seg(d),
             keypoints=torch.stack([x, y], -1),
             heatmap_logits=heatmaps,
         )
+        if visibility_logits is not None:
+            output["visibility_logits"] = visibility_logits
+        return output

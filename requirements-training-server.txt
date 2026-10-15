@@ -1,3 +1,4 @@
 # Training only: Ubuntu 22.04 / Python 3.12 / Torch 2.8.0 CUDA 12.8.
 -r requirements-data.txt
 torch==2.8.0
+matplotlib==3.9.2

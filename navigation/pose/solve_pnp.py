@@ -18,7 +18,7 @@ def project_points(points_deck, T_deck_camera, calibration):
     return pixels.reshape(-1, 2)
 
 
-def solve_pnp(points_deck, pixels, calibration):
+def solve_pnp(points_deck, pixels, calibration, refine=False):
     X = np.asarray(points_deck, dtype=np.float64)
     u = np.asarray(pixels, dtype=np.float64)
     if (
@@ -45,6 +45,11 @@ def solve_pnp(points_deck, pixels, calibration):
     for rv, tv in zip(result[1], result[2]):
         if not np.isfinite(rv).all() or not np.isfinite(tv).all():
             continue
+        if refine:
+            # IPPE is an initializer. Refine BOTH planar branches independently;
+            # retain cheirality checks and causal-prior selection afterwards.
+            rv, tv = cv2.solvePnPRefineLM(X, u, calibration.K, calibration.distortion,
+                                        rv.copy(), tv.copy())
         R, _ = cv2.Rodrigues(rv)
         if not np.isfinite(R).all():
             continue

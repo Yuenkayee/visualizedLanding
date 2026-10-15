@@ -1,0 +1,4 @@
+# Portable CPU/MPS/CUDA replay; Linux/Python3.12 bootstrap preserves cu128.
+-r requirements-data.txt
+torch>=2.5,<2.9
+matplotlib==3.9.2

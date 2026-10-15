@@ -8,4 +8,11 @@ epochs: 40
 learning_rate: 0.001
 device: cpu
 threads: 4
-model: {channels: 16, keypoints: 4}
+model: {channels: 16, keypoints: 4, context: true, visibility_head: true}
+
+weathers: [clear, fog, night, night_fog]
+difficult_augmentation: true
+touchdown_sampling_weight: 1.5
+loss: {heatmap_sigma: 1.0, coordinate_beta: 0.01, visibility_weight: 0.2}
+scheduler: {mode: min, factor: 0.5, patience: 3, min_lr: 0.00001}
+early_stopping_patience: 10

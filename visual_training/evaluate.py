@@ -5,19 +5,24 @@ import torch
 from torch.utils.data import DataLoader
 from visual_training.data.h_dataset import HDataset
 from visual_training.models.h_segmentation_keypoints import HSegmentationKeypoints
+from visual_training.data.manifest import WEATHERS
+from visual_training.metrics import grouped_metrics
+import numpy as np
 
 
-def evaluate(checkpoint, split, root="data", image_size=256, device="cpu"):
+def evaluate(checkpoint, split, root="data", image_size=None, device="cpu", weathers=None):
     payload = torch.load(checkpoint, map_location=device, weights_only=True)
     model = HSegmentationKeypoints(**payload["model_config"]).to(device)
     model.load_state_dict(payload["model"])
     model.eval()
-    dataset = HDataset(split, root, image_size)
+    image_size = image_size or payload.get("config", {}).get("image_size", 256)
+    dataset = HDataset(split, root, image_size, weathers=weathers or payload.get("config", {}).get("weathers"))
     loader = DataLoader(dataset, batch_size=4)
     intersection = union = 0
     error = count = 0.0
     groups = {}
     offset = 0
+    tail_errors, tail_visibility = [], []
     with torch.no_grad():
         for sample in loader:
             sample = {k: v.to(device) for k, v in sample.items()}
@@ -28,6 +33,8 @@ def evaluate(checkpoint, split, root="data", image_size=256, device="cpu"):
             union += int((p | y).sum())
             e = torch.linalg.vector_norm(out["keypoints"] - sample["keypoints"], dim=-1)
             v = sample["visibility"]
+            tail_errors.append((e * image_size).cpu().numpy())
+            tail_visibility.append(v.cpu().numpy())
             error += float(e[v].sum())
             count += int(v.sum())
             for i in range(sample["image"].shape[0]):
@@ -52,6 +59,7 @@ def evaluate(checkpoint, split, root="data", image_size=256, device="cpu"):
         mask_iou=intersection / max(union, 1),
         normalized_keypoint_error=error / count if count else None,
         visible_keypoints=int(count),
+        keypoint_metrics=grouped_metrics(np.concatenate(tail_errors), np.concatenate(tail_visibility), dataset.rows),
         by_condition={
             key: dict(
                 mask_iou=g["intersection"] / max(g["union"], 1),
@@ -72,13 +80,15 @@ def main():
     p.add_argument("--root", default="data")
     p.add_argument("--split")
     p.add_argument("--output", default="outputs/metrics/vision.json")
-    p.add_argument("--image-size", type=int, default=256)
+    p.add_argument("--image-size", type=int)
+    p.add_argument("--device", default="cpu")
     a = p.parse_args()
     result = evaluate(
         a.checkpoint,
         a.split or str(Path(a.root) / "splits/test.json"),
         a.root,
         a.image_size,
+        a.device,
     )
     out = Path(a.output)
     out.parent.mkdir(parents=True, exist_ok=True)

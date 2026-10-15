@@ -19,8 +19,8 @@ pytest -q
 
 ```bash
 export PYTHON_BIN=python
-bash shell/generate_landing_dataset_server.sh test  # 自动安装依赖，90 帧 GPU 测试
-bash shell/generate_landing_dataset_server.sh full  # 10,800 帧正式生成
+bash shell/generate_landing_dataset_server.sh test  # 自动安装依赖，72 帧 GPU 测试
+bash shell/generate_landing_dataset_server.sh full  # 8,640 帧正式生成
 ```
 
 默认 OptiX、最多 16 个轨迹进程、2 个渲染进程；保留镜像 PyTorch/CUDA，用隔离 Python 3.11 运行官方 bpy 4.5 LTS。配置、检查命令和输出说明见 [服务器生成指南](docs/server_dataset.md)。
@@ -28,11 +28,15 @@ bash shell/generate_landing_dataset_server.sh full  # 10,800 帧正式生成
 正式数据生成完成后，服务器训练使用以下入口；两种模式都自动检查依赖并保存日志，均不执行关机：
 
 ```bash
+bash shell/prepare_landing_four_weather.sh test
+bash shell/prepare_landing_four_weather.sh full
 bash shell/train_landing_server.sh pretrain  # 前台短程检查，不保存权重
 bash shell/train_landing_server.sh full      # 自动 tmux 后台训练，保存最佳/最后权重
 ```
 
 默认 512 像素输入、CUDA BF16、自动选择 batch size 和并行数据加载。日志、tmux 操作和参数说明见 [服务器训练指南](docs/server_training.md)。
+
+四场景改进、旧数据准备、自动训练报告及无内环回放的完整指令见 [四场景训练与回放](docs/four_weather_training_replay.md)。
 
 ## 生成数据、训练、导出
 
@@ -84,7 +88,7 @@ H 图案对称，不能独立确定绝对航向；激光平面不观测水平位
 
 ## 三阶段进近、等待窗口、触舰训练数据
 
-使用 `configs/landing_dataset.yaml` 和 `shell/generate_landing_dataset.sh` 生成轮底中心从后方 50 m / 高 50 m 到正上方 5 m、悬停等待、再下降至 0 m 的航次。固定相机安装位置、有限带宽云台稳定、舰船直线航行、空气尾流运动残差和五种天气均由同一轨迹生成；每个航次保持在同一个 train/val/test 集合。
+使用 `configs/landing_dataset.yaml` 和 `shell/generate_landing_dataset.sh` 生成轮底中心从后方 50 m / 高 50 m 到正上方 5 m、悬停等待、再下降至 0 m 的航次。固定相机安装位置、有限带宽云台稳定、舰船直线航行、空气尾流运动残差和四种天气均由同一轨迹生成；每个航次保持在同一个 train/val/test 集合。
 
 直升机三轴姿态主波动按仿真数量级设置：第一阶段单边幅值从约 0.6 rad 衰减至 0.05 rad，第二阶段暂用 0.05 rad，第三阶段升至约 0.3 rad；周期 2.7–3.3 s，20 Hz 稠密轨迹、连续相位和平滑阶段切换。保留云台残余运动、限幅、出画与机体遮挡样本，`planning_report.json` 汇总几何可见率及最长不可见时长。
 

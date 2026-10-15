@@ -83,6 +83,23 @@ def summarize_plan(config, plan):
 
 def _plan_sortie(task):
     config, seed, sequence, weather, wait, split, path = task
+    # Draw once per independent sortie, then use the same physical servo in
+    # trajectory integration, labels, rendering and encoder measurements.
+    import copy
+    config = copy.deepcopy(config)
+    variation = config.get("gimbal_randomization", {})
+    rng = np.random.default_rng(np.random.SeedSequence([seed, 72419]))
+    for key in ("natural_frequency_hz", "damping_ratio", "encoder_std_rad"):
+        if key in variation:
+            config.setdefault("gimbal", {})[key] = float(rng.uniform(*variation[key]))
+    for key in ("max_rate_rad_s", "max_acceleration_rad_s2"):
+        if key in variation:
+            value = float(rng.uniform(*variation[key]))
+            config.setdefault("gimbal", {})[key] = [value] * 3
+    if rng.random() < variation.get("no_feedforward_probability", 0):
+        config.setdefault("gimbal", {})["rate_feedforward"] = False
+    if rng.random() < variation.get("acquisition_probability", 0):
+        config.setdefault("gimbal", {})["initial_angles_rad"] = [0., 0., 0.]
     sortie = make_sortie(config, seed, sequence, weather, wait)
     write_json(path, sortie)
     return dict(sequence_id=sequence, weather=weather, split=split,

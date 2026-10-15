@@ -15,7 +15,7 @@ bash shell/train_landing_server.sh pretrain
 bash shell/train_landing_server.sh full
 ```
 
-默认数据目录为 `data/landing/`，需要先完成正式训练集生成。若暂时只有此前生成的 90 帧测试集，可先验证训练能否运行：
+默认数据目录为 `data/landing_four_weather/`，先按[四场景准备说明](four_weather_training_replay.md)处理已有数据，或用 `--data-root data/landing` 指定新生成的四场景数据。若暂时只有此前生成的 90 帧测试集，可先验证训练能否运行：
 
 ```bash
 bash shell/train_landing_server.sh pretrain --data-root data/landing_server_test
@@ -26,10 +26,10 @@ bash shell/train_landing_server.sh pretrain --data-root data/landing_server_test
 | 行为 | pretrain | full |
 | --- | --- | --- |
 | 运行位置 | 当前终端前台 | 自动创建 tmux 后台会话 |
-| 默认时长 | 2 epoch，每轮最多 50 个训练 batch、10 个验证 batch | 40 epoch，完整 train/val |
+| 默认时长 | 2 epoch，每轮最多 50 个训练 batch、10 个验证 batch | 最多40 epoch，10轮无改善早停，完整 train/val |
 | GPU 参数探测 | 自动选择 batch size | 启动时重新探测，可显式指定 |
 | 日志 | 保存依赖、训练、指标、配置和状态日志 | 同左 |
-| 模型权重/优化器/训练结果 | 不写入磁盘 | 保存 best.pt、last.pt、history.json |
+| 模型权重/优化器/训练结果 | 不写入磁盘 | 保存 best.pt、best_loss.pt、best_keypoint.pt、last.pt、history.json 和 metrics/报告曲线 |
 | 结束后行为 | 返回终端 | 训练命令结束，tmux 会话通常随之退出 |
 | 自动关机 | 不执行 | 不执行 |
 
@@ -65,7 +65,7 @@ cat outputs/logs/training/full_<时间戳>_<标识>/status.json
 
 ## 性能与训练参数
 
-服务器配置文件为 `configs/landing_training_server.yaml`：512×512 输入、原 channels=16 / 4 关键点网络、AdamW、学习率 0.001、40 epoch。保留完整分辨率和网络结构，启用 BF16 混合精度、channels-last、TF32、cuDNN 调优、锁页内存、异步拷贝与数据预取。关键点 softmax 和损失累积使用 FP32；非有限损失或梯度会使任务明确失败。
+服务器配置文件为 `configs/landing_training_server.yaml`：512×512 输入、channels=16 / 4 关键点网络，增加上下文与可见性分支、AdamW、学习率 0.001、最多40 epoch，带Plateau衰减及早停。保留完整输入分辨率，启用 BF16 混合精度、channels-last、TF32、cuDNN 调优、锁页内存、异步拷贝与数据预取。关键点 softmax 和损失累积使用 FP32；非有限损失或梯度会使任务明确失败。
 
 默认比较 batch size 16、8、4 的真实前向、反向和优化器更新速度，排除首次预热；遇到显存不足会尝试更小 batch。选择可用显存 85% 预算内测得最快的候选，最大值默认限制为 16，避免仅为占满显存无限扩大 batch、改变优化行为。实际训练阶段还单独记录包含数据加载的吞吐率；GPU 探测速度不是端到端训练速度。小样本测试不能证明收敛或最终精度，需根据正式训练的验证指标和独立测试集评估确认效果。
 
@@ -106,3 +106,5 @@ bash shell/train_landing_server.sh pretrain --num-workers 0
 ```
 
 若修正后仍有异常，应保留对应 `train.log` 和 `resolved_config.json`，检查首次 worker 原生错误、共享内存及系统日志；不要只依据最后一行 `training_complete` 判断通过。
+
+详细变化、消融配置、日志指标、自动报告与新权重回放见[四场景训练与回放](four_weather_training_replay.md)。

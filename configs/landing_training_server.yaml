@@ -1,9 +1,9 @@
 seed: 20261006
-data_root: data/landing
+data_root: data/landing_four_weather
 image_size: 512
 epochs: 40
 learning_rate: 0.001
-model: {channels: 16, keypoints: 4}
+model: {channels: 16, keypoints: 4, context: true, visibility_head: true}
 device: cuda
 # Benchmark real forward/backward/AdamW steps; cap batch size to limit changes
 # to the optimization dynamics. Never lower resolution to fit more samples.
@@ -20,3 +20,10 @@ prefetch_factor: 2
 pin_memory: true
 persistent_workers: true
 log_every: 20
+
+weathers: [clear, fog, night, night_fog]
+difficult_augmentation: true
+touchdown_sampling_weight: 1.5
+loss: {heatmap_sigma: 1.0, coordinate_beta: 0.01, visibility_weight: 0.2}
+scheduler: {mode: min, factor: 0.5, patience: 3, min_lr: 0.00001}
+early_stopping_patience: 10

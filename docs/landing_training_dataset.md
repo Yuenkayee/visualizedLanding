@@ -64,7 +64,7 @@ Blender 另有随时间传播的海面正弦波和简化艉部水面尾迹。水
 
 ## 天气和传感器退化
 
-五种环境各占 20% 航次：clear、fog、glare、night、night_fog。每航次固定天气类别，并独立变化太阳能量、噪声和雾密度。所有 split 都包含五种天气。
+四种环境各占 25% 航次：clear、fog、night、night_fog。每航次固定天气类别，并独立变化太阳能量、噪声和雾密度。所有 split 都包含四种天气。
 
 - 晴天：天空/太阳、海面反光和舰船阴影。
 - 雾：跟随局部场景的体积介质，产生距离相关衰减与散射。夜间雾另叠加甲板灯照明。
@@ -76,7 +76,7 @@ Blender 另有随时间传播的海面正弦波和简化艉部水面尾迹。水
 
 ## 数据、划分与训练
 
-默认 12 航次/天气，共 60 航次，每航次 180 图像，共 10,800 图像。按天气分层，以完整航次分配约 40/10/10 航次到 train/val/test，对应 7,200/1,800/1,800 图像。独立随机种子生成不同完整轨迹，不把同一轨迹的天气或相邻帧跨 split。正式研究仍建议增加具有未见海况/安装误差/太阳条件的独立挑战测试集与真实数据验证，随机划分本身并不等同于域外测试。
+默认 12 航次/天气，共 48 航次，每航次 180 图像，共 8,640 图像。按天气分层，以完整航次分配约 32/8/8 航次到 train/val/test，对应 5,760/1,440/1,440 图像。独立随机种子生成不同完整轨迹，不把同一轨迹的天气或相邻帧跨 split。正式研究仍建议增加具有未见海况/安装误差/太阳条件的独立挑战测试集与真实数据验证，随机划分本身并不等同于域外测试。
 
 输出根目录默认为 data/landing：
 
@@ -100,11 +100,11 @@ python -m visual_modeling.sensors.render_camera_mount
 bash shell/generate_landing_dataset.sh --plan-only
 # 绘制最新轨迹的姿态与包络
 python -m visual_modeling.trajectories.render_landing_motion
-# 正式 Blender 数据（耗时，默认 10,800 图像及 mask）
+# 正式 Blender 数据（耗时，默认 8,640 图像及 mask）
 bash shell/generate_landing_dataset.sh
 # 完整、独立 split 的小型 CPU 流程测试，不当作真实天气数据
 bash shell/generate_landing_dataset.sh --renderer cpu --sorties-per-weather 3 --frames-per-stage 3 --width 320 --output /tmp/landing_smoke
-# 五种天气 × 三个阶段可视化，仅预览，不生成训练 split
+# 四种天气 × 三个阶段可视化，仅预览，不生成训练 split
 bash shell/generate_landing_dataset.sh --preview --sorties-per-weather 3 --frames-per-stage 3 --width 640 --samples 4 --output /tmp/landing_preview
 # 正式数据生成后训练/分组评估
 python -m visual_training.train --config configs/landing_training.yaml

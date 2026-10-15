@@ -80,6 +80,5 @@ preview:
 weather:
   clear: {sun_energy: 2.0, sky_strength: 0.25, sun_elevation_deg: 35.0, fog_density: 0.0, glare: 0.0, sensor_noise: 1.5, exposure_gain: 1.0, deck_lights: false}
   fog: {sun_energy: 2.0, sky_strength: 0.4, sun_elevation_deg: 25.0, fog_density: 0.006, glare: 0.0, sensor_noise: 3.0, exposure_gain: 1.0, deck_lights: false}
-  glare: {sun_energy: 5.0, sky_strength: 0.35, sun_elevation_deg: 12.0, fog_density: 0.0, glare: 0.9, sensor_noise: 2.0, exposure_gain: 1.1, deck_lights: false}
   night: {sun_energy: 0.0, sky_strength: 0.001, sun_elevation_deg: -12.0, fog_density: 0.0, glare: 0.25, sensor_noise: 7.0, exposure_gain: 1.0, deck_lights: true}
   night_fog: {sun_energy: 0.0, sky_strength: 0.002, sun_elevation_deg: -12.0, fog_density: 0.012, glare: 0.35, sensor_noise: 8.0, exposure_gain: 1.0, deck_lights: true}

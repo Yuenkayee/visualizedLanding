@@ -18,10 +18,10 @@ bash shell/generate_landing_dataset_server.sh full
 
 | 模式 | 架次/天气 | 每阶段帧数 | 分辨率 | Cycles samples | 总帧数 | train / val / test |
 | --- | ---: | ---: | --- | ---: | ---: | --- |
-| test | 3 | 2 | 640×480 | 4 | 90 | 30 / 30 / 30 |
-| full | 12 | 60 | 1280×960 | 24 | 10,800 | 7,200 / 1,800 / 1,800 |
+| test | 3 | 2 | 640×480 | 4 | 72 | 24 / 24 / 24 |
+| full | 12 | 60 | 1280×960 | 24 | 8,640 | 5,760 / 1,440 / 1,440 |
 
-以上数量针对默认五种天气、三个阶段。test 保留完整架次划分、20 Hz 轨迹、云台动力学、安装位置、独立编码器、雷达与视觉退化；仅减少架次、输出帧数、分辨率和采样数。测试数据用于检查流程和视觉质量，正式训练使用 full。
+以上数量针对默认四种天气、三个阶段。test 保留完整架次划分、20 Hz 轨迹、云台动力学、安装位置、独立编码器、雷达与视觉退化；仅减少架次、输出帧数、分辨率和采样数。测试数据用于检查流程和视觉质量，正式训练使用 full。
 
 默认输出分别为 `data/landing_server_test/` 和 `data/landing/`。正式目录与 `configs/landing_training.yaml` 的 `data_root` 一致。为了避免混入旧样本，脚本要求输出目录不存在或为空；重新测试/生成时使用新的 `--output`，脚本不自动删除已有数据，也不做断点续跑。若正式输出改了目录，训练时相应修改 `data_root`。
 
@@ -84,7 +84,7 @@ watch -n 1 nvidia-smi
 
 ## 产物检查
 
-完整数据格式沿用原闭环接口：`rendered/`、`annotations/`（JSON、二值 mask、LiDAR NPZ）、`trajectories/`、`calibration/`、`splits/` 和原有报告。新增 `validation_report.json`、`server_run.json`、`SUCCESS.json` 与五种天气×三个阶段的 `preview.png`。
+完整数据格式沿用原闭环接口：`rendered/`、`annotations/`（JSON、二值 mask、LiDAR NPZ）、`trajectories/`、`calibration/`、`splits/` 和原有报告。新增 `validation_report.json`、`server_run.json`、`SUCCESS.json` 与四种天气×三个阶段的 `preview.png`。
 
 协调器核对计划中的每一帧和 split，拒绝漏帧、重复帧与遗漏架次。校验器检查所有标注、文件存在性、动态外参、固定安装点、云台时间戳、阶段/天气/划分覆盖。test 解码全部 RGB/mask/LiDAR，full 对每个 split×天气×阶段解码至少一组。最后用实际 `HDataset` 和分割/关键点网络在 CUDA 上执行三个 split 的小型前向、损失与反向计算；这用于接口检查，不是训练精度评估。
 

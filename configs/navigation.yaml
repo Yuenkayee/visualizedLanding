@@ -10,10 +10,23 @@ require_gimbal: true
 filter_point_body: [0.0, 0.0, 0.0]
 pixel_sigma: 1.5
 max_reprojection_error: 5.0
-acceleration_noise: 0.5
+# White acceleration spectral amplitude. The previous 0.5 over-gated actual
+# sparse terminal motion/wake changes. Validate 1.5 with real sensor cadence.
+acceleration_noise: 1.5
 angular_acceleration_noise: 0.05
 max_measurement_age: 1.0
 max_position_std: 5.0
 deck_half_extent: [12.0, 7.0]
 lidar_height_tolerance: 3.0
 plane_threshold: 0.08
+
+# Quality checks use predicted segmentation and the causal pose prior only.
+mask_geometry: true
+mask_minimum_side_px: 32
+mask_min_iou: 0.82
+mask_recovery_difference_px: 3.0
+mask_pixel_sigma: 1.0
+marker_stroke_fraction: [0.2, 0.2]
+minimum_keypoint_visibility: 0.5
+adaptive_pixel_noise: true
+refine_pnp: true

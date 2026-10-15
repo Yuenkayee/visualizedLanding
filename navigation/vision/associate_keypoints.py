@@ -5,7 +5,7 @@ from navigation.pose.solve_pnp import solve_pnp
 from navigation.pose.resolve_planar_ambiguity import resolve_planar_ambiguity
 
 
-def associate_keypoints(points_deck, pixels, calibration, prior=None, ordered=False):
+def associate_keypoints(points_deck, pixels, calibration, prior=None, ordered=False, refine=False):
     pixels = np.asarray(pixels, dtype=float)
     candidates = []
     permutations = (
@@ -18,7 +18,7 @@ def associate_keypoints(points_deck, pixels, calibration, prior=None, ordered=Fa
         ]
     )
     for u in permutations:
-        for T, e in solve_pnp(points_deck, u, calibration):
+        for T, e in solve_pnp(points_deck, u, calibration, refine=refine):
             candidates.append((T, e, u))
     best = resolve_planar_ambiguity([(T, e) for T, e, _ in candidates], prior)
     if best is None:
