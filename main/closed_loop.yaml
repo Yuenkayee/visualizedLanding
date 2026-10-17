@@ -1,0 +1,42 @@
+# The aircraft/ship dynamics and guidance/controller are supplied by the user.
+# Required root ports are documented in main/README.md. This interface-only
+# source is intentionally rejected by `run` until a complete model is connected.
+model: external/innerloop/simu/innerLoop.slx
+landing_config: configs/landing_dataset.yaml
+navigation_config: configs/navigation.yaml
+lidar_config: configs/lidar.yaml
+checkpoint: null  # pass --checkpoint; production never silently uses the CPU detector
+duration: 60.0
+dt: 0.05
+plant_step: 0.01
+camera_hz: 10.0
+lidar_hz: 5.0
+seed: 42
+weather: clear
+renderer: blender
+render_python: null  # RENDER_PYTHON, existing server render venv, or current Python
+render_device: CPU  # --render-device OPTIX on RTX4090
+render_threads: 8
+device: cpu  # --device cuda on the server
+sensor_timeout_s: 300
+save_sensors: false
+# Fixed, communicated initialization prior for wheel centre in deck coordinates.
+# It must be set for the actual scenario; it is never filled from plant truth.
+navigation:
+  initial_position: [0.0, 0.0, 30.0]
+  initial_velocity: [0.0, 0.0, 0.0]
+# All named root inputs must be mapped. Unmapped inputs are an error.
+inputs:
+  nav_position_ned: gear_relative_ned_m
+  nav_velocity_ned: velocity_gear_ned_mps
+  nav_valid: valid
+  nav_timestamp: timestamp
+# Optional input fields: covariance_ned (3x3), T_deck_body (4x4), distance_m (1).
+outputs:
+  helicopter_state: helicopter_state
+  ship_state: ship_state
+# Initialization script may load the existing trim/controller data. Relative
+# paths refer to the repository root. No new guidance/dynamics are supplied.
+setup_script: null
+# License feature names. Existing H_inf/LPV_H_inf use ss/c2d and hinfsyn.
+required_toolboxes: [Simulink, Control_Toolbox, Robust_Toolbox]

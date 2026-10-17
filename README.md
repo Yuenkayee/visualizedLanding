@@ -64,6 +64,8 @@ python -m visual_training.data.build_dataset --from-rendered
 
 ## 闭环与回放
 
+接入实际 Simulink 内环的新主入口位于 [`main/`](main/README.md)：`bash shell/run_landing_closed_loop.sh smoke` 可运行真实 Simulink 接口验收；完整模型端口接好后使用 `run --model ... --checkpoint ...`。按当前状态生成传感器、写入导航反馈后逐步推进，保存状态与分析到 `outputs/closed_loop/`。下述原有入口仍用于点质量代理实验与离线回放。
+
 ```bash
 python -m simulation.offline.run_closed_loop
 python -m simulation.evaluation.plot_results outputs/logs/closed_loop.jsonl

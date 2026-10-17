@@ -25,5 +25,5 @@ s.helicopter_state=c.helicopter_state(:); s.ship_state=c.ship_state(:);
 s.gimbal_state=[];
 s=innerloop_update_gimbal(s);
 s.phase='read'; s.feedback=[];
-innerloop_evaluate(s); % Validate/compile actual SLX and contracts now.
+innerloop_evaluate(s); % Validate selected path: actual SLX, or the live host's tested kernel.
 end

@@ -1,5 +1,8 @@
 function out=innerloop_evaluate(s)
 % Pure snapshot evaluation. Running StopTime=0 never advances a plant.
+if isfield(s.config,'conversion_evaluation') && strcmp(s.config.conversion_evaluation,'kernel')
+    out=innerloop_snapshot(s); return;
+end
 persistent loaded
 % Generated Simulink artifacts stay outside the source tree.
 previous=Simulink.fileGenControl('getConfig');

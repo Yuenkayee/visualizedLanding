@@ -29,7 +29,7 @@
 
 姿态定义 `R_NED_body=Rz(yaw)Ry(pitch)Rx(roll)`。角速度是机体系角速度 p/q/r，不是 Euler 角导数；新增角速度输入是为了正确计算偏移点速度与旋转甲板系速度，不能互相替代。飞机和舰船必须使用同一个 NED 原点。
 
-UH-60 几何尚未指定具体型号、质心/起落架构型及标定结果，因此模型不内置未经核实的尺寸。`gear_body` 要由所选构型的轮胎接触点确定中心、明确轮胎载荷/压缩状态；着陆后是否使用固定值或时变值由后续模型决定。H 中心相对舰船质心和相机安装外参同样必须显式输入。三者默认不能视为同一点。
+当前离线仿真沿用训练模型的名义尺寸：`gear_body=[0;0;2.9]`、`H_ship_body=[-45;0;-5.5]`，相机固定安装位置 `[2;0;1.11]`，光轴下倾 96°。解析矩阵和运行入口见 [`main/README.md`](../../../main/README.md)。这些参数用于对齐训练与闭环，不代表实机尺寸已标定；三者不是同一点。
 
 ## MATLAB System 参数
 
@@ -41,7 +41,7 @@ UH-60 几何尚未指定具体型号、质心/起落架构型及标定结果，�
 | H_ship_body | 3×1 | 舰船质心到 H 中心的偏移，舰体 forward/right/down 系，米 |
 | gear_body | 3×1 | UH-60 质心到轮底平面中心的偏移，机体 forward/right/down 系，米 |
 
-模型参数表达式默认引用同名 Model Workspace 变量，其初始值为 NaN，**必须填入标定值才能运行**。可直接在模块参数窗口填数值/矩阵表达式，或在 Model Explorer 中设置同名变量。模型的 PreLoadFcn 自动将模型所在目录加入 MATLAB 路径，供加载 convert 类和转换函数。
+模型参数表达式引用同名 Model Workspace 变量，已通过 `main` 的 `configure` 命令填入当前训练几何。训练几何调整后运行 `bash shell/run_landing_closed_loop.sh configure` 重新同步；命令保留原 SLX 备份，不重建控制子系统。`convert` 类本身仍保留 NaN 作为缺少配置时的错误检查。模型的 PreLoadFcn 自动将模型所在目录加入 MATLAB 路径，供加载 convert 类和转换函数。
 
 Python/MATLAB 适配层沿用 `config.geometry` 三个字段，通过 SimulationInput.setVariable 设置模型工作区参数，不再生成几何信号。通过适配层运行时应保留模块中默认的同名参数表达式；若手工将其改为字面常量，模块将使用该常量而非 config.geometry。中立标定在仿真前确定；动态旋转通过信号端口输入，无云台尺寸或平移自由度。缺少导航编码器时反馈无效，不能用实际轴角替代导航测量。
 
@@ -75,6 +75,8 @@ Python/MATLAB 适配层沿用 `config.geometry` 三个字段，通过 Simulation
 舰船姿态按理想同步通信值使用。输出协方差包含导航位姿与编码器角度误差；安装尺寸和舰船姿态不确定性尚未包含。后续考虑通信延迟或姿态噪声时，需要重新设计时间对齐和有效性判断。
 
 ## 因果顺序及动力学接入
+
+推荐使用 [`main` 的持续 Simulink 仿真适配器](../../../main/README.md)，其 `landing_live_initialize/step` 已实现下文 plant callback，保持控制器内部状态，并在内环子步更新云台。`innerLoop` 本身仍是转换边界，不是待推进的飞机模型；完整模型须提供原生飞机/舰船状态根输出与导航反馈根输入。
 
 SLX 是快照转换边界，`sim(..., StopTime='0')` 不推进动力学、不包含积分器。宿主的 MATLAB callbacks 管理状态与时间：
 

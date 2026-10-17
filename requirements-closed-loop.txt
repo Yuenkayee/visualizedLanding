@@ -1,0 +1,2 @@
+# Shared navigation/analysis dependencies. Preserve server Torch 2.8/cu128.
+-r requirements-replay.txt

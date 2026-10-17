@@ -1,3 +1,6 @@
+# Legacy callback template. For the complete live-Simulink host, use
+# main/closed_loop.yaml and shell/run_landing_closed_loop.sh (training geometry
+# is resolved automatically there; this legacy template still requires values).
 # Merge plant into offline_simulation.yaml ONLY after filling calibrated values.
 # null values are intentionally unusable; no invented UH-60/vessel geometry.
 backend: matlab
