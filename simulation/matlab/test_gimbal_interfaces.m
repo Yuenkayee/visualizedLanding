@@ -2,9 +2,9 @@ function result=test_gimbal_interfaces(parityFile)
 % Servo physics + actual SLX body/gear feedback with changing mount angles.
 root=fileparts(fileparts(fileparts(mfilename('fullpath')))); setup_paths(root);
 c=gimbal_defaults(); neutral=[eye(3) [2;.1;1.11];0 0 0 1];
-D=diag([1 -1 -1]); g=[]; errors=zeros(601,1); maximumRate=0;
-for k=0:600
-    t=k*.01;
+D=diag([1 -1 -1]); g=[]; errors=zeros(301,1); maximumRate=0;
+for k=0:300
+    t=k*.02;
     body=D*rotation(.6*sin(2*pi*t/3+[0;.7;1.4]));
     deck=rotation([.03*sin(t);.02*sin(t);0]);
     g=gimbal_step(g,t,body,deck,neutral,c); m=gimbal_sample(g,neutral,c);
@@ -49,8 +49,8 @@ expected=Rb*(s.helicopter_state(4:6)*1852/3600+cross(s.helicopter_state(10:12),c
     -s.ship_state(4:6)*1852/3600-Rs*cross(s.ship_state(10:12),config.geometry.H_ship_body);
 assert(norm(f.velocity_gear_ned_mps(:)-expected)<1e-9);
 % Two sensor-only advances can hold the last control sample.
-advance_external_model(.03); read_sensor_truth(); advance_external_model(.02); read_sensor_truth();
-s=evalin('base','landingState'); assert(abs(s.timestamp-.05)<1e-10);
+advance_external_model(.02); read_sensor_truth(); advance_external_model(.02); read_sensor_truth();
+s=evalin('base','landingState'); assert(abs(s.timestamp-.04)<1e-10);
 % Missing/stale encoder cannot claim healthy BODY feedback.
 s.estimate=e; s.estimate.timestamp=s.timestamp; s.estimate.gimbal.timestamp=0;
 o=innerloop_evaluate(s); assert(~o.feedback_valid);

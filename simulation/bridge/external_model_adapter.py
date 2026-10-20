@@ -92,7 +92,7 @@ class MockExternalModel:
             acceleration = -self.velocity  # health loss -> brake/hold, no blind descent
         self.position += self.velocity * dt + 0.5 * acceleration * dt * dt
         self.velocity += acceleration * dt
-        for t in np.linspace(self.timestamp, self.timestamp+dt, int(np.ceil(dt/.01))+1)[1:]:
+        for t in np.linspace(self.timestamp, self.timestamp+dt, int(np.ceil(dt/.02))+1)[1:]:
             self.gimbal.advance(t, self.body_rotation(t), self.deck_pose(t)[:3, :3])
         self.timestamp += dt
         self.encoder = self.gimbal.sample(self.encoder_rng)

@@ -34,9 +34,21 @@ def load(filename="main/closed_loop.yaml"):
 
 
 def validate(c):
+    if c.get("ship_velocity_frame", "ned") not in ("body", "ned"):
+        raise ValueError("ship_velocity_frame must be body or ned")
+    if c.get("evaluation_mode", "feedback") not in ("feedback", "observer"):
+        raise ValueError("evaluation_mode must be feedback or observer")
+    if c.get("input_contract", "feedback") not in ("feedback", "conversion"):
+        raise ValueError("input_contract must be feedback or conversion")
+    if c.get("evaluation_mode") == "observer" and (
+        c.get("input_contract") != "conversion" or not c.get("autonomous_subsystem")
+    ):
+        raise ValueError("observer mode requires conversion inputs and autonomous_subsystem")
     dt, h, duration = (float(c[k]) for k in ("dt", "plant_step", "duration"))
     if not all(np.isfinite([dt, h, duration])) or min(dt, h, duration) <= 0:
         raise ValueError("dt, plant_step and duration must be finite and positive")
+    if abs(h - 0.02) > 1e-12:
+        raise ValueError("The supplied inner loop requires plant_step=0.02 seconds")
     for ratio in (dt / h, duration / dt):
         if abs(ratio - round(ratio)) > 1e-7:
             raise ValueError(

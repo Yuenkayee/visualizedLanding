@@ -26,7 +26,7 @@ def run_closed_loop(config=None):
     rates = {
         "camera": c.get("camera_hz", 10.0),
         "lidar": c.get("lidar_hz", 5.0),
-        "control": c.get("control_hz", 20.0),
+        "control": c.get("control_hz", 50.0),
     }
     if c.get("disable_vision"):
         rates.pop("camera")

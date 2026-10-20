@@ -13,14 +13,14 @@ end
 [folder,original]=fileparts(source); addpath(folder);
 load_system(source);
 assert(strcmp(get_param(original,'Dirty'),'off'),'landing:Unsaved','Save the source model before running');
+landing_check_timing(original,c.plant_step);
+landing_check_observer(original,c);
 inputs=find_system(original,'SearchDepth',1,'BlockType','Inport');
 actual=cellfun(@(p)get_param(p,'Name'),inputs,'UniformOutput',false);
 assert(isequal(sort(actual(:)),sort(fieldnames(c.inputs))), 'landing:Ports', ...
-    'Root inputs must exactly match config.inputs. The current innerLoop is a conversion interface, not a complete plant. See main/README.md.');
+    'Root inputs must exactly match config.inputs. Use main/navigation_observer.yaml for the conversion-input landing model.');
 for key={'helicopter_state','ship_state'}
-    p=[original '/' char(c.outputs.(key{1}))];
-    assert(getSimulinkBlockHandle(p)>0 && strcmp(get_param(p,'BlockType'),'Outport'), ...
-        'landing:Ports','Missing native-state root Outport %s',p);
+    landing_native_port(original,c.outputs.(key{1}));
 end
 % Work on a copy, preserving the user's source blocks, wiring and callbacks.
 [~,unique]=fileparts(tempname(c.workdir)); copy=['landing_live_' unique];
@@ -29,7 +29,9 @@ save_system(original,target); close_system(original,0); load_system(target);
 try
     set_param(copy,'SimulationMode','normal','StartTime','0','StopTime','inf', ...
         'SolverType','Fixed-step','FixedStep',num2str(c.plant_step,17), ...
-        'BlockReduction','off','SignalLogging','off','SaveOutput','off','SaveTime','off');
+        'BlockReduction','off','SignalLogging','off','SaveOutput','on','SaveTime','on', ...
+        'SaveFormat','Dataset','OutputSaveName','yout','TimeSaveName','tout', ...
+        'ReturnWorkspaceOutputs','on','LimitDataPoints','on','MaxDataPoints','2');
     % Keep the original solver if fixed-step; otherwise select the standard
     % continuous fixed-step integrator. Never replace any model subsystem.
     solver=get_param(copy,'Solver');
@@ -42,6 +44,8 @@ try
         assignin(ws,key{1},v);
     end
     fields=fieldnames(c.inputs);
+    conversionInputs=isfield(c,'input_contract') && strcmp(c.input_contract,'conversion');
+    if conversionInputs, initial=landing_conversion_inputs(s); end
     for k=1:numel(fields)
         p=[copy '/' fields{k}]; ph=get_param(p,'PortHandles');
         line=get_param(ph.Outport,'Line'); destinations=[];
@@ -49,7 +53,11 @@ try
             destinations=get_param(line,'DstPortHandle'); delete_line(line);
         end
         position=get_param(p,'Position'); delete_block(p);
-        value=initial_value(c.inputs.(fields{k}));
+        if conversionInputs
+            value=initial.(c.inputs.(fields{k}));
+        else
+            value=initial_value(c.inputs.(fields{k}));
+        end
         add_block('simulink/Sources/Constant',p,'Value',mat2str(value,17), ...
             'SampleTime','0','Position',position);
         ph=get_param(p,'PortHandles');
@@ -58,17 +66,26 @@ try
     % Root outputs can originate from virtual Mux/subsystem blocks with no
     % RuntimeObject. Add nonvirtual observers on branches in the working copy.
     names={'helicopter_state','ship_state'};
+    nativeIndices=zeros(1,2);
     for k=1:2
-        p=[copy '/' char(c.outputs.(names{k}))]; ports=get_param(p,'PortHandles');
-        line=get_param(ports.Inport,'Line');
-        assert(line~=-1,'landing:Ports','Native-state output is unconnected');
-        src=get_param(line,'SrcPortHandle');
+        src=landing_native_port(copy,c.outputs.(names{k}));
         tap=[copy '/LandingStateTap' num2str(k)]; sink=[copy '/LandingStateSink' num2str(k)];
         add_block('simulink/Math Operations/Gain',tap,'Gain','1');
         add_block('simulink/Sinks/Terminator',sink);
         tp=get_param(tap,'PortHandles'); sp=get_param(sink,'PortHandles');
         add_line(copy,src,tp.Inport,'autorouting','on');
         add_line(copy,tp.Outport,sp.Inport,'autorouting','on');
+        % Export a native-state branch in the copy; retained logging remains
+        % readable after Stop Simulation releases the RuntimeObjects.
+        export=[copy '/LandingNative' num2str(k)];
+        sample=[copy '/LandingNativeSample' num2str(k)];
+        add_block('simulink/Discrete/Zero-Order Hold',sample, ...
+            'SampleTime',num2str(c.plant_step,17));
+        add_block('simulink/Sinks/Out1',export);
+        ep=get_param(export,'PortHandles'); hp=get_param(sample,'PortHandles');
+        add_line(copy,tp.Outport,hp.Inport,'autorouting','on');
+        add_line(copy,hp.Outport,ep.Inport,'autorouting','on');
+        nativeIndices(k)=str2double(get_param(export,'Port'));
     end
     % initialize() compiles but does not evaluate outputs/initial conditions.
     % Obtain the t=0 native state in a ZERO-duration run (no integration), then
@@ -82,15 +99,17 @@ try
     initialResult=sim(initialInput);
     native=cell(1,2);
     for k=1:2
-        index=str2double(get_param([copy '/' char(c.outputs.(names{k}))],'Port'));
+        index=nativeIndices(k);
         data=initialResult.yout.getElement(index).Values.Data;
         native{k}=double(reshape(data,[],1));
         assert(numel(native{k})==12 && all(isfinite(native{k})), ...
             'landing:InitialState','Invalid native output at t=0');
     end
     rng(randomState);
+    [native{1},native{2}]=landing_normalize_native(native{1},native{2},c);
     live=simulation(copy); initialize(live);
-    s.live=live; s.live_model=copy;
+    s.live=live; s.live_model=copy; s.native_indices=nativeIndices;
+    s.stopped=false; s.stop_reason='';
     s.config.helicopter_state=native{1}; s.config.ship_state=native{2};
     % Use the tested conversion kernel directly. The user may extend the
     % source innerLoop.slx into a complete plant, so runtime must not assume

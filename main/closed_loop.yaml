@@ -7,8 +7,9 @@ navigation_config: configs/navigation.yaml
 lidar_config: configs/lidar.yaml
 checkpoint: null  # pass --checkpoint; production never silently uses the CPU detector
 duration: 60.0
-dt: 0.05
-plant_step: 0.01
+# Inner-loop state/feedback tick: 50 Hz. Camera every 5 ticks, LiDAR every 10.
+dt: 0.02
+plant_step: 0.02
 camera_hz: 10.0
 lidar_hz: 5.0
 seed: 42

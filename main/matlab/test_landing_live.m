@@ -13,7 +13,7 @@ assert(norm(forward([1;0;0;0;0;pi/2])-[0;1;0])<1e-12);
 release(forward);
 file=jsondecode(landing_build_interface_fixture(folder,geometryJSON));
 c=struct('initialize_callback','landing_live_initialize','model',file, ...
-    'geometry',g,'workdir',folder,'plant_step',.01,'seed',42, ...
+    'geometry',g,'workdir',folder,'plant_step',.02,'seed',42, ...
     'gimbal',struct('encoder_std_rad',0), ...
     'inputs',struct('nav_position_ned','gear_relative_ned_m','nav_velocity_ned','velocity_gear_ned_mps', ...
         'nav_valid','valid','nav_timestamp','timestamp'), ...
@@ -22,12 +22,23 @@ c=struct('initialize_callback','landing_live_initialize','model',file, ...
 script=fullfile(folder,'fixture_setup.m'); fid=fopen(script,'w');
 fprintf(fid,'fixture_origin=%s;\n',mat2str(g.H_ship_body(:)-g.gear_body(:)+[0;0;-30],17));
 fclose(fid); c.setup_script=script;
-load_system(file); set_param('landing_interface_fixture/StateMemory','InitialCondition','fixture_origin');
+load_system(file);
+set_param('landing_interface_fixture','FixedStep','0.01');
+must_fail(@()landing_check_timing('landing_interface_fixture',.02),'landing:Timing');
+set_param('landing_interface_fixture','FixedStep','0.02');
+add_block('simulink/User-Defined Functions/MATLAB System','landing_interface_fixture/TimingProbe', ...
+    'System','CETI','SimulateUsing','Interpreted execution');
+set_param('landing_interface_fixture/TimingProbe','Ts','0.01');
+must_fail(@()landing_check_timing('landing_interface_fixture',.02),'landing:Timing');
+set_param('landing_interface_fixture/TimingProbe','Ts','0.02');
+landing_check_timing('landing_interface_fixture',.02);
+delete_block('landing_interface_fixture/TimingProbe');
+set_param('landing_interface_fixture/StateMemory','InitialCondition','fixture_origin');
 save_system('landing_interface_fixture'); close_system('landing_interface_fixture',0);
 before=fileread_binary(file);
 cleanup=onCleanup(@()finalize_external_model());
 initialize_external_model(jsonencode(c));
-must_fail(@()advance_external_model(.1),'landing:Order');
+must_fail(@()advance_external_model(.02),'landing:Order');
 e=struct('timestamp',0,'T_deck_camera',eye(4),'velocity',zeros(3,1), ...
     'covariance',eye(6)*.01,'healthy',true,'angular_velocity_camera',zeros(3,1));
 must_fail(@()write_navigation_estimate(jsonencode(e)),'landing:Order');
@@ -43,23 +54,27 @@ e.T_deck_camera=truth.T_deck_camera; e.gimbal=jsondecode(read_gimbal_telemetry()
 write_navigation_estimate(jsonencode(e)); f=jsondecode(read_innerloop_feedback());
 assert(f.valid);
 must_fail(@()write_navigation_estimate(jsonencode(e)),'landing:Order');
-advance_external_model(.1);
+must_fail(@()advance_external_model(.05),'landing:Time');
+advance_external_model(.02);
 s=evalin('base','landingState');
-assert(norm(s.helicopter_state(1:3)-(initial-.02*f.gear_relative_ned_m(:)*.1))<1e-9, ...
+assert(abs(s.timestamp-.02)<1e-12);
+assert(norm(s.helicopter_state(1:3)-(initial-.02*f.gear_relative_ned_m(:)*.02))<1e-9, ...
     'landing:FirstInput','Feedback must affect the very first integration interval');
-must_fail(@()advance_external_model(.1),'landing:Order');
+must_fail(@()advance_external_model(.02),'landing:Order');
 must_fail(@()write_navigation_estimate(jsonencode(e)),'landing:Timestamp');
-truth=jsondecode(read_sensor_truth()); e.timestamp=.1;
+truth=jsondecode(read_sensor_truth()); e.timestamp=.02;
 e.T_deck_camera=truth.T_deck_camera; e.T_deck_camera(1,4)=e.T_deck_camera(1,4)+5;
 e.gimbal=jsondecode(read_gimbal_telemetry()); previous=s.helicopter_state(1:3);
 write_navigation_estimate(jsonencode(e)); f=jsondecode(read_innerloop_feedback());
-advance_external_model(.1); s=evalin('base','landingState');
-assert(norm(s.helicopter_state(1:3)-(previous-.02*f.gear_relative_ned_m(:)*.1))<1e-9, ...
+advance_external_model(.02); s=evalin('base','landingState');
+assert(abs(s.timestamp-.04)<1e-12);
+assert(norm(s.helicopter_state(1:3)-(previous-.02*f.gear_relative_ned_m(:)*.02))<1e-9, ...
     'landing:StateMemory','State must persist, and changed feedback must be consumed');
-truth=jsondecode(read_sensor_truth()); e.timestamp=.2; e.T_deck_camera=truth.T_deck_camera;
+truth=jsondecode(read_sensor_truth()); e.timestamp=.04; e.T_deck_camera=truth.T_deck_camera;
 e.gimbal=jsondecode(read_gimbal_telemetry()); e.healthy=false;
 previous=s.helicopter_state;
-write_navigation_estimate(jsonencode(e)); advance_external_model(.1); s=evalin('base','landingState');
+write_navigation_estimate(jsonencode(e)); advance_external_model(.02); s=evalin('base','landingState');
+assert(abs(s.timestamp-.06)<1e-12);
 assert(norm(s.helicopter_state(1:3)-previous(1:3))<1e-10,'landing:Invalid','Fixture must consume nav_valid');
 assert(isequal(before,fileread_binary(file)),'landing:Source','Source model was modified');
 finalize_external_model();
@@ -75,13 +90,15 @@ initialize_external_model(jsonencode(c));
 truth=jsondecode(read_sensor_truth());
 assert(norm(truth.gear_position_deck(:)-[0;0;30])<1e-9);
 e.timestamp=0; e.T_deck_camera=truth.T_deck_camera; e.gimbal=jsondecode(read_gimbal_telemetry());
-write_navigation_estimate(jsonencode(e)); advance_external_model(.01);
+write_navigation_estimate(jsonencode(e)); advance_external_model(.02);
 finalize_external_model();
 result=jsonencode(struct('passed',true,'first_feedback_consumed',true, ...
     'state_preserved',true,'changed_feedback_consumed',true,'invalid_feedback_consumed',true, ...
     'source_unchanged',true,'slx_kernel_equivalent',true, ...
     'base_workspace_setup',true,'interface_only_model_rejected',true, ...
-    'full_model_named_innerLoop_supported',true,'time',s.timestamp));
+    'full_model_named_innerLoop_supported',true,'time',s.timestamp, ...
+    'plant_step',.02,'mismatched_solver_and_controller_rejected',true, ...
+    'off_grid_advance_rejected',true));
 end
 function bytes=fileread_binary(file)
 fid=fopen(file,'rb'); cleanup=onCleanup(@()fclose(fid));

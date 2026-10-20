@@ -38,6 +38,9 @@ def output_directory(value=None, kind="run"):
 
 
 class LivePlant(MatlabExternalModel):
+    def read_status(self):
+        return self.session.call("read_landing_live_status")
+
     def __enter__(self):
         self.session.__enter__()
         try:
@@ -114,6 +117,10 @@ def run(c, landing, cal, geometry, output, smoke=False):
         interface_fixture=smoke,
         setup_script=str(path(c["setup_script"])) if c.get("setup_script") else "",
         seed=c["seed"],
+        evaluation_mode=c.get("evaluation_mode", "feedback"),
+        input_contract=c.get("input_contract", "feedback"),
+        autonomous_subsystem=c.get("autonomous_subsystem", ""),
+        ship_velocity_frame=c.get("ship_velocity_frame", "ned"),
     )
     checkpoint_hash = None
     if checkpoint:
@@ -121,7 +128,10 @@ def run(c, landing, cal, geometry, output, smoke=False):
             checkpoint_hash = hashlib.file_digest(stream, "sha256").hexdigest()
     metadata = dict(
         status="running",
-        kind="interface_acceptance" if smoke else "aircraft_closed_loop",
+        kind=("interface_acceptance" if smoke else
+              "navigation_observer" if c.get("evaluation_mode") == "observer"
+              else "aircraft_closed_loop"),
+        navigation_applied_to_control=c.get("evaluation_mode", "feedback") != "observer",
         config=c,
         geometry=geometry,
         navigation=nav,
@@ -181,9 +191,15 @@ def run(c, landing, cal, geometry, output, smoke=False):
                 event("write_feedback", i, t)
                 event("advance_innerloop", i, t)
                 following = plant.advance(c["dt"])
-                if abs(following.timestamp - t - c["dt"]) > 1e-8:
+                plant_status = plant.read_status()
+                stopped = plant_status["stopped"]
+                if not stopped and abs(following.timestamp - t - c["dt"]) > 1e-8:
                     raise ValueError("Inner loop failed to advance exactly dt")
                 event("read_next", i, following.timestamp)
+                # T_world_deck uses ENU world axes. Convert relative vectors
+                # ENU->NED; a relative position has no origin translation.
+                ned_from_world = np.array([[0., 1., 0.], [1., 0., 0.], [0., 0., -1.]])
+                truth_ned = ned_from_world @ truth.T_world_deck[:3, :3] @ truth.gear_position_deck
                 row = dict(
                     iteration=i,
                     timestamp=t,
@@ -192,12 +208,27 @@ def run(c, landing, cal, geometry, output, smoke=False):
                     estimate=estimate.to_dict(),
                     gear_estimate_deck_m=pipe.state.position.tolist(),
                     feedback=feedback,
+                    gear_relative_estimate_ned=feedback["gear_relative_ned_m"],
+                    gear_relative_truth_ned=truth_ned.tolist(),
+                    navigation_applied_to_control=metadata["navigation_applied_to_control"],
                     sensors=dict(camera=has_camera, lidar=has_lidar),
                     next_timestamp=following.timestamp,
                     next_truth=following.to_dict(),
+                    plant_stopped=stopped,
+                    stop_reason=plant_status["stop_reason"],
+                    advanced_s=following.timestamp-t,
                     wall_s=time.perf_counter() - wall,
                 )
                 log.write(json.dumps(row, allow_nan=False) + "\n")
+                if stopped:
+                    metadata.update(termination_reason="model_stop",
+                                    stop_reason=plant_status["stop_reason"],
+                                    final_timestamp=following.timestamp)
+                    write_json(output / "terminal_state.json", dict(
+                        **plant_status, truth=following.to_dict()))
+                    event("model_stop", i, following.timestamp)
+                    print(json.dumps(dict(event="model_stop", **plant_status)), flush=True)
+                    break
                 if i % max(1, round(1 / c["dt"])) == 0 or i == n - 1:
                     print(
                         json.dumps(
@@ -211,6 +242,8 @@ def run(c, landing, cal, geometry, output, smoke=False):
                         ),
                         flush=True,
                     )
+            metadata.setdefault("termination_reason", "duration_reached")
+            metadata.setdefault("final_timestamp", following.timestamp)
         metadata["status"] = "complete"
     except BaseException as exc:
         metadata.update(status="failed", error=f"{type(exc).__name__}: {exc}")
@@ -280,6 +313,7 @@ def main():
     c, landing, cal, geometry = load(output / "requested.json")
     print(f"Output: {output}", flush=True)
     if a.command == "configure":
+        validate(c)
         backup = output / "backups"
         backup.mkdir()
         models = (
@@ -293,17 +327,19 @@ def main():
         with MatlabSession() as session:
             result = session.call(
                 "landing_configure_geometry",
-                dict(models=models, geometry=geometry, backup_dir=str(backup)),
+                dict(
+                    models=models,
+                    geometry=geometry,
+                    backup_dir=str(backup),
+                    plant_step=c["plant_step"],
+                ),
             )
     elif a.command == "inspect":
         with MatlabSession() as session:
             result = session.call(
                 "landing_audit_model",
-                dict(
-                    model=str(path(c["model"])),
-                    inputs=c["inputs"],
-                    outputs=c["outputs"],
-                ),
+                {**c, "model": str(path(c["model"])),
+                 "setup_script": str(path(c["setup_script"])) if c.get("setup_script") else ""},
             )
     else:
         result = run(c, landing, cal, geometry, output, smoke=a.command == "smoke")

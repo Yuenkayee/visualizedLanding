@@ -1,10 +1,43 @@
 """Analyze closed-loop state/feedback logs without MATLAB or the training set."""
 
 import argparse
+from collections import Counter
 import csv
 import json
 from pathlib import Path
 import numpy as np
+
+
+def ned_comparison(rows):
+    """Use logged conversion outputs, or reconstruct NED truth for old logs."""
+    truth, estimate = [], []
+    ned_from_world = np.array([[0., 1., 0.], [1., 0., 0.], [0., 0., -1.]])
+    for row in rows:
+        if "gear_relative_truth_ned" in row:
+            truth.append(np.asarray(row["gear_relative_truth_ned"]).reshape(3))
+        elif "T_world_deck" in row["truth"]:
+            rotation = np.asarray(row["truth"]["T_world_deck"])[:3, :3]
+            truth.append(ned_from_world @ rotation @ row["truth"]["gear_position_deck"])
+        else:
+            # A deck attitude is needed; do not silently assume a level deck.
+            return None
+        estimate.append(np.asarray(row.get(
+            "gear_relative_estimate_ned", row["feedback"]["gear_relative_ned_m"]
+        )).reshape(3))
+    return np.asarray(truth), np.asarray(estimate)
+
+
+def error_statistics(error, mask):
+    if not mask.any():
+        return None
+    norm = np.linalg.norm(error[mask], axis=1)
+    return dict(
+        samples=int(mask.sum()),
+        rmse_xyz_m=np.sqrt(np.mean(error[mask] ** 2, axis=0)).tolist(),
+        rmse_3d_m=float(np.sqrt(np.mean(norm ** 2))),
+        p95_3d_m=float(np.percentile(norm, 95)),
+        maximum_3d_m=float(norm.max()),
+    )
 
 
 def analyze(directory):
@@ -28,29 +61,34 @@ def analyze(directory):
     valid = np.array([r["feedback"]["valid"] for r in rows], bool)
     norm = np.linalg.norm(error, axis=1)
 
-    def statistics(mask):
-        if not mask.any():
-            return None
-        return dict(
-            samples=int(mask.sum()),
-            rmse_xyz_m=np.sqrt(np.mean(error[mask] ** 2, axis=0)).tolist(),
-            rmse_3d_m=float(np.sqrt(np.mean(norm[mask] ** 2))),
-            p95_3d_m=float(np.percentile(norm[mask], 95)),
-            maximum_3d_m=float(norm[mask].max()),
-        )
-
+    metadata = json.loads((root / "run.json").read_text()) if (root / "run.json").exists() else {}
     metrics = dict(
         iterations=len(rows),
         duration_s=rows[-1]["next_timestamp"] - t[0],
         valid_fraction=float(valid.mean()),
-        all=statistics(np.ones(len(rows), bool)),
-        valid=statistics(valid),
+        all=error_statistics(error, np.ones(len(rows), bool)),
+        valid=error_statistics(error, valid),
         next_state_clock_checked=all(
-            abs(r["next_timestamp"] - r["timestamp"] - r["dt"]) < 1e-8 for r in rows
+            (r["timestamp"]-1e-8 <= r["next_timestamp"] <= r["timestamp"]+r["dt"]+1e-8
+             if r.get("plant_stopped") else
+             abs(r["next_timestamp"] - r["timestamp"] - r["dt"]) < 1e-8)
+            for r in rows
         ),
+        termination_reason=metadata.get("termination_reason"),
+        stop_reason=metadata.get("stop_reason"),
+        navigation_applied_to_control=metadata.get("navigation_applied_to_control"),
         final_truth_gear_deck_m=rows[-1]["next_truth"]["gear_position_deck"],
         note="Position error is wheel-centre minus H-centre in bow/port/up deck axes; completion is not a touchdown certification.",
     )
+    metrics["observations"] = {}
+    for sensor, prefix in (("camera", "vision"), ("lidar", "lidar")):
+        fresh = [r.get("estimate", {}).get("diagnostics", {}) for r in rows
+                 if r.get("sensors", {}).get(sensor)]
+        rejected = [d for d in fresh if not d.get(f"{prefix}_accepted", False)]
+        metrics["observations"][sensor] = dict(
+            frames=len(fresh), accepted=len(fresh)-len(rejected),
+            rejections=dict(Counter(d.get(f"{prefix}_rejection", "unspecified") for d in rejected)),
+        )
     with (root / "comparison.csv").open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(
@@ -97,14 +135,53 @@ def analyze(directory):
     axs[-1].set_xlabel("Simulation time (s)")
     fig.savefig(root / "controller_feedback.png", dpi=160)
     plt.close(fig)
+    ned = ned_comparison(rows)
+    metrics["ned_comparison_available"] = ned is not None
+    if ned is not None:
+        truth_ned, estimate_ned = ned
+        error_ned = estimate_ned - truth_ned
+        metrics["ned"] = dict(
+            axes=["north", "east", "down"],
+            all=error_statistics(error_ned, np.ones(len(rows), bool)),
+            valid=error_statistics(error_ned, valid),
+        )
+        with (root / "gear_relative_ned.csv").open("w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["time_s", "valid", *[
+                f"gear_relative_{kind}_ned_{axis}_m"
+                for kind in ("truth", "estimate", "error")
+                for axis in ("north", "east", "down")
+            ]])
+            for i in range(len(rows)):
+                writer.writerow([t[i], int(valid[i]), *truth_ned[i], *estimate_ned[i], *error_ned[i]])
+        fig, axs = plt.subplots(3, 1, figsize=(11, 8), sharex=True, constrained_layout=True)
+        for i, axis in enumerate(("North", "East", "Down")):
+            axs[i].plot(t, truth_ned[:, i], label="gear_relative_truth_ned", linewidth=1.7)
+            axs[i].plot(t, estimate_ned[:, i], label="gear_relative_estimate_ned", linewidth=1.2)
+            if (~valid).any():
+                axs[i].scatter(t[~valid], estimate_ned[~valid, i], color="red", s=10, label="Invalid estimate")
+            axs[i].set_ylabel(f"{axis} (m)")
+            axs[i].grid(alpha=.25)
+        axs[0].legend(loc="best")
+        axs[-1].set_xlabel("Simulation time (s)")
+        fig.savefig(root / "gear_relative_ned_comparison.png", dpi=160)
+        fig.savefig(root / "gear_relative_ned_comparison.pdf")
+        plt.close(fig)
     (root / "metrics.json").write_text(
         json.dumps(metrics, indent=2, allow_nan=False) + "\n"
     )
     (root / "analysis.md").write_text(
         f"# 离线闭环结果\n\n完成迭代：{len(rows)}；有效反馈比例：{valid.mean():.1%}。\n\n"
         f"全时段三维 RMSE：{metrics['all']['rmse_3d_m']:.3f} m；P95：{metrics['all']['p95_3d_m']:.3f} m。\n\n"
+        f"相机更新：{metrics['observations']['camera']}；LiDAR更新：{metrics['observations']['lidar']}。\n\n"
+        + ("本段没有有效导航估计；曲线包含先验外推，不能用较小误差认定导航已收敛。\n\n" if not valid.any() else "") +
         "`position_comparison.png/pdf` 为起落架中心相对 H 中心的位置真值与估计；红点为无效反馈。"
-        "`controller_feedback.png` 是实际写入控制器的 NED 位置。`comparison.csv` 保存数据。\n\n"
+        "`controller_feedback.png` 是转换后的 NED 导航位置；旁路模式中不作用于控制器。`comparison.csv` 保存甲板系数据。\n\n"
+        + ("`gear_relative_ned_comparison.png/pdf` 对比起落架减 H 中心的 North/East/Down 真值与估计；"
+           "`gear_relative_ned.csv` 保存对应数据，`metrics.json` 的 `ned` 给出三个方向误差。\n\n"
+           if ned is not None else "旧日志缺少甲板姿态，无法恢复 NED 真值。\n\n") +
+        f"结束原因：{metrics['termination_reason']}；模型停止事件：{metrics['stop_reason']}；"
+        f"导航接入控制：{metrics['navigation_applied_to_control']}。最后状态单独保存在 `terminal_state.json`（模型 STOP 时）。\n\n"
         "请结合 `run.json` 的运行类型、渲染器、权重和完成状态解读。接口验收模型不代表直升机着舰性能；"
         "结束仿真不等于已触舰。无效反馈时的控制策略由接入的控制器负责。\n"
     )

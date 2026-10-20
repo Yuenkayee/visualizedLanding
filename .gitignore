@@ -6,6 +6,11 @@ __pycache__/
 .venv-render-server/
 *.egg-info/
 .tools/
+
+# Simulink simulation and compilation caches (all directory levels)
+*.slxc
+slprj/
+
 data/rendered/*
 data/annotations/*
 data/calibration/*

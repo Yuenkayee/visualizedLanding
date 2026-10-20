@@ -39,7 +39,7 @@ classdef CETI < matlab.System
         Rt = 1.68
 
         % Sample time [s]
-        Ts = 0.01
+        Ts = 0.02
     end
 
     properties(DiscreteState)

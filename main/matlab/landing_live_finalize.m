@@ -1,5 +1,5 @@
 function landing_live_finalize(s)
-if isfield(s,'live')
+if isfield(s,'live') && ~strcmp(s.live.Status,'inactive')
     try
         stop(s.live);
     catch

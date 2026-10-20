@@ -51,7 +51,7 @@ function ship = ship_motion_predict(t, param)
 %   本文件中的默认 RAO 只是用于仿真框架调试的平滑近似，不代表特定舰型。
 
     if nargin < 1 || isempty(t)
-        t = (0:0.01:300).';
+        t = (0:0.02:300).';
     end
     if nargin < 2 || isempty(param)
         param = struct();

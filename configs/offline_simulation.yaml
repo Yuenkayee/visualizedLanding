@@ -3,7 +3,7 @@ seed: 42
 duration: 20.0
 camera_hz: 10.0
 lidar_hz: 5.0
-control_hz: 20.0
+control_hz: 50.0  # 0.02 s, aligned with the Simulink inner loop
 camera_config: configs/camera.yaml
 # Share the production dataset optics and existing installation centre.
 landing_config: configs/landing_dataset.yaml

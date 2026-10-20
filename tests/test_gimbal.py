@@ -18,7 +18,7 @@ def test_stabilization_finite_bandwidth_and_fixed_optical_centre():
     neutral = transform(np.eye(3), [2., .1, 1.11])
     servo = Gimbal(neutral)
     rigid_error, error = [], []
-    for t in np.arange(0, 6, .01):
+    for t in np.arange(0, 6, .02):
         body = D @ Rotation.from_euler("xyz", .6*np.sin(2*np.pi*t/3 + np.array([0, .7, 1.4]))).as_matrix()
         deck = Rotation.from_euler("xyz", [.03*np.sin(t), .02*np.sin(t), 0]).as_matrix()
         m = servo.advance(t, body, deck)

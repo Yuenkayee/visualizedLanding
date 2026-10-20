@@ -78,6 +78,8 @@ Python/MATLAB 适配层沿用 `config.geometry` 三个字段，通过 Simulation
 
 推荐使用 [`main` 的持续 Simulink 仿真适配器](../../../main/README.md)，其 `landing_live_initialize/step` 已实现下文 plant callback，保持控制器内部状态，并在内环子步更新云台。`innerLoop` 本身仍是转换边界，不是待推进的飞机模型；完整模型须提供原生飞机/舰船状态根输出与导航反馈根输入。
 
+统一内环固定步长为 **0.02 s（50 Hz）**；主宿主 `dt` 同为 0.02 s，相机每 5 步、LiDAR 每 10 步生成观测。模型构建脚本与 `configure` 命令使用相同固定步长；启动时校验控制器和 CETI 的离散采样周期。云台内部 0.002 s 的伺服积分细分独立于此步长。
+
 SLX 是快照转换边界，`sim(..., StopTime='0')` 不推进动力学、不包含积分器。宿主的 MATLAB callbacks 管理状态与时间：
 
 1. `initialize_external_model` 选择 `initialize_callback='innerloop_initialize'`，校验输入和 geometry。

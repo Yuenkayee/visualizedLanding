@@ -3,7 +3,7 @@ function filename=landing_build_interface_fixture(folder,geometryJSON)
 g=jsondecode(geometryJSON); model='landing_interface_fixture';
 if bdIsLoaded(model), close_system(model,0); end
 new_system(model);
-set_param(model,'SolverType','Fixed-step','Solver','ode4','FixedStep','0.01');
+set_param(model,'SolverType','Fixed-step','Solver','ode4','FixedStep','0.02');
 inputs={'nav_position_ned',3;'nav_velocity_ned',3;'nav_valid',1;'nav_timestamp',1};
 for k=1:size(inputs,1)
     add_block('simulink/Sources/In1',[model '/' inputs{k,1}], ...

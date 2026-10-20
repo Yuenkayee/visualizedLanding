@@ -6,7 +6,12 @@ if isfield(s.config,'plant_step_callback') && ~isempty(s.config.plant_step_callb
     % Implement later: retain plant/controller state inside s, consume
     % s.feedback.valid, return native 12D states (ship attitude is communicated without delay).
     s=feval(s.config.plant_step_callback,s,dt);
-    assert(abs(s.timestamp-oldTime-dt)<1e-8,'landing:Time','Plant failed to advance by dt');
+    if isfield(s,'stopped') && s.stopped
+        assert(s.timestamp>=oldTime-1e-8 && s.timestamp<=oldTime+dt+1e-8, ...
+            'landing:Time','Terminal plant time is outside the requested interval');
+    else
+        assert(abs(s.timestamp-oldTime-dt)<1e-8,'landing:Time','Plant failed to advance by dt');
+    end
 elseif isfield(s.config,'allow_state_hold') && s.config.allow_state_hold
     % Explicit interface test only; neither integration nor a closed-loop plant.
     s.timestamp=oldTime+dt;

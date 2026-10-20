@@ -3,7 +3,35 @@
 主入口为 `main/run.py`，结果分析为 `main/analyze.py`，MATLAB 适配器在 `main/matlab/`。
 复用现有 `NavigationPipeline`、训练场景、LiDAR 和云台动力学；不新增直升机动力学、制导或飞行控制律。
 
-**当前仓库模型的实际状态**：`external/innerloop/simu/innerLoop.slx` 是 15 输入/15 输出的坐标转换模型，尚无飞机动力学。`innerLoop_landing.slx` 含制导和控制子系统，但目前仍以外部飞机/舰船状态为根输入，缺少完整原生状态根输出。因此不能直接宣称这两个文件已经完成直升机着舰。`inspect` 会列出缺失接口、类及其实际来源路径；补齐现有模型或提供一个符合下述端口合同的完整模型，即可用相同的 `run` 入口闭环。`smoke` 自动生成的 Simulink 积分器夹具只用于接口验收。
+**当前仓库模型的实际状态（2026-10-20）**：`external/innerloop/simu/innerLoop.slx` 是坐标转换模型。用户更新的 `innerLoop_landing.slx` 已由内部 `innerLoop1` 子系统生成飞机/舰船状态，制导和控制在该子系统内部闭环；导航输入仅接到根层转换模块。使用 `main/navigation_observer.yaml` 可按当前实际航迹旁路评估导航，原 SLX 不被修改。`main/closed_loop.yaml` 仍是供将来导航反馈控制使用的通用端口合同，不能直接用于当前根接口。`smoke` 仍只使用积分器验收夹具。
+
+## 当前模型的导航旁路评估
+
+此处评估的是导航位置估计；不自动评价制导的目标预测误差。使用下列入口时，导航估计只进入转换/记录支路，不作用于飞行控制。启动会检查自主子系统无外部输入、根导航输入只连接转换模块、转换输出只连接记录端，避免误接入导航控制。
+
+```bash
+# 端口、0.02 s 时钟和导航旁路检查
+bash shell/run_landing_closed_loop.sh inspect --config main/navigation_observer.yaml
+
+# 本地：真实模型、现有 four_weather_v1/best.pt、Blender
+bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml --duration 60
+
+# Ubuntu + MATLAB/工具箱/许可证已就绪
+bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml \
+  --checkpoint /absolute/path/to/best.pt --duration 60 --device cuda --render-device OPTIX
+```
+
+初始化脚本 `main/matlab/landing_setup_observer.m` 加载仓库自带 `landingParam.mat`。原状态输出在 `innerLoop1/helicopter_state` / `innerLoop1/ship_state`，宿主在工作副本中加观察分支，无需增加源模型根输出。舰船状态的速度实际为 BODY 坐标，配置 `ship_velocity_frame: body` 在进入导航桥接层前旋转为 NED；原 SLX 转换模块自身的速度根输出尚不做该修正，请以宿主规范化后的传感器状态为准。状态位置不会自动平移去迎合制导目标。
+
+每步在同一时间戳保存 `gear_relative_estimate_ned` 和 `gear_relative_truth_ned`，均为**轮底中心减 H 中心**的 NED 向量，单位 m。真值从 native 状态的同一转换内核取得，估计由本轮导航转换得到。输出 `gear_relative_ned_comparison.png/pdf` 为 North/East/Down 三行真值与估计曲线，`gear_relative_ned.csv` 为数据；无效估计以红点显示。旧的甲板系 `position_comparison.png/pdf` 保留。`controller_feedback.png` 在旁路运行中只是转换后的估计，不能解释为实际控制输入。
+
+STOP 触发后读取保留的末帧输出，退出 Python 循环，写 `termination_reason: model_stop`、MATLAB `stop_reason` 和 `terminal_state.json`，照常生成图和误差统计。边界时刻可能出现最后一次 `advanced_s=0`：Simulink 在暂停时刻的下一次执行才求值 STOP，这是正常终止，不是假装推进一个 dt。运行错误仍报错；不会吞掉求解器错误。`duration_reached` 表示达到用户指定的运行上限。
+
+**当前场景初值（2026-10-20 复核）**：制导 `Ship_trace` 和导出的 `Ship_motion` 质心初值均为 `[50;0;0]`，直升机质心初值为 `[0;0;-50]`。训练 H 偏移仍为 `[-45;0;-5.5]`，所以水平名义轮底中心在甲板系的先验为 `[-5;0;41.6]`，已同步到旁路配置。这个先验由既定场景初值计算，不读取运行时真值。源模型的自主子系统现名为 `innerLoop1`，配置的 `autonomous_subsystem` 与两个 `outputs` 路径已同步；以后重命名时也需更新这些路径。
+
+按用户要求，STOP 保留 `abs(-CG_D-2.9)<0.01`，当前只验证导航对相对位置的估计和接口连通，不据此判定成功触舰。制导的目标点与 H 点仍是不同参考点，但不妨碍将同一时刻的导航估计与轮底减 H 的真值比较。
+
+磁盘文件复核时，`innerLoop1/HELI_CONT/UWV_CONT/Inner system/MATLAB System3` 的 `B_10` 模块参数仍为 `B_5`。这不阻断接口连通；若 MATLAB 中已改为 `B_10`，需将修改保存到实际运行的 `external/innerloop/simu/innerLoop_landing.slx`。旁路配置不覆盖该控制器参数。
 
 该模型用到的 `bodyToNedVel`、`nedVelToBody` 原先依赖本机仓库外 `HELI_CONT/src/trans` 的 MATLAB 路径；现已将同一实现纳入 `external/inner_loop/model/`，避免拷贝仓库到 Ubuntu 后丢失这两个转换类。它们只旋转速度，不改变速度单位。
 
@@ -24,7 +52,7 @@ BODY 为前/右/下，米；T 把 OpenCV 相机坐标变换至机体系。光轴
 云台只改变旋转，光心位置始终 `[2,0,1.11]`。轮底中心偏移与舰上 H 中心偏移保持独立。
 这些是当前训练模型尺寸；不是实机标定结论。每次运行都会写 `run.json` 记录解析值。
 
-`configure` 原位更新两个 SLX 的三个 Model Workspace 变量及同名模块参数表达式，保存原文件备份；不会重建模型或删除已有制导/控制连线。直接打开模型即可看到这些参数。后续改变训练几何后请重新执行：
+`configure` 原位更新两个 SLX 的三个 Model Workspace 变量及同名模块参数表达式，同时对齐 0.02 s 固定步长并检查控制器采样周期，保存原文件备份；不会重建模型或删除已有制导/控制连线。直接打开模型即可看到这些参数。后续改变训练几何后请重新执行：
 
 ```bash
 bash shell/run_landing_closed_loop.sh configure
@@ -60,7 +88,9 @@ bash shell/run_landing_closed_loop.sh configure
 
 每个 `dt` 严格执行：读取当前模型状态 → 从当前状态渲染相机/射线生成 LiDAR → 运行现有导航 → 转换并写入反馈 → 推进内环 → 读取下一状态。`events.jsonl` 保存六个阶段。
 
-`dt=0.05 s`，内环固定步长 `plant_step=0.01 s`；相机 10 Hz、LiDAR 5 Hz。没有新图像/点云的 tick 仍推进导航预测，读取同刻编码器并写入反馈。频率必须整除宿主频率，时长必须整除 dt。不要简单提高传感器配置频率以掩盖时序错误。
+`dt=0.02 s`，内环固定步长 `plant_step=0.02 s`，导航预测、编码器读取与控制反馈为 50 Hz；相机 10 Hz（每 5 步）、LiDAR 5 Hz（每 10 步）。没有新图像/点云的 tick 仍推进导航预测，读取同刻编码器并写入反馈。频率必须整除宿主频率，时长必须整除 dt。0.05 s 不能作为这个内环的反馈周期；旧配置会被启动校验拒绝。
+
+两个接口 SLX 的 FixedStep、模型构建脚本、验收夹具和 CETI 默认离散周期均为 0.02 s；H_inf、LPV_H_inf、NDO、LPV_NDO 也使用 0.02 s。启动时会检查源模型的固定步长及这些模块的采样参数，防止工作副本覆盖步长后掩盖不一致。已有点质量仿真入口的默认反馈也为 50 Hz。云台内部 `integration_step_s=0.002` 是用于伺服数值稳定性的积分细分，不是内环时钟；相机曝光/读出时间和训练数据采样率各自保留其物理含义。
 
 MATLAB `simulation` 保持一次连续仿真，每段通过 `step(PauseTime=...)` 推进；暂停时修改工作副本中的反馈 Constant。控制器内部积分器、滤波器及 MATLAB System 私有状态跨 tick 保留。原 SLX 不被运行过程修改。快照调用与转换模块相同的 `innerLoop_conversion` 内核；测试通过实际转换 SLX 检查 15 个输出一致。运行宿主不要求 `innerLoop.slx` 永久保持纯转换模型，因此可以继续在该文件中接入完整控制器和动力学。
 

@@ -37,7 +37,8 @@ def test_closed_loop_sensor_feedback_smoke(tmp_path):
         dict(duration=1.0, log=str(log), metrics=str(tmp_path / "metrics.json"))
     )
     rows = read_log(log)
-    assert result["navigation"]["samples"] == 21
+    assert result["navigation"]["samples"] == 51
+    assert np.allclose(np.diff([row["timestamp"] for row in rows]), 0.02)
     assert result["navigation"]["healthy_fraction"] > 0.5
     assert (
         rows[-1]["truth"]["T_deck_camera"][2][3]

@@ -44,7 +44,7 @@ for k=1:numel(values)
     else
         data=[v(:)';v(:)'];
     end
-    ds=ds.addElement(timeseries(data,[0;0.01]),names{k});
+    ds=ds.addElement(timeseries(data,[0;0.02]),names{k});
 end
 input=Simulink.SimulationInput('innerLoop');
 input=input.setExternalInput(ds);

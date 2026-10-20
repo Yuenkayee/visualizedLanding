@@ -1,0 +1,6 @@
+function result=read_landing_live_status()
+s=evalin('base','landingState');
+result=jsonencode(struct('stopped',s.stopped,'timestamp',s.timestamp, ...
+    'stop_reason',s.stop_reason,'helicopter_state',s.helicopter_state, ...
+    'ship_state',s.ship_state));
+end
