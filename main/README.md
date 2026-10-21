@@ -98,55 +98,85 @@ MATLAB `simulation` 保持一次连续仿真，每段通过 `step(PauseTime=...)
 
 云台在每个内环子步读取当前机体/舰船姿态，保留有限带宽、角速度/加速度/角度限制，编码器与渲染真值分离。相机曝光/滚动快门只利用当前平移速度和历史/当前旋转作短时外推，不提前推进内环获取未来姿态。Blender 持久子进程复用训练场景、海面、遮挡和噪声；本地支持 CPU Cycles，4090 使用 OPTIX。CPU 简化图像模式适用于接口测试，不用于判断训练场景中的导航精度。
 
-## 环境和命令
+## Ubuntu 22.04 一次部署
 
-在仓库根目录执行。脚本自动检查/补装 Python 依赖，记录控制台日志，不关机；`check --check` 只检查不安装。默认本地选 `.venv/bin/python`，Linux 选当前 `python`，可用 `PYTHON_BIN` 覆盖。
+当前部署入口和默认权重位于 `single_cam` 分支。新服务器克隆时使用 `git clone --branch single_cam git@github.com:Yuenkayee/visualizedLanding.git`，已有仓库同步该分支后再运行下列命令。
 
-本地需要 MATLAB R2024b + Simulink + 与实际控制器匹配的工具箱和许可证。默认还检查 Control System Toolbox（`Control_Toolbox`）和 Robust Control Toolbox（`Robust_Toolbox`），因为仓库的 H_inf/LPV_H_inf 使用 `ss`、`c2d` 和 `hinfsyn`。`required_toolboxes` 填 MATLAB 许可证 feature 名称。已在本机 Apple Silicon MATLAB Engine 上实际运行验收。旧的 `simulation.offline.run_closed_loop --backend matlab` 默认仍是点质量代理，不是此入口。
+所有命令在克隆后的仓库根目录执行。统一入口为 `shell/run_landing_closed_loop.sh`，可以由 Ubuntu 自带 Python 3.10 启动部署，无需先手动安装 Python 3.12。`check` 自动安装缺失依赖；`check --check` 只检查并生成报告，不安装、不登录。执行日志从系统安装阶段开始保存在 `outputs/logs/closed_loop/<时间_PID>/console.log`。
+
+Linux 自动部署支持 Ubuntu 22.04 x86_64，安装系统包需要 root 或 sudo 权限。GPU 仿真使用云平台已经配置好的 NVIDIA 驱动和 GPU/graphics 设备访问；脚本检查 PyTorch CUDA 运算与真实 Cycles OPTIX 小图渲染，不修改云宿主机内核驱动，也不安装另一套 CUDA Toolkit。容器里驱动/设备不可见时，需要在云平台选择 GPU 镜像并开放设备。
+
+首次部署和账号授权：
 
 ```bash
-# 检查/补装环境；--check 可改为只检查
-bash shell/run_landing_closed_loop.sh check --renderer blender
+bash shell/run_landing_closed_loop.sh check --login \
+  --config main/navigation_observer.yaml --device cuda --render-device OPTIX
+```
 
-# 检查现有模型的根端口/缺失 MATLAB System 类
-bash shell/run_landing_closed_loop.sh inspect --model external/innerloop/simu/innerLoop_landing.slx
+MATLAB 首次授权需要本人按终端提示输入账号/OTP；成功进入 `>>` 后输入 `exit`，部署会继续。此交互直接连接 `/dev/tty`，不写入 `console.log`，必须在交互式 SSH 或 tmux 内执行。已有许可证文件、网络许可证或已经登录时，省略 `--login`。如许可证使用 MathWorks New Licensing Technology，可设置 `MATLAB_LICENSE_MODE=onlinelicensing`；默认使用 `online`。登录和运行使用同一 Linux 用户。
 
-# 无需完整飞机模型的接口验收，真实 Simulink + 当前导航 + 简化传感器
-bash shell/run_landing_closed_loop.sh smoke --duration 2
+自动检查/安装的内容：
 
-# 真实训练权重和 Blender 的传感器链路验收，仍然使用测试夹具
+- MATLAB R2024b、Simulink、Control System Toolbox、Robust Control Toolbox，通过官方 MPM 安装；新装采用 R2024b 最新更新，补装工具箱保留已有更新级别。默认目录 `~/MATLAB/R2024b`，root 用户即 `/root/MATLAB/R2024b`。已有标准路径安装会复用，也可用 `MATLAB_ROOT` 显式指定。
+- MathWorks 官方 Ubuntu 22.04 系统依赖和 Blender 运行库、编译工具、pip/venv、tmux。依赖清单随仓库保存，不再从 GitHub 临时下载清单。
+- 导航使用 Python 3.12：优先复用项目 `.venv` 或云镜像的兼容 Python；否则自动创建 `.venv`。显式 `PYTHON_BIN` 必须可运行且为 Python 3.11/3.12，不会悄悄改用其他解释器。自动部署推荐 Linux 3.12。
+- Blender 使用独立 `.venv-render-server` 的 Python 3.11 和 bpy 4.5.3。支持 `RENDER_PYTHON` 或 `--render-python` 指向已有的 Python 3.11 环境。
+- PyTorch 2.8.0+cu128、MATLAB Engine 24.2.2、数值/图像/绘图依赖，实际 CUDA 运算、OPTIX 渲染和工具箱许可证 checkout。
+- 加载默认权重，核对其文件存在和模型格式，计算 SHA256 并记录到 `environment.json`。
+
+Python 下载会重试；uv 从 GitHub 获取运行时失败时，会自动改从 `www.python.org` 下载固定版本源码并编译（3.12.12 / 3.11.14），可能需要几分钟。已完成的步骤在重跑时复用。源码、构建运行时和 MPM 缓存在 `.tools/closed-loop/`；失败环境保留为 `.venv.backup.*`，均被 Git 忽略。可通过 `LANDING_PYTHON_312` / `LANDING_PYTHON_311` 指定已有解释器，或设置 uv 官方支持的 `UV_PYTHON_INSTALL_MIRROR`。下载仍需服务器能访问相应官方站点；不会关闭 TLS 校验。
+
+不要从 macOS 复制虚拟环境到 Linux。若之前留下了指向不存在文件的 `PYTHON_BIN` / `RENDER_PYTHON`，先 `unset PYTHON_BIN RENDER_PYTHON` 再部署。自定义 MATLAB 目录示例：
+
+```bash
+export MATLAB_ROOT=/root/MATLAB/R2024b
+bash shell/run_landing_closed_loop.sh check --device cuda --render-device OPTIX
+# 以后仅核对，不安装、不登录
+bash shell/run_landing_closed_loop.sh check --check --device cuda --render-device OPTIX
+```
+
+`check/run/inspect` 的 shell 默认配置为 `main/navigation_observer.yaml`；`smoke/configure` 默认保留 `main/closed_loop.yaml`。直接调用 Python 模块不会执行系统/MATLAB 安装，完整部署请使用 shell 入口。
+
+## 默认权重与仿真命令
+
+`visual_training/checkpoints/four_weather_v1/best.pt` 已作为普通 Git 文件纳入仓库，克隆即有，不需要 Git LFS 或另行 SCP。SHA256 为 `1605b4a258414d931f08c630dc1bd83c3946f1a91bfa595614ee0e54df186ab3`。其他训练权重、训练集、历史结果仍不随 Git 同步。真实航迹仿真现场生成图像/点云，不需要训练集和预生成 `.blend`。
+
+先做模型端口检查及 2 秒实际航迹试运行：
+
+```bash
+bash shell/run_landing_closed_loop.sh inspect --config main/navigation_observer.yaml
+bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml \
+  --duration 2 --device cuda --render-device OPTIX
+```
+
+正式运行（60 秒为仿真时间上限，源模型 STOP 可以提前结束）：
+
+```bash
+tmux new-session -d -s landing -c "$PWD" \
+  'bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml --duration 60 --device cuda --render-device OPTIX'
+tmux attach -t landing
+```
+
+`Ctrl+B` 后按 `D` 离开会话并保持运行；`Ctrl+C` 请求终止。结束不会关机。`check --login` 应先在交互终端完成，再启动后台运行。当前配置仍然是**自主控制闭环、导航旁路估计**，导航不反馈控制器；本次部署改动没有改变这个评估模式。
+
+可选接口夹具 smoke（不代表实际飞机着舰）：
+
+```bash
 bash shell/run_landing_closed_loop.sh smoke --duration 0.2 \
-  --renderer blender --render-device CPU \
-  --checkpoint visual_training/checkpoints/full_20261014_184359_0f5f3d/best.pt
+  --renderer blender --device cuda --render-device OPTIX \
+  --checkpoint visual_training/checkpoints/four_weather_v1/best.pt
+```
 
-# 接好上述端口并设置先验/初始化脚本后，运行实际模型
-bash shell/run_landing_closed_loop.sh run --config main/closed_loop.yaml \
-  --model /absolute/path/to/complete_inner_loop.slx \
-  --checkpoint /absolute/path/to/latest/best.pt --duration 60
+终端第一步、约每推进 1 秒仿真时间和最后一步打印 `event=step`、`iteration`、仿真 `time`、`feedback_valid` 和本步实际耗时 `wall_s`。结束打印 `elapsed_s`；STOP 打印 `model_stop`。渲染耗时时两条进度的实际间隔可能较长，不是每秒墙钟心跳。Blender 详细信息写到结果目录 `renderer.log`。
 
-# 从日志重新生成分析，不需要 MATLAB、训练集或权重
+本地 macOS 保留已有 MATLAB R2024b 和 Python 环境，不执行 apt/MPM 自动安装。可以用以下命令检查和运行：
+
+```bash
+bash shell/run_landing_closed_loop.sh check --check --renderer cpu --device cpu
+bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml --duration 2
+# 仅分析已有结果，不启动 MATLAB
 bash shell/run_landing_closed_loop.sh analyze outputs/closed_loop/<运行目录>
 ```
-
-Ubuntu 22.04 x86_64 是 MATLAB R2024b 支持的平台；Python 3.12 可运行该版 Engine。服务器硬件足够，RTX4090 给 PyTorch CUDA 和 Blender OPTIX 使用；Simulink 执行不要求 MATLAB 的 GPU 支持。**服务器镜像里的 PyTorch/CUDA 不包含 MATLAB/Simulink**，必须另外安装正版 MATLAB R2024b、Simulink 和控制器需要的工具箱，并配置许可证；MATLAB Runtime 无法替代。检查脚本不会尝试通过 pip 安装或绕过这些产品/许可证。
-
-```bash
-export MATLAB_ROOT=/usr/local/MATLAB/R2024b
-export PATH="$MATLAB_ROOT/bin:$PATH"
-export PYTHON_BIN=python
-# 复用此前数据生成的 cp311 bpy 环境；缺失时检查脚本会创建
-export RENDER_PYTHON="$PWD/.venv-render-server/bin/python"
-bash shell/run_landing_closed_loop.sh check --renderer blender
-bash shell/run_landing_closed_loop.sh smoke --duration 0.2 \
-  --renderer blender --render-device OPTIX --device cuda \
-  --checkpoint visual_training/checkpoints/full_20261014_184359_0f5f3d/best.pt
-# 完整模型/先验配置好后：
-bash shell/run_landing_closed_loop.sh run --config main/closed_loop.yaml \
-  --model /absolute/path/to/complete_inner_loop.slx \
-  --checkpoint /absolute/path/to/latest/best.pt --device cuda --render-device OPTIX
-```
-
-Python 依赖保留服务器 Torch 2.8.0+cu128，不套用本机 Torch 2.5 的全量锁文件；bpy 在单独 Python 3.11 环境中运行。若现有模型使用只支持 Windows 的 DLL/S-function，或缺失本地编译库，仍需补齐相应平台版本；端口检查不是模型可移植性的替代证明。
 
 ## 产物与复核
 

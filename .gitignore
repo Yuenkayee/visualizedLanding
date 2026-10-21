@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 .venv/
 .venv-render-server/
+.venv.backup.*/
+.venv-render-server.backup.*/
 *.egg-info/
 .tools/
 
@@ -23,6 +25,11 @@ outputs/figures/*
 outputs/logs/*
 outputs/metrics/*
 visual_training/checkpoints/*
+# Ship the validated inference checkpoint with every clone.
+!visual_training/checkpoints/four_weather_v1/
+visual_training/checkpoints/four_weather_v1/*
+!visual_training/checkpoints/four_weather_v1/best.pt
+!visual_training/checkpoints/four_weather_v1/README.md
 visual_modeling/assets/scenes/*.blend*
 visual_modeling/assets/ships/downloads/
 !**/.gitkeep

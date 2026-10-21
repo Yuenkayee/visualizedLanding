@@ -1,15 +1,15 @@
-"""Check/install Python dependencies; check licensed MATLAB/Simulink separately.
+"""Verify Python packages, MATLAB licenses, checkpoint, CUDA and Cycles.
 
-MATLAB/Simulink and a license must already exist. MATLAB Runtime is insufficient
-for editing a model or controlling a live Simulink simulation through Engine.
+Use shell/run_landing_closed_loop.sh check for the complete Ubuntu installation,
+including the OS libraries, Python runtimes and MATLAB products.
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import platform
-import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -20,37 +20,35 @@ from shell.server_dependencies import (
     ensure_libraries,
     run,
 )
+from shell.closed_loop_dependencies import (
+    absolute_executable, ensure_venv, matlab_destination, python_matches,
+)
 
 
 def matlab_root():
-    candidates = []
-    if os.environ.get("MATLAB_ROOT"):
-        candidates.append(Path(os.environ["MATLAB_ROOT"]))
-    binary = shutil.which("matlab")
-    if binary:
-        candidates.append(Path(binary).resolve().parent.parent)
-    candidates += [
-        Path("/Applications/MATLAB_R2024b.app"),
-        Path("/usr/local/MATLAB/R2024b"),
-        Path("/opt/MATLAB/R2024b"),
-    ]
-    for p in candidates:
-        if (p / "bin/matlab").exists():
-            return p
+    root = matlab_destination()
+    if (root / "bin/matlab").is_file():
+        return root
     raise RuntimeError(
-        "MATLAB R2024b not found. Install licensed MATLAB + Simulink and set MATLAB_ROOT; pip and MATLAB Runtime cannot supply Simulink. Local macOS is supported."
+        "MATLAB R2024b not found. Run bash shell/run_landing_closed_loop.sh check to install on Ubuntu."
     )
 
 
 def renderer(check, python=None):
-    requested = python
+    if platform.system() == "Linux":
+        ensure_libraries(check)
+        default = ROOT / ".venv-render-server/bin/python"
+        if python and absolute_executable(python) != str(default):
+            python = absolute_executable(python)
+            if not python_matches(python, ["3.11"]):
+                raise RuntimeError("RENDER_PYTHON/--render-python must be an existing Python 3.11 interpreter")
+        else:
+            python = ensure_venv(default.parent.parent, "3.11", check)
+        ensure_requirements(python, ROOT / "requirements-render-server.txt", check)
+        run([python, "-c", 'import bpy,cv2,numpy,scipy,yaml;print("Renderer:",bpy.app.version_string)'])
+        return python
     if python is None:
-        candidate = ROOT / ".venv-render-server/bin/python"
-        python = (
-            str(candidate)
-            if platform.system() == "Linux" and candidate.exists()
-            else sys.executable
-        )
+        python = sys.executable
     try:
         result = subprocess.run(
             [
@@ -69,44 +67,12 @@ def renderer(check, python=None):
             raise RuntimeError(
                 f"Renderer missing dependencies: {python}; rerun without --check"
             )
-        if platform.system() == "Linux":
-            ensure_libraries(False)
-            candidate = ROOT / ".venv-render-server/bin/python"
-            if requested and Path(requested).resolve() != candidate.resolve():
-                run(
-                    [
-                        requested,
-                        "-c",
-                        'import sys; assert sys.version_info[:2]==(3,11), "RENDER_PYTHON requires Python 3.11"',
-                    ]
-                )
-                candidate = Path(requested)
-            if not candidate.exists():
-                run([sys.executable, "-m", "pip", "install", "uv"])
-                run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "uv",
-                        "venv",
-                        "--python",
-                        "3.11",
-                        "--managed-python",
-                        "--seed",
-                        candidate.parent.parent,
-                    ]
-                )
-            python = str(candidate)
-            ensure_requirements(python, ROOT / "requirements-render-server.txt", False)
-        else:
-            if sys.version_info[:2] != (3, 11):
-                raise RuntimeError(
-                    "Local bpy profile requires Python 3.11; use .venv/bin/python or set RENDER_PYTHON"
-                )
-            ensure_requirements(python, ROOT / "requirements-data.txt", False)
-            run([python, "-m", "pip", "install", "bpy==4.2.0"])
-    if platform.system() == "Linux":
-        ensure_libraries(check)
+        if not python_matches(python, ["3.11"]):
+            raise RuntimeError(
+                "Local bpy profile requires Python 3.11; use .venv/bin/python or set RENDER_PYTHON"
+            )
+        ensure_requirements(python, ROOT / "requirements-data.txt", False)
+        run([python, "-m", "pip", "install", "bpy==4.2.0"])
     run(
         [
             python,
@@ -120,12 +86,13 @@ def renderer(check, python=None):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--check", action="store_true", help="Do not install anything")
-    p.add_argument("--config", default="main/closed_loop.yaml")
+    p.add_argument("--config", default="main/navigation_observer.yaml")
     p.add_argument("--renderer", choices=["cpu", "blender"])
     p.add_argument("--render-python")
     p.add_argument("--report")
     p.add_argument("--device", choices=["cpu", "cuda", "mps"])
     p.add_argument("--render-device", choices=["CPU", "CUDA", "OPTIX"])
+    p.add_argument("--checkpoint")
     a = p.parse_args()
     if platform.system() not in ("Darwin", "Linux"):
         raise RuntimeError("Supported hosts: macOS and Ubuntu 22.04")
@@ -144,7 +111,6 @@ def main():
     if (
         platform.system() == "Linux"
         and platform.machine() == "x86_64"
-        and sys.version_info[:2] == (3, 12)
     ):
         ensure_torch(a.check)
     ensure_requirements(sys.executable, ROOT / "requirements-closed-loop.txt", a.check)
@@ -165,6 +131,17 @@ def main():
         assert (torch.ones(8, device="cuda") @ torch.ones(8, device="cuda")).item() == 8
     elif device == "mps" and not torch.backends.mps.is_available():
         raise RuntimeError("MPS unavailable to PyTorch")
+    checkpoint = a.checkpoint or config.get("checkpoint")
+    checkpoint_info = None
+    if checkpoint:
+        checkpoint = (ROOT / Path(checkpoint).expanduser()).absolute()
+        if not checkpoint.is_file():
+            raise FileNotFoundError(f"Checkpoint missing: {checkpoint}; restore tracked four_weather_v1/best.pt or pass --checkpoint")
+        from navigation.vision.infer_h import HDetector
+        detector = HDetector(checkpoint, device)
+        del detector
+        checkpoint_info = dict(path=str(checkpoint), bytes=checkpoint.stat().st_size,
+                               sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest())
     render_python = (
         renderer(
             a.check,
@@ -189,12 +166,20 @@ def main():
             ],
             cwd=ROOT,
         )
-    engine = matlab.engine.start_matlab("-nodesktop -nosplash")
+    print("[environment] Starting MATLAB and checking toolbox licenses", flush=True)
+    try:
+        engine = matlab.engine.start_matlab("-nodesktop -nosplash")
+    except Exception as exc:
+        raise RuntimeError(
+            "MATLAB Engine startup failed. For first account authorization, run "
+            "bash shell/run_landing_closed_loop.sh check --login with the same Linux user. "
+            f"MATLAB error: {exc}"
+        ) from exc
     try:
         features = sorted(set(["Simulink", *config.get("required_toolboxes", [])]))
-        licenses = {name: bool(engine.license("test", name)) for name in features}
+        licenses = {name: bool(engine.license("checkout", name)) for name in features}
         if not all(licenses.values()):
-            raise RuntimeError(f"Required toolbox license missing: {licenses}")
+            raise RuntimeError(f"Required toolbox license unavailable: {licenses}; authorize with check --login or configure your license server")
         # License testing alone is not enough: load the actual installed block library.
         engine.load_system("simulink", nargout=0)
         for feature, function in [
@@ -219,6 +204,7 @@ def main():
             renderer=selected,
             render_python=render_python,
             render_device=render_device,
+            checkpoint=checkpoint_info,
             note="Environment check does not certify the supplied aircraft model or its toolbox dependencies.",
         )
     finally:
