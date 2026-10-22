@@ -98,6 +98,12 @@ done
       *":$MATLAB_ROOT/bin/glnxa64:"*) ;;
       *) export LD_LIBRARY_PATH="$MATLAB_ROOT/bin/glnxa64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
     esac
+    # The bootstrap validates a replacement only if Python/Conda carries an
+    # older C++ runtime. Apply it before BOTH check and simulation processes.
+    if [[ -f "$LANDING_LOG_DIR/ld-preload.txt" ]]; then
+      IFS= read -r LANDING_CPP_PRELOAD < "$LANDING_LOG_DIR/ld-preload.txt"
+      if [[ -n "$LANDING_CPP_PRELOAD" ]]; then export LD_PRELOAD="$LANDING_CPP_PRELOAD"; fi
+    fi
   fi
   "$LANDING_PYTHON" -c 'import sys; print("Python:", sys.executable, sys.version.split()[0], flush=True)'
   if [[ "$LANDING_MODE" == analyze ]]; then

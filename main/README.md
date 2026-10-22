@@ -119,6 +119,7 @@ MATLAB 首次授权需要本人按终端提示输入账号/OTP；成功进入 `>
 
 - MATLAB R2024b、Simulink、Control System Toolbox、Robust Control Toolbox，通过官方 MPM 安装；新装采用 R2024b 最新更新，补装工具箱保留已有更新级别。默认目录 `~/MATLAB/R2024b`，root 用户即 `/root/MATLAB/R2024b`。已有标准路径安装会复用，也可用 `MATLAB_ROOT` 显式指定。
 - Linux 启动入口在运行 Python 前，将所选 MATLAB 的 `bin/glnxa64` 加入 `LD_LIBRARY_PATH`，使 MATLAB Engine 的隔离构建和运行进程识别自定义安装目录；保留现有库路径，不修改 `.bashrc`。仅设置 `MATLAB_ROOT` 和 `PATH` 不足以让 PyPI 的 Engine 构建器找到 `/root/MATLAB/R2024b`。
+- 若 Python/Conda 的 `libstdc++.so.6` 缺少 MATLAB R2024b 所需的 `GLIBCXX_3.4.30`，部署会检查 Ubuntu 系统 C++ 库（缺少符号时通过 apt 更新），在独立 Python 进程验证已安装的 Torch/Engine 导入后，仅为本次检查和仿真设置 `LD_PRELOAD`。不删除或替换 Conda 文件；已有预加载项保留。选择结果记录在同次日志目录的 `cpp-runtime.json`。`--check` 不安装/更新系统包。直接使用 `python -m` 不经过此启动修复，服务器请使用 shell 入口。
 - MathWorks 官方 Ubuntu 22.04 系统依赖和 Blender 运行库、编译工具、pip/venv、tmux。依赖清单随仓库保存，不再从 GitHub 临时下载清单。
 - 导航使用 Python 3.12：优先复用项目 `.venv` 或云镜像的兼容 Python；否则自动创建 `.venv`。显式 `PYTHON_BIN` 必须可运行且为 Python 3.11/3.12，不会悄悄改用其他解释器。自动部署推荐 Linux 3.12。
 - Blender 使用独立 `.venv-render-server` 的 Python 3.11 和 bpy 4.5.3。支持 `RENDER_PYTHON` 或 `--render-python` 指向已有的 Python 3.11 环境。

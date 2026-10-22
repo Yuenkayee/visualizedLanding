@@ -217,6 +217,66 @@ def matlab_engine_environment(root):
     return env
 
 
+CPP_SYMBOL = b"GLIBCXX_3.4.30\x00"  # MATLAB R2024b requires the GCC 12 runtime.
+SYSTEM_CPP_LIBRARY = Path("/usr/lib/x86_64-linux-gnu/libstdc++.so.6")
+
+
+def supports_matlab_cpp(library):
+    return library.is_file() and CPP_SYMBOL in library.read_bytes()
+
+
+def matlab_cpp_runtime(python, root, check=False):
+    """Choose a process-scoped preload when Conda supplies an old C++ runtime.
+
+    Do not replace Conda files or add MATLAB's entire sys/os directory to the
+    library search path. LD_PRELOAD must be applied before the real Python
+    interpreter starts, including both environment checks and simulation.
+    """
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        return {"status": "not_applicable"}
+    result = run([python, "-c", "import json,sys; print(json.dumps([sys.prefix,sys.base_prefix]))"],
+                 capture_output=True, text=True)
+    libraries = sorted({Path(prefix) / "lib/libstdc++.so.6" for prefix in json.loads(result.stdout)})
+    old = [str(lib) for lib in libraries if lib.is_file() and not supports_matlab_cpp(lib)]
+    if not old:
+        return {"status": "default"}
+    print("[deploy] Python environment has libstdc++ without GLIBCXX_3.4.30: " + ", ".join(old), flush=True)
+    library = SYSTEM_CPP_LIBRARY
+    if not supports_matlab_cpp(library):
+        if check:
+            raise RuntimeError(f"{library} lacks GLIBCXX_3.4.30; rerun without --check to update libstdc++6/libgcc-s1")
+        prefix = privilege()
+        run([*prefix, "apt-get", "update"])
+        run([*prefix, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
+             "--no-install-recommends", "libstdc++6", "libgcc-s1"])
+        if not supports_matlab_cpp(library):
+            raise RuntimeError(f"{library} still lacks GLIBCXX_3.4.30; check the Ubuntu 22.04 apt repositories")
+    env = matlab_engine_environment(root)
+    preloads = [entry for entry in re.split(r"[\s:]+", env.get("LD_PRELOAD", "")) if entry]
+    env["LD_PRELOAD"] = ":".join([str(library), *[v for v in preloads if v != str(library)]])
+    # Verify in a fresh process, not in the bootstrap interpreter which may
+    # already have loaded the conflicting library. Missing packages are installed
+    # by the next stage; installed Torch/Engine must import with this runtime.
+    probe = '''import ctypes, importlib, importlib.metadata, os
+ctypes.CDLL(os.environ["LANDING_CPP_PROBE_LIBRARY"])
+for distribution, module in [("torch", "torch"), ("matlabengine", "matlab.engine")]:
+    try:
+        importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        continue
+    importlib.import_module(module)
+'''
+    tested = subprocess.run([python, "-c", probe],
+                            env={**env, "LANDING_CPP_PROBE_LIBRARY": str(library)},
+                            capture_output=True, text=True)
+    if tested.returncode:
+        raise RuntimeError("MATLAB C++ runtime compatibility probe failed with " + str(library) +
+                           ":\n" + tested.stdout + tested.stderr)
+    print(f"[deploy] Validated process-scoped C++ runtime: {library} (GLIBCXX_3.4.30)", flush=True)
+    return {"status": "preload", "library": str(library), "ld_preload": env["LD_PRELOAD"],
+            "outdated_libraries": old}
+
+
 def ensure_matlab(root, check=False):
     release = "R2024b"
     info = root / "VersionInfo.xml"
@@ -290,13 +350,17 @@ def main():
             raise RuntimeError(f"pip missing from {python}; rerun without --check")
         run([python, "-m", "ensurepip", "--upgrade"])
     root = matlab_destination()
+    cpp_runtime = {"status": "not_applicable"}
     if not a.analysis_only:
         ensure_matlab(root, a.check)
+        cpp_runtime = matlab_cpp_runtime(python, root, a.check)
         if a.login:
             matlab_login(root)
     a.report_dir.mkdir(parents=True, exist_ok=True)
     (a.report_dir / "python.txt").write_text(python + "\n")
     (a.report_dir / "matlab-root.txt").write_text(str(root) + "\n")
+    (a.report_dir / "ld-preload.txt").write_text(cpp_runtime.get("ld_preload", "") + "\n")
+    (a.report_dir / "cpp-runtime.json").write_text(json.dumps(cpp_runtime, indent=2) + "\n")
     (a.report_dir / "bootstrap.json").write_text(json.dumps(dict(
         status="installed", python=python, matlab_root=str(root), check_only=a.check,
         note="Licenses, Python packages, CUDA and renderer are verified by the next stage."

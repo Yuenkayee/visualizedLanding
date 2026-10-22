@@ -210,6 +210,7 @@ if os.environ.get('TEST_FAIL') == 'bootstrap': sys.exit(17)
 root=Path.cwd(); report=Path(a.report_dir)
 (report/'python.txt').write_text(sys.executable+'\\n')
 (report/'matlab-root.txt').write_text(str(root/'MATLAB')+'\\n')
+(report/'ld-preload.txt').write_text(('/validated/libstdc++.so.6:/existing/preload.so' if os.environ['TEST_HOST_OS'] == 'Linux' else '')+'\\n')
 ''')
     main = tmp_path / "main"
     main.mkdir()
@@ -223,6 +224,7 @@ expected = '/existing/cuda'
 if os.environ['TEST_HOST_OS'] == 'Linux':
     expected = str(Path.cwd()/'MATLAB/bin/glnxa64') + ':' + expected
 assert os.environ['LD_LIBRARY_PATH'] == expected
+assert os.environ['LD_PRELOAD'] == ('/validated/libstdc++.so.6:/existing/preload.so' if os.environ['TEST_HOST_OS'] == 'Linux' else '/existing/preload.so')
 if os.environ.get('TEST_FAIL') == 'environment': sys.exit(19)
 ''')
     (main / "run.py").write_text('''
@@ -232,6 +234,7 @@ expected = '/existing/cuda'
 if os.environ['TEST_HOST_OS'] == 'Linux':
     expected = str(Path.cwd()/'MATLAB/bin/glnxa64') + ':' + expected
 assert os.environ['LD_LIBRARY_PATH'] == expected
+assert os.environ['LD_PRELOAD'] == ('/validated/libstdc++.so.6:/existing/preload.so' if os.environ['TEST_HOST_OS'] == 'Linux' else '/existing/preload.so')
 Path('run_called').touch()
 ''')
     commands = tmp_path / "test-bin"
@@ -241,6 +244,7 @@ Path('run_called').touch()
     uname.chmod(0o755)
     env = {**os.environ, "PYTHON_BIN": sys.executable, "TEST_FAIL": fail_at or "",
            "TEST_HOST_OS": host_os, "LD_LIBRARY_PATH": "/existing/cuda",
+           "LD_PRELOAD": "/existing/preload.so",
            "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
     env.pop("MATLAB_ROOT", None)
     result = subprocess.run(["bash", str(script), "run", "--duration", "0.2", "--device=cuda",
