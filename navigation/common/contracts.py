@@ -153,6 +153,23 @@ class PoseMeasurement:
 
 
 @dataclass
+class GimbalReference:
+    """Slow reference command in DECK, distinct from actual encoder telemetry."""
+    timestamp: float
+    R_deck_camera: np.ndarray
+    angular_velocity_deck: np.ndarray = field(default_factory=lambda: np.zeros(3))
+
+    def __post_init__(self):
+        self.timestamp = validate_timestamp(self.timestamp)
+        self.R_deck_camera = transform(self.R_deck_camera)[:3, :3]
+        self.angular_velocity_deck = finite_array(self.angular_velocity_deck, (3,), "reference angular velocity")
+
+    def to_dict(self):
+        return dict(timestamp=float(self.timestamp), R_deck_camera=self.R_deck_camera.tolist(),
+                    angular_velocity_deck=self.angular_velocity_deck.tolist())
+
+
+@dataclass
 class NavigationEstimate:
     timestamp: float
     T_deck_camera: np.ndarray
@@ -162,6 +179,7 @@ class NavigationEstimate:
     diagnostics: dict = field(default_factory=dict)
     angular_velocity_camera: np.ndarray = field(default_factory=lambda: np.zeros(3))
     gimbal: GimbalSample | None = None
+    gimbal_reference: GimbalReference | None = None
 
     def __post_init__(self):
         PoseMeasurement(self.timestamp, self.T_deck_camera, self.covariance)
@@ -178,4 +196,5 @@ class NavigationEstimate:
             diagnostics=self.diagnostics,
             angular_velocity_camera=self.angular_velocity_camera.tolist(),
             gimbal=self.gimbal.to_dict() if self.gimbal is not None else None,
+            gimbal_reference=self.gimbal_reference.to_dict() if self.gimbal_reference is not None else None,
         )

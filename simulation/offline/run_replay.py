@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 import yaml
 from navigation.common.contracts import CameraCalibration, CameraFrame, LidarFrame
-from navigation.common.contracts import GimbalSample
+from navigation.common.contracts import GimbalSample, GimbalReference
 from navigation.fusion.eskf_state import ESKFState
 from navigation.pipeline import NavigationPipeline
 from simulation.offline.sensor_buffer import SensorBuffer
@@ -58,6 +58,8 @@ def run_replay(root, sequence, output, config=None):
             for kind, frame in buffer.pop_until(row["timestamp"]):
                 getattr(pipe, "process_" + kind)(frame)
             estimate = pipe.estimate()
+            if row.get("gimbal_reference"):
+                pipe.process_gimbal_reference(GimbalReference(**row["gimbal_reference"]))
             logger.write(
                 dict(
                     timestamp=row["timestamp"],

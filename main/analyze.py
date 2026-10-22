@@ -40,6 +40,63 @@ def error_statistics(error, mask):
     )
 
 
+def gimbal_analysis(rows, metadata, root):
+    """Commands and geometric FOV coverage are evaluation, not navigation input."""
+    import matplotlib.pyplot as plt
+    from scipy.spatial.transform import Rotation
+    from navigation.common.frames import invert, transform_points
+    from visual_modeling.blender.build_h_marker import marker_points
+
+    selected = [r for r in rows if r.get("estimate", {}).get("gimbal_reference")]
+    if not selected:
+        return None
+    t = np.array([r["timestamp"] for r in selected])
+    commands = [r["estimate"]["gimbal_reference"] for r in selected]
+    rates = np.array([c.get("angular_velocity_deck", [0, 0, 0]) for c in commands])
+    error = [Rotation.from_matrix(np.asarray(c["R_deck_camera"]).T @
+             np.asarray(r["truth"]["T_deck_camera"])[:3, :3]).magnitude()
+             for c, r in zip(commands, selected)]
+    states = [r["estimate"]["diagnostics"].get("gimbal_tracking", {}).get("status", "unknown") for r in selected]
+    result = dict(status_counts=dict(Counter(states)),
+                  max_reference_rate_rad_s=float(np.max(np.linalg.norm(rates, axis=1))),
+                  max_camera_reference_error_rad=float(max(error)))
+    fig, axes = plt.subplots(3, 1, figsize=(11, 8), sharex=True, constrained_layout=True)
+    axes[0].plot(t, np.rad2deg(error), label="Actual camera vs command")
+    axes[0].set_ylabel("Angle error (deg)")
+    axes[1].plot(t, np.rad2deg(np.linalg.norm(rates, axis=1)), label="Reference rate")
+    axes[1].set_ylabel("Rate (deg/s)")
+    camera = metadata.get("camera")
+    if camera:
+        K = np.array(camera["K"])
+        marker = metadata.get("marker", {})
+        points = marker_points(marker.get("width", 6), marker.get("length", 6))
+        targets = np.vstack(([0, 0, .025], points))
+        centres, coverage = [], []
+        for r in selected:
+            p = transform_points(invert(r["truth"]["T_deck_camera"]), targets)
+            pixels = p @ K.T
+            uv = pixels[:, :2] / np.where(abs(pixels[:, 2:]) > 1e-12, pixels[:, 2:], np.nan)
+            normalized = 2 * uv / [camera["width"], camera["height"]] - 1
+            centres.append(np.where(p[0, 2] > 0, normalized[0], np.nan))
+            coverage.append(bool(np.all(p[1:, 2] > 0) and np.all(abs(normalized[1:]) <= 1)))
+        centres = np.asarray(centres)
+        axes[2].plot(t, centres[:, 0], label="H centre x / half width")
+        axes[2].plot(t, centres[:, 1], label="H centre y / half height")
+        axes[2].axhline(1, color="red", ls=":")
+        axes[2].axhline(-1, color="red", ls=":")
+        axes[2].set_ylabel("Normalized pixel")
+        result["four_corners_in_frame_fraction"] = float(np.mean(coverage))
+        result["fov_note"] = "Geometric projection only; does not test occlusion/detection."
+    axes[-1].set_xlabel("Time (s)")
+    for ax in axes:
+        ax.grid(alpha=.25)
+        if ax.lines:
+            ax.legend(loc="best")
+    fig.savefig(root / "gimbal_tracking.png", dpi=160)
+    plt.close(fig)
+    return result
+
+
 def analyze(directory):
     import matplotlib
 
@@ -81,6 +138,7 @@ def analyze(directory):
         note="Position error is wheel-centre minus H-centre in bow/port/up deck axes; completion is not a touchdown certification.",
     )
     metrics["observations"] = {}
+    metrics["gimbal_tracking"] = gimbal_analysis(rows, metadata, root)
     for sensor, prefix in (("camera", "vision"), ("lidar", "lidar")):
         fresh = [r.get("estimate", {}).get("diagnostics", {}) for r in rows
                  if r.get("sensors", {}).get(sensor)]
@@ -174,6 +232,8 @@ def analyze(directory):
         f"# 离线闭环结果\n\n完成迭代：{len(rows)}；有效反馈比例：{valid.mean():.1%}。\n\n"
         f"全时段三维 RMSE：{metrics['all']['rmse_3d_m']:.3f} m；P95：{metrics['all']['p95_3d_m']:.3f} m。\n\n"
         f"相机更新：{metrics['observations']['camera']}；LiDAR更新：{metrics['observations']['lidar']}。\n\n"
+        + ("`gimbal_tracking.png` 展示参考角速度、实际朝向与指令的差值，以及 H 中心的视场位置；"
+           "视场投影统计不代表没有遮挡或视觉识别成功。\n\n" if metrics["gimbal_tracking"] else "")
         + ("本段没有有效导航估计；曲线包含先验外推，不能用较小误差认定导航已收敛。\n\n" if not valid.any() else "") +
         "`position_comparison.png/pdf` 为起落架中心相对 H 中心的位置真值与估计；红点为无效反馈。"
         "`controller_feedback.png` 是转换后的 NED 导航位置；旁路模式中不作用于控制器。`comparison.csv` 保存甲板系数据。\n\n"

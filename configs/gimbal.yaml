@@ -10,7 +10,24 @@ integration_step_s: 0.002
 rate_feedforward: true
 encoder_std_rad: 0.0005
 # null: level aircraft's nominal optical orientation relative to deck.
-# Fixed attitude, not an ideal look-at camera; translation/FOV still change.
+# Nominal orientation at startup; the slow tracker can adjust this reference.
 R_deck_camera_reference: null
 # null: already acquired at start; supply three angles to model acquisition.
 initial_angles_rad: null
+# Outer loop uses navigation only. The physical servo above still determines
+# actual camera orientation; commanded reference is never used as an encoder.
+tracking:
+  enabled: true
+  target_deck_m: [0.0, 0.0, 0.025]
+  # H extent in DECK x/y. Aim at the angular centre of its four corners so
+  # near-deck centering does not crop the near edge of this extended target.
+  target_extent_m: [6.0, 6.0]
+  time_constant_s: 0.6
+  max_rate_rad_s: 0.35
+  max_acceleration_rad_s2: 0.7
+  max_tilt_rad: 1.0471975512
+  # A wide-FOV central band avoids unnecessary large rotations while the H is
+  # already well within view (and prevents shrinking distant targets).
+  centering_deadband_rad: 0.6981317008
+  min_target_distance_m: 0.5
+  synthetic_position_std_m: 0.15

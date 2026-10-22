@@ -3,6 +3,16 @@ assert(strcmp(s.phase,'read'),'landing:Order','Feedback already written; advance
 assert(isfield(s,'observed_timestamp') && abs(s.observed_timestamp-s.timestamp)<1e-8, ...
     'landing:Order','Read current sensor truth before writing feedback');
 s.estimate=e;
+% Reference commands are separate from encoders. Latch at the feedback phase;
+% gimbal_step applies the physical response only when the plant advances.
+if isfield(e,'gimbal_reference') && isstruct(e.gimbal_reference)
+    cmd=e.gimbal_reference; R=cmd.R_deck_camera;
+    assert(abs(cmd.timestamp-s.timestamp)<1e-8,'landing:Gimbal','Stale reference command');
+    assert(isequal(size(R),[3 3]) && all(isfinite(R(:))) && ...
+        norm(R'*R-eye(3),'fro')<1e-6 && abs(det(R)-1)<1e-6, ...
+        'landing:Gimbal','Invalid reference rotation');
+    s.gimbal_reference=cmd;
+end
 o=innerloop_evaluate(s);
 s.feedback=struct('timestamp',s.timestamp, ...
     'gear_relative_ned_m',o.gear_relative_estimate_ned, ...

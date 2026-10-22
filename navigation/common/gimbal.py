@@ -18,7 +18,10 @@ from navigation.common.timestamps import require_monotonic
 def gimbal_config(overrides=None):
     path = Path(__file__).resolve().parents[2] / "configs/gimbal.yaml"
     config = yaml.safe_load(path.read_text())
-    config.update(overrides or {})
+    overrides = overrides or {}
+    tracking = {**config["tracking"], **overrides.get("tracking", {})}
+    config.update(overrides)
+    config["tracking"] = tracking
     for key in ("natural_frequency_hz", "damping_ratio", "integration_step_s"):
         if not np.isfinite(config[key]) or config[key] <= 0:
             raise ValueError(f"gimbal {key} must be finite and positive")
@@ -31,6 +34,19 @@ def gimbal_config(overrides=None):
         raise ValueError("gimbal travel must avoid Euler pitch singularity and pi wraps")
     if not np.isfinite(config["encoder_std_rad"]) or config["encoder_std_rad"] < 0:
         raise ValueError("invalid gimbal encoder uncertainty")
+    for key in ("time_constant_s", "max_rate_rad_s", "max_acceleration_rad_s2",
+                "max_tilt_rad", "min_target_distance_m"):
+        if not np.isfinite(tracking[key]) or tracking[key] <= 0:
+            raise ValueError(f"gimbal tracking {key} must be finite and positive")
+    if tracking["max_tilt_rad"] >= np.pi / 2:
+        raise ValueError("tracking tilt must be less than pi/2")
+    if not np.isfinite(tracking["centering_deadband_rad"]) or not 0 <= tracking["centering_deadband_rad"] < np.pi / 2:
+        raise ValueError("invalid tracking centering deadband")
+    finite_array(tracking["target_deck_m"], (3,), "tracking target")
+    if (finite_array(tracking["target_extent_m"], (2,), "tracking target extent") <= 0).any():
+        raise ValueError("tracking target extent must be positive")
+    if not np.isfinite(tracking["synthetic_position_std_m"]) or tracking["synthetic_position_std_m"] < 0:
+        raise ValueError("invalid synthetic tracking uncertainty")
     return config
 
 
@@ -49,6 +65,12 @@ class Gimbal:
         self.timestamp = None
         self.command = None
         self.saturated = False
+
+    def set_reference(self, command):
+        """Latch the current navigation command; only advance moves the axes."""
+        if self.timestamp is None or abs(command.timestamp - self.timestamp) > 1e-8:
+            raise ValueError("gimbal reference requires current actuator timestamp")
+        self.reference = command.R_deck_camera.copy()
 
     def advance(self, timestamp, R_world_body, R_world_deck):
         if self.timestamp is not None and timestamp == self.timestamp:

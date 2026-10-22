@@ -5,6 +5,7 @@ from scipy.spatial.transform import Rotation
 from navigation.common.frames import transform, invert, ned_to_enu, transform_points
 from navigation.common.contracts import CameraCalibration
 from navigation.common.gimbal import Gimbal
+from navigation.common.gimbal_tracking import GimbalTargetTracker
 from navigation.pose.solve_pnp import project_points
 from visual_modeling.blender.build_h_marker import marker_points
 from visual_modeling.sensors.airframe_visibility import (
@@ -271,7 +272,12 @@ def make_sortie(config, seed, sequence_id, weather, window_wait=None):
         body_velocity[:, 1], np.hypot(body_velocity[:, 0], body_velocity[:, 2])
     )
     cal, mount = camera_geometry(c, rng)
-    gimbal = Gimbal(mount, c.get("gimbal"))
+    gimbal_options = c.get("gimbal", {})
+    gimbal = Gimbal(mount, {**gimbal_options, "tracking": {
+        **gimbal_options.get("tracking", {}),
+        "target_extent_m": [c["marker"]["width"], c["marker"]["length"]]}})
+    tracker = GimbalTargetTracker(mount, gimbal.config)
+    tracking_rng = np.random.default_rng(seed + 7927)
     encoder_rng = np.random.default_rng(seed + 7919)
     rows = []
     for i in range(len(t)):
@@ -279,6 +285,14 @@ def make_sortie(config, seed, sequence_id, weather, window_wait=None):
         world_body = transform(A @ heli_R[i], A @ heli_cg[i])
         actual_mount = gimbal.advance(float(t[i]), world_body[:3, :3], world_deck[:3, :3])
         camera_pose = invert(world_deck) @ world_body @ actual_mount.T_body_camera
+        # Synthetic navigation proxy, not an ideal instantaneous look-at mount.
+        # This observation can only affect subsequent rows; physical limits and
+        # the same reference shaper used by the live bridge remain in force.
+        reference_used = gimbal.reference.copy()
+        proxy = camera_pose.copy()
+        proxy[:3, 3] += tracking_rng.normal(0, tracker.config["synthetic_position_std_m"], 3)
+        command = tracker.update(float(t[i]), proxy, True, source="synthetic_noisy_pose_proxy")
+        gimbal.set_reference(command)
         rows.append(
             dict(
                 timestamp=float(t[i]),
@@ -300,7 +314,10 @@ def make_sortie(config, seed, sequence_id, weather, window_wait=None):
                 gimbal=gimbal.sample(encoder_rng).to_dict(),
                 gimbal_angles_rad=gimbal.angles.tolist(),
                 gimbal_rates_rad_s=gimbal.rates.tolist(),
-                gimbal_tracking_error_rad=Rotation.from_matrix(gimbal.reference.T @ camera_pose[:3, :3]).as_rotvec().tolist(),
+                R_deck_camera_reference=reference_used.tolist(),
+                gimbal_reference=command.to_dict(),
+                gimbal_tracking=tracker.diagnostics.copy(),
+                gimbal_tracking_error_rad=Rotation.from_matrix(reference_used.T @ camera_pose[:3, :3]).as_rotvec().tolist(),
                 helicopter_cg_ned_m=heli_cg[i].tolist(),
                 helicopter_velocity_body_knots=(
                     body_velocity[i] * 3600 / 1852
@@ -334,7 +351,7 @@ def make_sortie(config, seed, sequence_id, weather, window_wait=None):
         marker=c["marker"],
         T_body_camera=mount.tolist(),
         gimbal_config=gimbal.config,
-        R_deck_camera_reference=gimbal.reference.tolist(),
+        R_deck_camera_reference=tracker.nominal.tolist(),
         camera=dict(
             width=cal.width,
             height=cal.height,

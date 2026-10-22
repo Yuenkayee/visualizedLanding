@@ -1,5 +1,8 @@
 function s=innerloop_update_gimbal(s)
 c=s.config.gimbal;
+if isfield(s,'gimbal_reference')
+    c.R_deck_camera_reference=s.gimbal_reference.R_deck_camera;
+end
 s.gimbal_state=gimbal_step(s.gimbal_state,s.timestamp, ...
     rotation(s.helicopter_state(7:9)),rotation(s.ship_state(7:9))*diag([1 -1 -1]), ...
     s.config.geometry.T_body_camera,c);

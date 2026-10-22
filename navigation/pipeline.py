@@ -31,6 +31,7 @@ class NavigationPipeline:
         self.diagnostics = {}
         self.gimbal = None
         self.last_gimbal = None
+        self.reference_rate_deck = np.zeros(3)
         point = self.config.get("filter_point_body")
         self.filter_point_body = (
             None if point is None else finite_array(point, (3,), "filter_point_body")
@@ -40,6 +41,23 @@ class NavigationPipeline:
         """Reference point -> optical centre, in the current camera axes."""
         T = mount.T_body_camera
         return T[:3, :3].T @ (T[:3, 3] - self.filter_point_body)
+
+    def process_gimbal_reference(self, command):
+        """Known motion input for the NEXT prediction, never a pose update.
+
+        Keep the estimated residual angular rate while accounting for changes
+        in the slow reference rate. Otherwise a constant-rate predictor keeps
+        rotating after the gimbal brakes and can lose the target association.
+        Finite servo error remains for vision to estimate; health/covariance and
+        actual encoder extrinsics are not replaced with the command.
+        """
+        if command is None or not self.config.get("gimbal_reference_feedforward", True):
+            return
+        if abs(command.timestamp - self.state.timestamp) > 1e-8:
+            raise ValueError("reference input must follow navigation at the same timestamp")
+        delta = command.angular_velocity_deck - self.reference_rate_deck
+        self.state.angular_velocity += self.state.rotation.T @ delta
+        self.reference_rate_deck = command.angular_velocity_deck.copy()
 
     def gimbal_synchronized(self, timestamp):
         return (

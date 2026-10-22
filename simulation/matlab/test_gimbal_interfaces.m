@@ -18,6 +18,7 @@ if nargin>0
     fixture=jsondecode(fileread(parityFile)); cfg=gimbal_defaults(fixture.config); state=[];
     for k=1:numel(fixture.rows)
         row=fixture.rows(k);
+        if isfield(row,'reference'), cfg.R_deck_camera_reference=row.reference; end
         state=gimbal_step(state,row.timestamp,row.R_world_body,row.R_world_deck,fixture.neutral,cfg);
         assert(norm(state.angles-row.angles(:))<1e-10);
         assert(norm(state.rates-row.rates(:))<1e-10);
@@ -42,8 +43,11 @@ wc=Rc'*s.helicopter_state(10:12)+m.angular_velocity_camera(:)-Rdc'*omegaDeck;
 e=struct('timestamp',s.timestamp,'T_deck_camera',truth.T_deck_camera, ...
     'velocity',truth.velocity_deck,'covariance',eye(6)*.01,'healthy',true, ...
     'angular_velocity_camera',wc,'gimbal',m);
+% A reference changes neither the current encoder nor the body feedback.
+e.gimbal_reference=struct('timestamp',s.timestamp,'R_deck_camera',D*rotation([.1;-.2;0]));
 write_navigation_estimate(jsonencode(e)); f=jsondecode(read_innerloop_feedback());
 s=evalin('base','landingState'); o=innerloop_evaluate(s);
+assert(norm(s.gimbal_measurement.T_body_camera-m.T_body_camera,'fro')<1e-12);
 assert(f.valid && norm(f.gear_relative_ned_m(:)-o.gear_relative_truth_ned)<1e-9);
 expected=Rb*(s.helicopter_state(4:6)*1852/3600+cross(s.helicopter_state(10:12),config.geometry.gear_body)) ...
     -s.ship_state(4:6)*1852/3600-Rs*cross(s.ship_state(10:12),config.geometry.H_ship_body);
@@ -51,6 +55,7 @@ assert(norm(f.velocity_gear_ned_mps(:)-expected)<1e-9);
 % Two sensor-only advances can hold the last control sample.
 advance_external_model(.02); read_sensor_truth(); advance_external_model(.02); read_sensor_truth();
 s=evalin('base','landingState'); assert(abs(s.timestamp-.04)<1e-10);
+assert(norm(s.gimbal_measurement.T_body_camera-m.T_body_camera,'fro')>.001);
 % Missing/stale encoder cannot claim healthy BODY feedback.
 s.estimate=e; s.estimate.timestamp=s.timestamp; s.estimate.gimbal.timestamp=0;
 o=innerloop_evaluate(s); assert(~o.feedback_valid);

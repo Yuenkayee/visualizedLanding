@@ -104,6 +104,7 @@ def run_closed_loop(config=None):
                 pipe.process_gimbal(encoder, time)
                 estimate = pipe.estimate()
                 plant.write_navigation_estimate(estimate)
+                pipe.process_gimbal_reference(estimate.gimbal_reference)
                 row = dict(
                     timestamp=time, truth=truth.to_dict(), estimate=estimate.to_dict()
                 )

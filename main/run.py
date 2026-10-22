@@ -13,7 +13,7 @@ from main.config import ROOT, load, path, validate
 from main.analyze import analyze
 from main.sensors import Sensors
 from navigation.common.contracts import CameraFrame, LidarFrame
-from navigation.common.gimbal import Gimbal
+from navigation.common.gimbal import Gimbal, gimbal_config
 from navigation.fusion.eskf_state import ESKFState
 from navigation.pipeline import NavigationPipeline
 from simulation.bridge.external_model_adapter import MatlabExternalModel
@@ -135,6 +135,9 @@ def run(c, landing, cal, geometry, output, smoke=False):
         config=c,
         geometry=geometry,
         navigation=nav,
+        gimbal=gimbal_config(landing.get("gimbal")),
+        camera=dict(K=cal.K.tolist(), width=cal.width, height=cal.height),
+        marker=landing["marker"],
         checkpoint_sha256=checkpoint_hash,
         truth_policy="Truth only drives sensor synthesis and evaluation; no truth poses enter NavigationPipeline.",
         order=[
@@ -187,6 +190,7 @@ def run(c, landing, cal, geometry, output, smoke=False):
                 estimate = pipe.estimate()
                 event("solve_navigation", i, t)
                 plant.write_navigation_estimate(estimate)
+                pipe.process_gimbal_reference(estimate.gimbal_reference)
                 feedback = plant.read_navigation_feedback()
                 event("write_feedback", i, t)
                 event("advance_innerloop", i, t)

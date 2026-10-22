@@ -18,6 +18,15 @@ def load(filename="main/closed_loop.yaml"):
     c = yaml.safe_load(path(filename).read_text())
     landing = yaml.safe_load(path(c["landing_config"]).read_text())
     landing = deepcopy(landing)
+    landing.setdefault("gimbal", {}).setdefault("tracking", {})["target_extent_m"] = [
+        landing["marker"]["width"], landing["marker"]["length"]]
+    # Per-run ablation without changing the dataset's global defaults.
+    if "gimbal" in c:
+        from navigation.common.gimbal import gimbal_config
+        base = gimbal_config(landing.get("gimbal"))
+        override = c["gimbal"]
+        landing["gimbal"] = {**base, **override,
+            "tracking": {**base["tracking"], **override.get("tracking", {})}}
     if c.get("render_width"):
         scale = c["render_width"] / landing["camera"]["width"]
         landing["camera"]["width"] = c["render_width"]

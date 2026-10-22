@@ -5,6 +5,7 @@ from scipy.spatial.transform import Rotation
 from navigation.common.frames import transform, invert
 from navigation.common.contracts import GimbalSample
 from navigation.common.gimbal import Gimbal, gimbal_config
+from navigation.common.gimbal_tracking import GimbalTargetTracker
 from navigation.common.reference_points import body_point_estimate
 from simulation.bridge.exchange_contracts import SensorTruth
 from simulation.bridge.matlab_session import MatlabSession
@@ -25,6 +26,7 @@ class MockExternalModel:
             raise ValueError("mock position_reference must be body or gear")
         self.reference_body = np.asarray(self.config.get("gear_body", [0., 0., 0.]) if reference == "gear" else [0., 0., 0.])
         self.gimbal = Gimbal(self.config.get("T_body_camera", np.eye(4)), self.config.get("gimbal"))
+        self.gimbal_tracker = GimbalTargetTracker(self.gimbal.neutral, self.gimbal.config)
         self.encoder_rng = np.random.default_rng(self.config.get("encoder_seed", 73))
         self.gimbal.advance(0., self.body_rotation(0.), self.deck_pose(0.)[:3, :3])
         self.encoder = self.gimbal.sample(self.encoder_rng)
@@ -69,6 +71,7 @@ class MockExternalModel:
         if abs(estimate.timestamp - self.timestamp) > 1e-8:
             raise ValueError("feedback timestamp differs from plant timestamp")
         self.estimate = estimate
+        self.gimbal.set_reference(self.gimbal_tracker.apply(estimate))
 
     def advance(self, dt):
         if self.closed or dt <= 0:
@@ -112,6 +115,8 @@ class MatlabExternalModel:
     def __init__(self, config=None):
         self.config = config or {}
         self.config = {**self.config, "gimbal": gimbal_config(self.config.get("gimbal"))}
+        self.gimbal_tracker = GimbalTargetTracker(
+            self.config.get("geometry", {}).get("T_body_camera", np.eye(4)), self.config["gimbal"])
         self.session = MatlabSession()
 
     def __enter__(self):
@@ -134,6 +139,7 @@ class MatlabExternalModel:
         return GimbalSample(**self.session.call("read_gimbal_telemetry"))
 
     def write_navigation_estimate(self, estimate):
+        self.gimbal_tracker.apply(estimate)
         self.session.call("write_navigation_estimate", estimate.to_dict())
 
     def advance(self, dt):

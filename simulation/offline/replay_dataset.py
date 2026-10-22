@@ -16,7 +16,7 @@ import numpy as np
 import yaml
 from scipy.spatial.transform import Rotation
 
-from navigation.common.contracts import CameraCalibration, CameraFrame, GimbalSample, LidarFrame
+from navigation.common.contracts import CameraCalibration, CameraFrame, GimbalSample, GimbalReference, LidarFrame
 from navigation.common.reference_points import body_point_estimate
 from navigation.common.frames import invert, transform_points
 from navigation.fusion.eskf_state import ESKFState
@@ -158,6 +158,8 @@ def replay_sequence(records, root, detector, config, args):
             predicted_position = pipeline.state.position.copy()
             pipeline.process_camera(CameraFrame(row["timestamp"], image, encoder))
             estimate = pipeline.process_lidar(lidar)
+            if row.get("gimbal_reference"):
+                pipeline.process_gimbal_reference(GimbalReference(**row["gimbal_reference"]))
             position, velocity, covariance = body_point_estimate(estimate, first["geometry"]["gear_body_m"])
             if not np.allclose(position, pipeline.state.position, atol=1e-8):
                 raise ValueError("Camera-to-gear roundtrip failed")

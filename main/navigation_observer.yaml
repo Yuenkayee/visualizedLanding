@@ -25,11 +25,11 @@ device: cpu
 sensor_timeout_s: 300
 save_sensors: false
 # Communicated nominal prior from the scenario's prescribed ICs:
-# heli CG [0,0,-50], Ship_motion CG [50,0,0], H offset [-45,0,-5.5].
+# heli CG [0,0,-50], Ship_motion CG [95,0,0], H offset [-45,0,-5.5].
 # Ship_trace and Ship_motion now share the nominal CG origin.
 # Rounded wheel position; never initialized from runtime truth.
 navigation:
-  initial_position: [-5.0, 0.0, 41.6]
+  initial_position: [-50.0, 0.0, 41.6]
   initial_velocity: [0.0, 0.0, 0.0]
 inputs:
   timestamp: timestamp
