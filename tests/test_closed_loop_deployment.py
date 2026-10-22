@@ -201,6 +201,7 @@ def test_launcher_stops_after_failure_and_forwards_environment(tmp_path, fail_at
     shell.mkdir()
     script = shell / "run_landing_closed_loop.sh"
     script.write_text((deploy.ROOT / "shell/run_landing_closed_loop.sh").read_text())
+    (shell / "download_mirrors.sh").write_text((deploy.ROOT / "shell/download_mirrors.sh").read_text())
     (shell / "closed_loop_dependencies.py").write_text('''
 import argparse, os, sys
 from pathlib import Path

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+source shell/download_mirrors.sh
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}" OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONUNBUFFERED=1
 export PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-120}" PIP_RETRIES="${PIP_RETRIES:-5}"
 export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-120}" UV_HTTP_RETRIES="${UV_HTTP_RETRIES:-5}"
@@ -19,6 +20,7 @@ for LANDING_ARG in "$@"; do
       'Options: --config FILE --device {cpu,cuda,mps} --render-device {CPU,CUDA,OPTIX}' \
       'Run/smoke: --duration SECONDS --checkpoint FILE --output DIR --weather NAME' \
       'Environment: MATLAB_ROOT, PYTHON_BIN, RENDER_PYTHON, UV_PYTHON_INSTALL_MIRROR.' \
+      'LANDING_DOWNLOAD_PROFILE=china: TUNA PyPI/Ubuntu/Python source + NJU CPython binaries.' \
       'Default run/check/inspect config: main/navigation_observer.yaml. See main/README.md.'
     exit 0
   fi
@@ -75,6 +77,7 @@ for ((i=0; i<${#LANDING_ARGUMENTS[@]}; i++)); do
 done
 {
   printf 'Console log: %s\n' "$LANDING_LOG_DIR/console.log"
+  printf '[deploy] Download profile: %s\n' "${LANDING_DOWNLOAD_PROFILE:-default}"
   if [[ -z "$LANDING_BOOTSTRAP_PYTHON" ]]; then
     if [[ "$(uname -s)" != Linux || "$LANDING_CHECK_ONLY" == 1 ]]; then
       printf 'Python >=3.10 required to bootstrap; install python3 first.\n' >&2; exit 2

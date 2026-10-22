@@ -126,7 +126,28 @@ MATLAB 首次授权需要本人按终端提示输入账号/OTP；成功进入 `>
 - PyTorch 2.8.0+cu128、MATLAB Engine 24.2.2、数值/图像/绘图依赖，实际 CUDA 运算、OPTIX 渲染和工具箱许可证 checkout。
 - 加载默认权重，核对其文件存在和模型格式，计算 SHA256 并记录到 `environment.json`。
 
-Python 下载会重试；uv 从 GitHub 获取运行时失败时，会自动改从 `www.python.org` 下载固定版本源码并编译（3.12.12 / 3.11.14），可能需要几分钟。已完成的步骤在重跑时复用。源码、构建运行时和 MPM 缓存在 `.tools/closed-loop/`；失败环境保留为 `.venv.backup.*`，均被 Git 忽略。可通过 `LANDING_PYTHON_312` / `LANDING_PYTHON_311` 指定已有解释器，或设置 uv 官方支持的 `UV_PYTHON_INSTALL_MIRROR`。下载仍需服务器能访问相应官方站点；不会关闭 TLS 校验。
+Python 下载会重试；uv 获取运行时失败时，会自动下载固定版本源码并编译（3.12.12 / 3.11.14），可能需要几分钟。默认使用 GitHub 二进制和 `www.python.org` 源码，镜像模式下二者均切换。已完成的步骤在重跑时复用。源码、构建运行时和 MPM 缓存在 `.tools/closed-loop/`；失败环境保留为 `.venv.backup.*`，均被 Git 忽略。可通过 `LANDING_PYTHON_312` / `LANDING_PYTHON_311` 指定已有解释器。
+
+国内服务器下载较慢时，先用 Ctrl+C 停止当前安装，再启用镜像配置重跑：
+
+```bash
+export LANDING_DOWNLOAD_PROFILE=china
+bash shell/run_landing_closed_loop.sh check \
+  --config main/navigation_observer.yaml --device cuda --render-device OPTIX
+```
+
+该配置只作用于启动进程及其子进程；不写全局 pip/uv 配置，不改 `/etc/apt/sources.list`。apt 在需要安装或更新时使用项目 `.tools/closed-loop/apt/sources.list`，仍验证 Ubuntu 官方签名；`--check` 不创建此列表、不执行 apt 安装。Python 包索引与 CPython 解释器下载是两种不同服务，不能都填写同一个 PyPI 地址。
+
+| 下载内容 | `china` 配置使用的来源 |
+| --- | --- |
+| pip/uv 的常规包（含 uv、bpy、MATLAB Engine） | 清华 PyPI：`https://pypi.tuna.tsinghua.edu.cn/simple` |
+| uv 下载的 CPython 二进制 | 南大：`https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone` |
+| 二进制下载失败后的 Python 源码 | 清华：`https://mirrors.tuna.tsinghua.edu.cn/python` |
+| Ubuntu 22.04 系统包和源码编译依赖 | 清华：`https://mirrors.tuna.tsinghua.edu.cn/ubuntu` |
+| PyTorch 2.8.0+cu128 | 保留 `https://download.pytorch.org/whl/cu128`，已有正确版本不重装 |
+| MATLAB 主程序、工具箱、授权 | 保留 MathWorks 官方服务 |
+
+显式选择 `china` 会覆盖当前终端遗留的 `PIP_INDEX_URL`、`UV_DEFAULT_INDEX`、`UV_PYTHON_INSTALL_MIRROR`。需要自定义时，在启动前设置 `LANDING_PYPI_INDEX`、`LANDING_PYTHON_BINARY_MIRROR`、`LANDING_PYTHON_SOURCE_MIRROR` 或 `LANDING_APT_MIRROR`。PyTorch 专用源可用 `LANDING_TORCH_INDEX` 指定，但必须包含 `torch==2.8.0+cu128` 及依赖。使用 `LANDING_DOWNLOAD_PROFILE=default` 则保留调用终端原有的源配置。相关格式见 [清华 PyPI 帮助](https://mirrors.tuna.tsinghua.edu.cn/help/pypi/)、[清华 Python 源码镜像](https://mirrors.tuna.tsinghua.edu.cn/help/python/) 和 [uv 运行时镜像配置](https://docs.astral.sh/uv/reference/environment/#uv_python_install_mirror)。网络可达性仍取决于服务器出口，不关闭 TLS 校验。
 
 不要从 macOS 复制虚拟环境到 Linux。若之前留下了指向不存在文件的 `PYTHON_BIN` / `RENDER_PYTHON`，先 `unset PYTHON_BIN RENDER_PYTHON` 再部署。自定义 MATLAB 目录示例：
 

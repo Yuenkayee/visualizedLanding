@@ -53,6 +53,24 @@ def privilege():
     return ["sudo", "-n"]
 
 
+def apt_command(*arguments):
+    """Use a per-invocation Ubuntu mirror without editing /etc/apt sources."""
+    mirror = os.environ.get("LANDING_APT_MIRROR", "").rstrip("/")
+    if not mirror:
+        return ["apt-get", *arguments]
+    ubuntu()
+    if not mirror.startswith("https://") or any(c.isspace() for c in mirror):
+        raise RuntimeError("LANDING_APT_MIRROR must be an HTTPS Ubuntu archive URL")
+    source = TOOLS / "apt/sources.list"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("".join(
+        f"deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] {mirror} {suite} main restricted universe multiverse\n"
+        for suite in ("jammy", "jammy-updates", "jammy-backports", "jammy-security")
+    ))
+    return ["apt-get", "-o", f"Dir::Etc::sourcelist={source}",
+            "-o", "Dir::Etc::sourceparts=-", *arguments]
+
+
 def ensure_apt(packages, check=False):
     missing = []
     for name in sorted(set(packages)):
@@ -64,9 +82,9 @@ def ensure_apt(packages, check=False):
     if check:
         raise RuntimeError("Missing Ubuntu packages: " + " ".join(missing) + "; rerun without --check")
     prefix = privilege()
-    run([*prefix, "apt-get", "update"])
-    run([*prefix, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
-         "--no-install-recommends", *missing])
+    run([*prefix, *apt_command("update")])
+    run([*prefix, "env", "DEBIAN_FRONTEND=noninteractive",
+         *apt_command("install", "-y", "--no-install-recommends", *missing)])
 
 
 def download(url, target):
@@ -104,7 +122,7 @@ def ensure_uv():
 
 
 def source_python(version):
-    """Fallback to python.org when GitHub binary downloads fail (e.g. TLS EOF)."""
+    """Fallback to the configured Python source archive when binary downloads fail."""
     release = PYTHON_RELEASES[version]
     prefix = TOOLS / "python" / release
     binary = prefix / "bin" / ("python" + version)
@@ -114,8 +132,9 @@ def source_python(version):
                 "libreadline-dev", "libsqlite3-dev", "libffi-dev", "liblzma-dev",
                 "libncursesw5-dev", "libgdbm-dev", "uuid-dev"])
     archive = TOOLS / f"downloads/Python-{release}.tgz"
-    download(f"https://www.python.org/ftp/python/{release}/Python-{release}.tgz", archive)
-    print(f"[deploy] Building Python {release} from python.org; this may take several minutes", flush=True)
+    source_mirror = os.environ.get("LANDING_PYTHON_SOURCE_MIRROR", "https://www.python.org/ftp/python").rstrip("/")
+    download(f"{source_mirror}/{release}/Python-{release}.tgz", archive)
+    print(f"[deploy] Building Python {release} from {source_mirror}; this may take several minutes", flush=True)
     # Build in a fresh folder so an interrupted build can be retried safely.
     with tempfile.TemporaryDirectory(prefix="python-build-", dir=TOOLS) as temp:
         run(["tar", "-xzf", archive, "-C", temp, "--strip-components=1", "--no-same-owner"])
@@ -151,7 +170,7 @@ def ensure_venv(folder, version, check=False):
         if existing:
             # Seeding can fail independently of interpreter downloads.
             raise RuntimeError("Virtual environment creation failed; inspect pip/index connectivity above") from None
-        print("[deploy] Managed Python download failed; trying python.org source build", flush=True)
+        print("[deploy] Managed Python download failed; trying configured Python source build", flush=True)
         compiled = source_python(version)
         # venv's ensurepip uses bundled wheels, without a further network request.
         run([compiled, "-m", "venv", folder])
@@ -246,9 +265,9 @@ def matlab_cpp_runtime(python, root, check=False):
         if check:
             raise RuntimeError(f"{library} lacks GLIBCXX_3.4.30; rerun without --check to update libstdc++6/libgcc-s1")
         prefix = privilege()
-        run([*prefix, "apt-get", "update"])
-        run([*prefix, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
-             "--no-install-recommends", "libstdc++6", "libgcc-s1"])
+        run([*prefix, *apt_command("update")])
+        run([*prefix, "env", "DEBIAN_FRONTEND=noninteractive",
+             *apt_command("install", "-y", "--no-install-recommends", "libstdc++6", "libgcc-s1")])
         if not supports_matlab_cpp(library):
             raise RuntimeError(f"{library} still lacks GLIBCXX_3.4.30; check the Ubuntu 22.04 apt repositories")
     env = matlab_engine_environment(root)

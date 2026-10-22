@@ -15,6 +15,11 @@ import shutil
 import subprocess
 import sys
 
+if __package__:
+    from .closed_loop_dependencies import apt_command
+else:
+    from closed_loop_dependencies import apt_command
+
 ROOT = Path(__file__).resolve().parents[1]
 TORCH_INDEX = "https://download.pytorch.org/whl/cu128"
 RENDER_PYTHON = ROOT / ".venv-render-server/bin/python"
@@ -125,7 +130,7 @@ def ensure_torch(check):
                 "--force-reinstall",
                 "torch==2.8.0+cu128",
                 "--index-url",
-                TORCH_INDEX,
+                os.environ.get("LANDING_TORCH_INDEX") or TORCH_INDEX,
             ]
         )
 
@@ -154,9 +159,9 @@ def ensure_libraries(check):
     ]
     if not missing:
         return
-    command = ["apt-get", "install", "-y", "--no-install-recommends", *missing]
+    arguments = ["install", "-y", "--no-install-recommends", *missing]
     if check:
-        raise RuntimeError("Missing system libraries; run: sudo " + " ".join(command))
+        raise RuntimeError("Missing system libraries; run: sudo apt-get " + " ".join(arguments))
     prefix = []
     if os.geteuid() != 0:
         if (
@@ -164,11 +169,11 @@ def ensure_libraries(check):
             or subprocess.run(["sudo", "-n", "true"]).returncode
         ):
             raise RuntimeError(
-                "Install the missing libraries then rerun: sudo " + " ".join(command)
+                "Install the missing libraries then rerun: sudo apt-get " + " ".join(arguments)
             )
         prefix = ["sudo", "-n"]
-    run([*prefix, "apt-get", "update"])
-    run([*prefix, *command], env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
+    run([*prefix, *apt_command("update")])
+    run([*prefix, *apt_command(*arguments)], env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
 
 
 def setup_training(check=False, need_tmux=False):
@@ -195,20 +200,20 @@ def setup_training(check=False, need_tmux=False):
         ]
     )
     if need_tmux and not shutil.which("tmux"):
-        command = ["apt-get", "install", "-y", "--no-install-recommends", "tmux"]
+        arguments = ["install", "-y", "--no-install-recommends", "tmux"]
         prefix = []
         if check:
-            raise RuntimeError("Missing tmux; run: sudo " + " ".join(command))
+            raise RuntimeError("Missing tmux; run: sudo apt-get " + " ".join(arguments))
         if os.geteuid() != 0:
             if (
                 not shutil.which("sudo")
                 or subprocess.run(["sudo", "-n", "true"]).returncode
             ):
-                raise RuntimeError("Install tmux then rerun: sudo " + " ".join(command))
+                raise RuntimeError("Install tmux then rerun: sudo apt-get " + " ".join(arguments))
             prefix = ["sudo", "-n"]
-        run([*prefix, "apt-get", "update"])
+        run([*prefix, *apt_command("update")])
         run(
-            [*prefix, *command], env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+            [*prefix, *apt_command(*arguments)], env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
         )
     if need_tmux:
         run(["tmux", "-V"])
