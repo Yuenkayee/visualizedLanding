@@ -35,3 +35,16 @@ class Scheduler:
             following = (index + 1) / self.rates[name]
             if following <= self.duration + 1e-10:
                 heapq.heappush(heap, (following, order, name, index + 1))
+
+    def groups(self):
+        """All events at one state time form one read/update/feedback transaction."""
+        pending = []
+        for event in self:
+            if pending and not math.isclose(
+                event.timestamp, pending[0].timestamp, rel_tol=0, abs_tol=1e-10
+            ):
+                yield pending
+                pending = []
+            pending.append(event)
+        if pending:
+            yield pending

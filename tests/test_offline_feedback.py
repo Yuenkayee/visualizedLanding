@@ -45,3 +45,23 @@ def test_closed_loop_sensor_feedback_smoke(tmp_path):
     )
     assert any(r["estimate"]["diagnostics"].get("vision_accepted") for r in rows)
     assert result["navigation"]["position_rmse"] < 2.0
+
+
+def test_multi_camera_closed_loop_feedback(tmp_path):
+    result = run_closed_loop(
+        dict(
+            duration=0.3,
+            camera_rig_config="configs/multi_camera_dataset.yaml",
+            navigation_config="configs/multi_camera_navigation.yaml",
+            navigation={"checkpoint": None},
+            log=str(tmp_path / "multi.jsonl"),
+            metrics=str(tmp_path / "multi.json"),
+        )
+    )
+    rows = read_log(tmp_path / "multi.jsonl")
+    assert result["cameras"] == 4 and result["reference_camera_id"] == "C0"
+    assert all("feedback" in r for r in rows)
+    assert any(r["feedback"]["feedback_valid"] for r in rows)
+    assert all(
+        r["estimate"]["diagnostics"]["reference_camera_id"] == "C0" for r in rows
+    )

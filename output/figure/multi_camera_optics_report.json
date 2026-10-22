@@ -1,0 +1,461 @@
+{
+  "date": "2026-10-07",
+  "config": "configs/multi_camera_dataset.yaml",
+  "seed": 20261006,
+  "trajectory_hz": 20.0,
+  "rig": {
+    "reference_camera_id": "C0",
+    "T_reference_lidar": [
+      [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "cameras": {
+      "C0": {
+        "K": [
+          [
+            232.9409499303696,
+            0.0,
+            640.0
+          ],
+          [
+            0.0,
+            151.34341866191207,
+            480.0
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "width": 1280,
+        "height": 960,
+        "distortion": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "T_body_camera": [
+          [
+            0.0,
+            -0.9945218953682733,
+            -0.10452846326765355,
+            2.0
+          ],
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            -0.10452846326765355,
+            0.9945218953682733,
+            1.11
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "C1": {
+        "K": [
+          [
+            232.9409499303696,
+            0.0,
+            640.0
+          ],
+          [
+            0.0,
+            151.34341866191207,
+            480.0
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "width": 1280,
+        "height": 960,
+        "distortion": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "T_body_camera": [
+          [
+            0.0,
+            -0.8191520442889918,
+            0.573576436351046,
+            4.0
+          ],
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.573576436351046,
+            0.8191520442889918,
+            0.85
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "C2": {
+        "K": [
+          [
+            232.9409499303696,
+            0.0,
+            640.0
+          ],
+          [
+            0.0,
+            151.34341866191207,
+            480.0
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "width": 1280,
+        "height": 960,
+        "distortion": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "T_body_camera": [
+          [
+            0.0,
+            -0.9999999999999999,
+            6.123233995736765e-17,
+            0.0
+          ],
+          [
+            0.9781476007338056,
+            1.2730919333264155e-17,
+            0.20791169081775931,
+            -0.9
+          ],
+          [
+            -0.20791169081775931,
+            5.989426641661591e-17,
+            0.9781476007338056,
+            0.9
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "C3": {
+        "K": [
+          [
+            232.9409499303696,
+            0.0,
+            640.0
+          ],
+          [
+            0.0,
+            151.34341866191207,
+            480.0
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "width": 1280,
+        "height": 960,
+        "distortion": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "T_body_camera": [
+          [
+            0.0,
+            -0.9999999999999999,
+            6.123233995736765e-17,
+            0.0
+          ],
+          [
+            0.9781476007338056,
+            -1.2730919333264155e-17,
+            -0.20791169081775931,
+            0.9
+          ],
+          [
+            0.20791169081775931,
+            5.989426641661591e-17,
+            0.9781476007338056,
+            0.9
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      }
+    }
+  },
+  "geometry": {
+    "gear_body_m": [
+      0.0,
+      0.0,
+      2.9
+    ],
+    "H_ship_body_m": [
+      -45.0,
+      0.0,
+      -5.5
+    ],
+    "airframe_proxy": {
+      "model": "provisional_ellipsoids_not_uh60_cad",
+      "ellipsoids": [
+        {
+          "name": "fuselage",
+          "centre_body_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "semiaxes_m": [
+            5.6,
+            1.25,
+            1.1
+          ]
+        },
+        {
+          "name": "right_main_wheel",
+          "centre_body_m": [
+            1.6,
+            1.6,
+            2.55
+          ],
+          "semiaxes_m": [
+            0.35,
+            0.14,
+            0.35
+          ]
+        },
+        {
+          "name": "left_main_wheel",
+          "centre_body_m": [
+            1.6,
+            -1.6,
+            2.55
+          ],
+          "semiaxes_m": [
+            0.35,
+            0.14,
+            0.35
+          ]
+        },
+        {
+          "name": "tail_wheel",
+          "centre_body_m": [
+            -3.2,
+            0.0,
+            2.65
+          ],
+          "semiaxes_m": [
+            0.25,
+            0.1,
+            0.25
+          ]
+        }
+      ],
+      "struts": [
+        {
+          "name": "right_main_strut",
+          "start_body_m": [
+            1.2,
+            1.12,
+            0.55
+          ],
+          "end_body_m": [
+            1.6,
+            1.6,
+            2.55
+          ],
+          "radius_m": 0.06
+        },
+        {
+          "name": "left_main_strut",
+          "start_body_m": [
+            1.2,
+            -1.12,
+            0.55
+          ],
+          "end_body_m": [
+            1.6,
+            -1.6,
+            2.55
+          ],
+          "radius_m": 0.06
+        },
+        {
+          "name": "tail_strut",
+          "start_body_m": [
+            -3.0,
+            0.0,
+            0.8
+          ],
+          "end_body_m": [
+            -3.2,
+            0.0,
+            2.65
+          ],
+          "radius_m": 0.05
+        }
+      ]
+    }
+  },
+  "attitude": {
+    "approach_start_amplitude_rad": [
+      0.6,
+      0.6,
+      0.6
+    ],
+    "approach_end_amplitude_rad": [
+      0.05,
+      0.05,
+      0.05
+    ],
+    "approach_decay_progress": [
+      0.15,
+      0.8
+    ],
+    "hold_amplitude_rad": [
+      0.05,
+      0.05,
+      0.05
+    ],
+    "touchdown_amplitude_rad": [
+      0.3,
+      0.3,
+      0.3
+    ],
+    "touchdown_ramp_fraction": 0.12,
+    "period_s": [
+      2.7,
+      3.3
+    ],
+    "amplitude_scale": [
+      0.9,
+      1.0
+    ]
+  },
+  "touchdown_offset": {
+    "centred_fraction": 0.25,
+    "half_extent_deck_m": [
+      0.75,
+      0.75
+    ]
+  },
+  "summary": {
+    "sorties": 60,
+    "cameras": 4,
+    "planned_images": 43200,
+    "reference_camera_id": "C0",
+    "coverage": {
+      "approach": {
+        "min_any_centre_visible_fraction": 1.0,
+        "min_any_single_camera_four_corners_fraction": 1.0,
+        "min_joint_keypoints_covered_fraction": 1.0,
+        "max_max_all_centres_invisible_s": 0.0,
+        "max_max_no_single_camera_four_corners_s": 0.0,
+        "mean_any_centre_visible_fraction": 1.0,
+        "mean_any_single_camera_four_corners_fraction": 1.0,
+        "mean_joint_keypoints_covered_fraction": 1.0
+      },
+      "window_hold": {
+        "min_any_centre_visible_fraction": 1.0,
+        "min_any_single_camera_four_corners_fraction": 1.0,
+        "min_joint_keypoints_covered_fraction": 1.0,
+        "max_max_all_centres_invisible_s": 0.0,
+        "max_max_no_single_camera_four_corners_s": 0.0,
+        "mean_any_centre_visible_fraction": 1.0,
+        "mean_any_single_camera_four_corners_fraction": 1.0,
+        "mean_joint_keypoints_covered_fraction": 1.0
+      },
+      "touchdown": {
+        "min_any_centre_visible_fraction": 1.0,
+        "min_any_single_camera_four_corners_fraction": 0.8302583025830258,
+        "min_joint_keypoints_covered_fraction": 0.8634686346863468,
+        "max_max_all_centres_invisible_s": 0.0,
+        "max_max_no_single_camera_four_corners_s": 2.2945064485046487,
+        "mean_any_centre_visible_fraction": 1.0,
+        "mean_any_single_camera_four_corners_fraction": 0.8997646383226973,
+        "mean_joint_keypoints_covered_fraction": 0.91687856954256
+      }
+    },
+    "split_counts": {
+      "train": 40,
+      "val": 10,
+      "test": 10
+    }
+  },
+  "rendered_preview": {
+    "renderer": "blender",
+    "width": 640,
+    "height": 480,
+    "samples": 4,
+    "frames": 60,
+    "bundles": 15,
+    "any_geometric_pnp_ready_fraction": 0.8666666666666667
+  },
+  "note": "Sampled proxy geometry only; full-corner union across cameras is a diagnostic, not an implemented joint PnP solver. Full production images and training have not been run."
+}

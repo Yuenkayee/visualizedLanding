@@ -3,7 +3,8 @@ numpy==1.26.4
 scipy==1.13.1
 opencv-python-headless==4.10.0.84
 PyYAML==6.0.2
-torch==2.5.1
+# Installation profiles lock exact builds: default 2.5.1, RTX 5090 2.8.0+cu128.
+torch>=2.5.1,<2.9
 Pillow==11.0.0
 matplotlib==3.9.2
 pytest==8.3.3

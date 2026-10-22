@@ -11,6 +11,8 @@ class ExportWrapper(torch.nn.Module):
 
     def forward(self, image):
         out = self.model(image)
+        if "visibility_logits" in out:
+            return out["mask_logits"], out["keypoints"], out["visibility_logits"]
         return out["mask_logits"], out["keypoints"]
 
 
@@ -19,6 +21,9 @@ def export_model(checkpoint, output, image_size=256):
     model = HSegmentationKeypoints(**payload["model_config"])
     model.load_state_dict(payload["model"])
     model.eval()
+    names = ["mask_logits", "keypoints"] + (
+        ["visibility_logits"] if model.visibility is not None else []
+    )
     path = Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
@@ -26,12 +31,20 @@ def export_model(checkpoint, output, image_size=256):
         torch.zeros(1, 3, image_size, image_size),
         str(path),
         input_names=["image"],
-        output_names=["mask_logits", "keypoints"],
+        output_names=names,
         opset_version=17,
+        # Preserve the existing exporter and three-output navigation contract.
+        # This also avoids adding onnxscript as a training dependency.
+        dynamo=False,
         dynamic_axes={
             "image": {0: "batch"},
             "mask_logits": {0: "batch"},
             "keypoints": {0: "batch"},
+            **(
+                {"visibility_logits": {0: "batch"}}
+                if model.visibility is not None
+                else {}
+            ),
         },
     )
     import onnx

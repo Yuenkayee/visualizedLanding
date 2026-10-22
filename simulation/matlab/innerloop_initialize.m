@@ -21,5 +21,7 @@ s.config.advance_callback='innerloop_advance';
 s.config.finalize_callback='innerloop_finalize';
 s.helicopter_state=c.helicopter_state(:); s.ship_state=c.ship_state(:);
 s.phase='read'; s.feedback=[];
+s.interface_contract=validate_innerloop_model(s.config.interface_root);
+if isfield(c,'reference_camera_id'), s.interface_contract.reference_camera_id=c.reference_camera_id; end
 innerloop_evaluate(s); % Validate/compile actual SLX and contracts now.
 end

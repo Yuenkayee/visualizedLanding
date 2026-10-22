@@ -11,6 +11,7 @@ class HDetection:
     mask: np.ndarray
     confidence: float
     ordered: bool = False
+    keypoint_visibility: np.ndarray | None = None
 
 
 class HDetector:
@@ -52,7 +53,9 @@ class HDetector:
                 / 255.0
             )
             if self.session is not None:
-                logits, keypoints = self.session.run(None, {"image": a})
+                outputs = self.session.run(None, {"image": a})
+                logits, keypoints = outputs[:2]
+                visibility_logits = outputs[2] if len(outputs) > 2 else None
             else:
                 import torch
 
@@ -60,6 +63,11 @@ class HDetector:
                     out = self.model(torch.from_numpy(a).to(self.device))
                     logits = out["mask_logits"].cpu().numpy()
                     keypoints = out["keypoints"].cpu().numpy()
+                    visibility_logits = (
+                        out["visibility_logits"].cpu().numpy()
+                        if "visibility_logits" in out
+                        else None
+                    )
             prob = 1 / (1 + np.exp(-np.clip(logits[0, 0], -50, 50)))
             if (prob > self.threshold).sum() < 25:
                 return None
@@ -70,7 +78,10 @@ class HDetector:
             )
             kp = keypoints[0] * [w, h]
             confidence = float(prob[prob > self.threshold].mean())
-            return HDetection(kp, mask, confidence, True)
+            visibility = (
+                None if visibility_logits is None else (visibility_logits[0] > 0)
+            )
+            return HDetection(kp, mask, confidence, True, visibility)
         hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
         mask = cv2.inRange(hsv, np.array([0, 0, 170]), np.array([179, 75, 255]))
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

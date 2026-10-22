@@ -1,0 +1,15 @@
+base_config: configs/landing_dataset.yaml
+output: data/multi_camera
+reference_camera_id: C0
+lidar_config: configs/lidar.yaml
+# Provisional co-location with C0, replace with measured LiDAR extrinsics.
+T_reference_lidar: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+cameras:
+  C0: {position_body_m: [2.0, 0.0, 1.11], optical_down_deg: 96.0}
+  C1: {position_body_m: [4.0, 0.0, 0.85], optical_down_deg: 55.0}
+  C2: {position_body_m: [0.0, -0.9, 0.9], optical_down_deg: 90.0, optical_roll_deg: -12.0}
+  C3: {position_body_m: [0.0, 0.9, 0.9], optical_down_deg: 90.0, optical_roll_deg: 12.0}
+# A landing point inside the deck; deck-normal contact, not equal NED altitude.
+touchdown_offset:
+  centred_fraction: 0.25
+  half_extent_deck_m: [0.75, 0.75]

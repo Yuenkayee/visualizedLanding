@@ -1,0 +1,10 @@
+seed: 20261007
+data_root: data/multi_camera
+output: visual_training/checkpoints/multi_camera
+image_size: 512
+batch_size: 4
+epochs: 40
+learning_rate: 0.001
+device: cpu
+threads: 4
+model: {channels: 16, keypoints: 4, predict_visibility: true}

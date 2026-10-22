@@ -73,11 +73,18 @@ SLX 是快照转换边界，`sim(..., StopTime='0')` 不推进动力学、不包
 5. `advance_external_model(dt)` 调用用户 `plant_step_callback(s,dt)`；它消费 `s.feedback`、推进飞机/舰船与控制器状态、更新舰船通信状态、令时间准确增加 dt。
 6. 下一次 `read_sensor_truth` 读取新状态。
 
-调用顺序错误、重复反馈、旧时间反馈均拒绝。动力学不存在时明确报 `landing:MissingDynamics`。`allow_state_hold=true` 仅用于接口测试：状态固定，时间推进，不能称为着舰动力学闭环。测试时相机/雷达/控制可同频，或保证每次状态推进前已有该时刻的控制反馈；任意异步调度策略需要显式设计保持和控制采样。
+调用顺序错误、重复反馈、旧时间反馈和错误参考相机均拒绝；推进后清除旧反馈及状态读标志。动力学不存在时明确报 `landing:MissingDynamics`。`allow_state_hold=true` 仅用于接口测试：状态固定，时间推进，不能称为着舰动力学闭环。Python 宿主现将同一状态时刻事件合并，所有状态时刻（包括只到期相机/雷达的时刻）均完成一次导航反馈事务后再推进；未来控制器需独立保留控制采样周期。
 
 控制器只应消费估计输出与 feedback_valid；真值输出不接控制反馈。有效性为 false 时的悬停/退出逻辑需由后续控制器实现，此 SLX 不假定这种能力。
 
 Python 的 `MatlabExternalModel` 可以直接选择以上 callback 配置，不需要更换 SensorTruth/NavigationEstimate 合同；新增 `read_navigation_feedback()` 可检查实际送到内环的轮底误差。启用该模型前应同步配置 camera.yaml、建模/导航 H 尺寸和初始化相机相对位姿，勿用原默认相机先验替代已知安装几何。
+
+四相机导航输出始终属于 C0，`convert.T_body_camera` 固定填写 C0 的外参。启动时 `validate_innerloop_model` 校验实际 SLX 文件、根端口编号/名称/尺寸和三个参数表达式；Python 验证 C0 几何并逐次比较实际 SLX NED 反馈与独立转换。使用当前设计几何的可运行配置是 `configs/innerloop_navigation.yaml`，详见 `docs/innerloop_navigation_alignment.md`。
+
+```bash
+.venv/bin/python -m simulation.offline.verify_innerloop_navigation
+.venv/bin/python -m simulation.offline.run_closed_loop --config configs/innerloop_navigation.yaml
+```
 
 ## 重建与验证
 

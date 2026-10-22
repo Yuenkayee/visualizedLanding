@@ -1,0 +1,27 @@
+# Recover from the existing best.pt; run in a separate directory.
+# Pass --init-checkpoint explicitly so a missing source cannot start from scratch.
+seed: 20261007
+data_root: data/multi_camera
+output: visual_training/checkpoints/multi_camera_finetune
+require_init_checkpoint: true
+image_size: 512
+batch_size: 16
+epochs: 20
+learning_rate: 0.0001
+weight_decay: 0.0001
+lr_scheduler: {name: plateau, factor: 0.5, patience: 2, min_delta: 0.001, min_lr: 0.000001}
+early_stopping: {patience: 8, min_delta: 0.001}
+log_every_batches: 100
+device: cuda:0
+precision: bf16
+threads: 8
+num_workers: 8
+multiprocessing_context: spawn
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 2
+channels_last: true
+cudnn_benchmark: true
+allow_tf32: true
+fused_optimizer: true
+model: {channels: 16, keypoints: 4, predict_visibility: true}

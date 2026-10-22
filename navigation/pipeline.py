@@ -51,8 +51,13 @@ class NavigationPipeline:
         self.advance(frame.timestamp)
         self.diagnostics["vision_accepted"] = False
         detection = self.detector(frame.image)
-        if detection is not None and valid_keypoints(
-            detection.keypoints, frame.image.shape
+        if (
+            detection is not None
+            and (
+                detection.keypoint_visibility is None
+                or detection.keypoint_visibility.all()
+            )
+            and valid_keypoints(detection.keypoints, frame.image.shape)
         ):
             match = associate_keypoints(
                 self.marker_points,
