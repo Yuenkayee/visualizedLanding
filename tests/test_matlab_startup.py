@@ -17,6 +17,7 @@ def preference(tmp_path, monkeypatch):
     path = tmp_path / "tools/matlab-startup.json"
     monkeypatch.setattr(startup, "PREFERENCE", path)
     monkeypatch.delenv("MATLAB_LICENSE_MODE", raising=False)
+    monkeypatch.delenv("MATLAB_SHARED_SESSION", raising=False)
     monkeypatch.setenv("MATLAB_ROOT", str(tmp_path / "MATLAB"))
     return path
 
@@ -48,7 +49,8 @@ def test_explicit_mode_reaches_engine_and_report(preference, engine_api, monkeyp
     assert startup.start_matlab(report_path=report) is engine
     assert "-nodisplay" in calls[0]
     assert (f"-licmode {mode}" in calls[0]) if mode != "auto" else ("-licmode" not in calls[0])
-    assert json.loads(report.read_text()) == {"status": "started", "license_mode": mode, "options": calls[0]}
+    assert json.loads(report.read_text()) == {"status": "started", "license_mode": mode, "options": calls[0],
+                                            "connection": "new", "session_name": None}
 
 
 def test_macos_keeps_previous_headless_options(preference, monkeypatch):
@@ -147,3 +149,80 @@ def test_check_uses_shared_starter_and_records_options():
     # start_matlab call from being reintroduced in the environment checker.
     from main import check_environment
     assert check_environment.start_matlab is startup.start_matlab
+
+
+@pytest.fixture
+def shared_api(preference, engine_api, monkeypatch):
+    api, engine, calls = engine_api
+    attached = []
+    disconnected = []
+    monkeypatch.setenv("MATLAB_SHARED_SESSION", "LandingMATLAB")
+    monkeypatch.setenv("MATLAB_ROOT", str(preference.parent / "MATLAB"))
+    engine.matlabroot = lambda: str(preference.parent / "MATLAB")
+    engine.version = lambda flag: "2024b"
+    engine.quit = lambda: disconnected.append(True)
+    api.find_matlab = lambda: ("LandingMATLAB",)
+    api.connect_matlab = lambda name: attached.append(name) or engine
+    return api, engine, calls, attached, disconnected
+
+
+def test_shared_session_attaches_by_name_and_reports_existing_authorization(preference, shared_api):
+    api, engine, launched, attached, disconnected = shared_api
+    report = preference.parent / "shared.json"
+    assert startup.start_matlab(report_path=report) is engine
+    assert attached == ["LandingMATLAB"] and not launched and not disconnected
+    saved = json.loads(report.read_text())
+    assert saved["status"] == "connected" and saved["connection"] == "shared"
+    assert saved["options"] is None and saved["license_mode"] == "existing_session"
+    assert saved["release"] == "2024b"
+
+
+def test_missing_shared_session_never_falls_back_to_new_process(preference, shared_api):
+    api, _, launched, attached, _ = shared_api
+    api.find_matlab = lambda: ("AnotherMATLAB",)
+    report = preference.parent / "shared.json"
+    with pytest.raises(RuntimeError, match="not found"):
+        startup.start_matlab(report_path=report)
+    assert not launched and not attached
+    saved = json.loads(report.read_text())
+    assert saved["available_sessions"] == ["AnotherMATLAB"] and saved["status"] == "failed"
+
+
+@pytest.mark.parametrize("mismatch", ["release", "root"])
+def test_shared_session_rejects_wrong_installation(preference, shared_api, mismatch):
+    _, engine, launched, _, disconnected = shared_api
+    if mismatch == "release":
+        engine.version = lambda flag: "2025b"
+    else:
+        engine.matlabroot = lambda: "/another/MATLAB"
+    with pytest.raises(RuntimeError, match="Shared MATLAB"):
+        startup.start_matlab()
+    assert disconnected == [True] and not launched
+
+
+def test_shared_attach_failure_is_recorded_without_new_start(preference, shared_api):
+    api, _, launched, _, _ = shared_api
+
+    def fail(name):
+        raise RuntimeError("Connection closed")
+
+    api.connect_matlab = fail
+    report = preference.parent / "shared.json"
+    with pytest.raises(RuntimeError, match="Connection closed"):
+        startup.start_matlab(report_path=report)
+    assert json.loads(report.read_text())["status"] == "failed" and not launched
+
+
+def test_actual_simulation_uses_shared_session_and_disconnects(shared_api):
+    from simulation.bridge.matlab_session import MatlabSession
+    _, engine, launched, attached, disconnected = shared_api
+    with MatlabSession() as session:
+        assert session.engine is engine
+    assert attached == ["LandingMATLAB"] and disconnected == [True] and not launched
+
+
+def test_invalid_shared_name_fails_before_engine_call(preference, engine_api, monkeypatch):
+    monkeypatch.setenv("MATLAB_SHARED_SESSION", "bad name")
+    with pytest.raises(ValueError, match="MATLAB_SHARED_SESSION"):
+        startup.start_matlab()
+    assert not engine_api[2]

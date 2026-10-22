@@ -127,6 +127,43 @@ bash shell/run_landing_closed_loop.sh check --login \
 
 本次日志目录的 `matlab-startup.json` 记录实际模式、启动选项和结果。该错误没有具体授权编号时，不能仅凭它判定许可证过期；若直接执行 `"$MATLAB_ROOT/bin/matlab" -licmode online -nodisplay` 也失败，应根据交互终端的具体错误检查账号许可、MathWorks Service Host 和官方授权服务连接。无需因此重装 bpy/CUDA。官方说明：[终端账号授权](https://www.mathworks.com/matlabcentral/answers/547302-is-login-named-user-available-on-machines-without-a-display)、[Login Named User 启动模式](https://www.mathworks.com/matlabcentral/answers/168441-what-is-login-named-user-and-how-can-i-use-it)。
 
+如果已经确认交互 MATLAB 能进入 `>>`，但退出后 Engine 即使使用 `-licmode online` 仍启动失败，可以连接一个保持运行的已授权 MATLAB 会话。此方式使用 MathWorks 官方的 [共享 Engine 接口](https://www.mathworks.com/help/matlab/matlab_external/connect-python-to-running-matlab-session.html)，仍然依赖有效 MATLAB/工具箱许可证；它避免了 Python 创建另一个 MATLAB 进程，但不证明原错误的底层原因已修复。
+
+在服务器创建专用 tmux 会话：
+
+```bash
+tmux new -s landing_matlab
+```
+
+在该 tmux 内启动 MATLAB（账号输入留在交互终端）。此命令只移除独立 MATLAB 子进程的动态库覆盖；Python 仍经原有 shell 入口使用 C++ 兼容设置：
+
+```bash
+env -u LD_PRELOAD -u LD_LIBRARY_PATH \
+  /root/MATLAB/R2024b/bin/matlab -licmode online -nodisplay -nosplash
+```
+
+进入 `>>` 后执行：
+
+```matlab
+matlab.engine.shareEngine('LandingMATLAB')
+disp(matlab.engine.engineName)
+```
+
+确认打印 `LandingMATLAB`，保持 MATLAB 运行，按 `Ctrl+B` 后按 `D` 脱离 tmux（此流程不要输入 `exit`）。在同一服务器/容器、同一 Linux 用户的 shell 中执行：
+
+```bash
+cd /root/autodl-tmp/visualizedLanding
+export MATLAB_ROOT=/root/MATLAB/R2024b
+export PYTHON_BIN=/root/miniconda3/bin/python3
+export MATLAB_SHARED_SESSION=LandingMATLAB
+bash shell/run_landing_closed_loop.sh check \
+  --config main/navigation_observer.yaml --device cuda --render-device OPTIX
+bash shell/run_landing_closed_loop.sh run \
+  --config main/navigation_observer.yaml --device cuda --render-device OPTIX
+```
+
+此流程不加 `--login`。环境检查和实际仿真都会按名称连接，检查返回 `ready` 后即可运行；名称不存在或连接失败时直接报错，不自动启动另一会话。报告区分 `connection=shared`、`status=connected`、`license_mode=existing_session`，并验证实际安装为指定目录的 R2024b。环境检查/仿真结束时 `engine.quit()` 对连接来的共享会话仅断开 Python 连接，MATLAB 留在 tmux；仿真仍执行自身模型清理。该会话供一个仿真作业使用，运行期间不要在 MATLAB 终端手动修改工作区。全部完成后可 `tmux attach -t landing_matlab` 并在 MATLAB 输入 `exit`。取消共享连接模式使用 `unset MATLAB_SHARED_SESSION`。
+
 自动检查/安装的内容：
 
 - MATLAB R2024b、Simulink、Control System Toolbox、Robust Control Toolbox，通过官方 MPM 安装；新装采用 R2024b 最新更新，补装工具箱保留已有更新级别。默认目录 `~/MATLAB/R2024b`，root 用户即 `/root/MATLAB/R2024b`。已有标准路径安装会复用，也可用 `MATLAB_ROOT` 显式指定。

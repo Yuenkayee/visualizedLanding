@@ -25,7 +25,7 @@ from shell.closed_loop_dependencies import (
     python_matches,
 )
 from shell.render_environment import probe_renderer, renderer_environment
-from shell.matlab_startup import license_mode, start_matlab
+from shell.matlab_startup import license_mode, shared_session_name, start_matlab
 
 
 def matlab_root():
@@ -190,7 +190,9 @@ def main():
             python=sys.version,
             matlab=engine.version(),
             matlab_root=str(root),
-            matlab_license_mode=license_mode(root),
+            matlab_license_mode="existing_session" if shared_session_name() else license_mode(root),
+            matlab_connection="shared" if shared_session_name() else "new",
+            matlab_shared_session=shared_session_name() or None,
             matlab_platform=engine.computer(),
             licenses=licenses,
             torch=torch.__version__,
