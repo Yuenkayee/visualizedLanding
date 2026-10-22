@@ -10,6 +10,7 @@ from pathlib import Path
 import queue
 import shutil
 import subprocess
+from shell.render_environment import renderer_environment
 import sys
 import threading
 import numpy as np
@@ -202,6 +203,7 @@ class Sensors:
             self.worker = subprocess.Popen(
                 [python_executable(python), "-u", "-m", "main.sensor_worker"],
                 cwd=ROOT,
+                env=renderer_environment(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

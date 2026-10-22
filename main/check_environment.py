@@ -24,6 +24,7 @@ from shell.closed_loop_dependencies import (
     absolute_executable, ensure_venv, matlab_destination, matlab_engine_environment,
     python_matches,
 )
+from shell.render_environment import probe_renderer, renderer_environment
 
 
 def matlab_root():
@@ -35,7 +36,7 @@ def matlab_root():
     )
 
 
-def renderer(check, python=None):
+def renderer(check, python=None, report_path=None):
     if platform.system() == "Linux":
         ensure_libraries(check)
         default = ROOT / ".venv-render-server/bin/python"
@@ -46,7 +47,7 @@ def renderer(check, python=None):
         else:
             python = ensure_venv(default.parent.parent, "3.11", check)
         ensure_requirements(python, ROOT / "requirements-render-server.txt", check)
-        run([python, "-c", 'import bpy,cv2,numpy,scipy,yaml;print("Renderer:",bpy.app.version_string)'])
+        probe_renderer(python, report_path)
         return python
     if python is None:
         python = sys.executable
@@ -59,6 +60,7 @@ def renderer(check, python=None):
             ],
             capture_output=True,
             text=True,
+            env=renderer_environment(),
         )
         missing = bool(result.returncode)
     except FileNotFoundError:
@@ -74,13 +76,7 @@ def renderer(check, python=None):
             )
         ensure_requirements(python, ROOT / "requirements-data.txt", False)
         run([python, "-m", "pip", "install", "bpy==4.2.0"])
-    run(
-        [
-            python,
-            "-c",
-            'import bpy,cv2,numpy,scipy,yaml;print("Renderer:",bpy.app.version_string)',
-        ]
-    )
+    probe_renderer(python, report_path)
     return python
 
 
@@ -150,6 +146,7 @@ def main():
             a.render_python
             or os.environ.get("RENDER_PYTHON")
             or config.get("render_python"),
+            Path(a.report).with_name("renderer-environment.json") if a.report else None,
         )
         if selected == "blender"
         else None
@@ -167,6 +164,7 @@ def main():
                 str(config.get("render_threads", 8)),
             ],
             cwd=ROOT,
+            env=renderer_environment(),
         )
     print("[environment] Starting MATLAB and checking toolbox licenses", flush=True)
     try:

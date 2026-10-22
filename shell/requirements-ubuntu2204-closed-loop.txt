@@ -65,6 +65,7 @@ libsm6
 libegl1
 libxkbcommon0
 libgomp1
+libvulkan1
 # MATLAB Engine requires the GLIBCXX_3.4.30 symbol from GCC 12's runtime.
 libstdc++6
 libgcc-s1

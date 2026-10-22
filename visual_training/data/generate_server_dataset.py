@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from shell.render_environment import renderer_environment
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -63,7 +64,7 @@ def run_workers(
                 renderer,
             ]
             env = {
-                **os.environ,
+                **renderer_environment(),
                 "OMP_NUM_THREADS": "1",
                 "OPENBLAS_NUM_THREADS": "1",
                 "MKL_NUM_THREADS": "1",

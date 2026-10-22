@@ -17,8 +17,10 @@ import sys
 
 if __package__:
     from .closed_loop_dependencies import apt_command
+    from .render_environment import probe_renderer, renderer_environment
 else:
     from closed_loop_dependencies import apt_command
+    from render_environment import probe_renderer, renderer_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 TORCH_INDEX = "https://download.pytorch.org/whl/cu128"
@@ -151,6 +153,7 @@ def ensure_libraries(check):
         "EGL": "libegl1",
         "xkbcommon": "libxkbcommon0",
         "gomp": "libgomp1",
+        "vulkan": "libvulkan1",
     }
     missing = [
         package
@@ -260,13 +263,7 @@ def setup(check=False, device="OPTIX", gpu_index=0, threads=8):
             "'GPU:', torch.cuda.get_device_name(0))",
         ]
     )
-    run(
-        [
-            RENDER_PYTHON,
-            "-c",
-            "import bpy, cv2, numpy, scipy, yaml; print('bpy:', bpy.app.version_string)",
-        ]
-    )
+    probe_renderer(RENDER_PYTHON)
     run(
         [
             RENDER_PYTHON,
@@ -280,6 +277,7 @@ def setup(check=False, device="OPTIX", gpu_index=0, threads=8):
             threads,
         ],
         cwd=ROOT,
+        env=renderer_environment(),
     )
     print(
         "[environment] Dependencies, CUDA tensor operation and Cycles render: OK",

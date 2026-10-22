@@ -123,6 +123,7 @@ MATLAB 首次授权需要本人按终端提示输入账号/OTP；成功进入 `>
 - MathWorks 官方 Ubuntu 22.04 系统依赖和 Blender 运行库、编译工具、pip/venv、tmux。依赖清单随仓库保存，不再从 GitHub 临时下载清单。
 - 导航使用 Python 3.12：优先复用项目 `.venv` 或云镜像的兼容 Python；否则自动创建 `.venv`。显式 `PYTHON_BIN` 必须可运行且为 Python 3.11/3.12，不会悄悄改用其他解释器。自动部署推荐 Linux 3.12。
 - Blender 使用独立 `.venv-render-server` 的 Python 3.11 和 bpy 4.5.3。支持 `RENDER_PYTHON` 或 `--render-python` 指向已有的 Python 3.11 环境。
+- Blender 子进程使用独立的动态库环境：从继承的 `LD_LIBRARY_PATH` / `LD_PRELOAD` 中移除 MATLAB 安装目录，保留 CUDA/NVIDIA 路径及系统 C++ 兼容库。此规则覆盖导入检查、Cycles 设备测试、闭环传感器进程和训练集渲染进程。Ubuntu 依赖包含 `libvulkan1`；导入 Blender 不要求桌面/X server。闭环检查在同次日志目录写入 `renderer-environment.json`，记录渲染解释器、动态库路径和导入结果；失败时附加 USD 库的 `ldd` 信息，供定位 `undefined symbol: vkGetPhysicalDeviceXlibPresentationSupportKHR` 等冲突。MATLAB 主进程的环境保持原有配置。
 - PyTorch 2.8.0+cu128、MATLAB Engine 24.2.2、数值/图像/绘图依赖，实际 CUDA 运算、OPTIX 渲染和工具箱许可证 checkout。
 - 加载默认权重，核对其文件存在和模型格式，计算 SHA256 并记录到 `environment.json`。
 
