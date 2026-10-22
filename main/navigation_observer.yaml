@@ -3,7 +3,7 @@
 model: external/innerloop/simu/innerLoop_landing.slx
 evaluation_mode: observer
 input_contract: conversion
-autonomous_subsystem: innerLoop1
+autonomous_subsystem: innerLoop
 ship_velocity_frame: body
 setup_script: main/matlab/landing_setup_observer.m
 landing_config: configs/landing_dataset.yaml
@@ -46,6 +46,6 @@ inputs:
   nav_gimbal_timestamp: nav_gimbal_timestamp
   nav_angular_velocity_camera: nav_angular_velocity_camera
 outputs:
-  helicopter_state: innerLoop1/helicopter_state
-  ship_state: innerLoop1/ship_state
+  helicopter_state: innerLoop/helicopter_state
+  ship_state: innerLoop/ship_state
 required_toolboxes: [Simulink, Control_Toolbox, Robust_Toolbox]

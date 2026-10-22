@@ -3,7 +3,7 @@
 主入口为 `main/run.py`，结果分析为 `main/analyze.py`，MATLAB 适配器在 `main/matlab/`。
 复用现有 `NavigationPipeline`、训练场景、LiDAR 和云台动力学；不新增直升机动力学、制导或飞行控制律。
 
-**当前仓库模型的实际状态（2026-10-20）**：`external/innerloop/simu/innerLoop.slx` 是坐标转换模型。用户更新的 `innerLoop_landing.slx` 已由内部 `innerLoop1` 子系统生成飞机/舰船状态，制导和控制在该子系统内部闭环；导航输入仅接到根层转换模块。使用 `main/navigation_observer.yaml` 可按当前实际航迹旁路评估导航，原 SLX 不被修改。`main/closed_loop.yaml` 仍是供将来导航反馈控制使用的通用端口合同，不能直接用于当前根接口。`smoke` 仍只使用积分器验收夹具。
+**当前仓库模型的实际状态（2026-10-22）**：`external/innerloop/simu/innerLoop.slx` 是坐标转换模型。用户更新的 `innerLoop_landing.slx` 已由内部 `innerLoop` 子系统生成飞机/舰船状态，制导和控制在该子系统内部闭环；导航输入仅接到根层转换模块。使用 `main/navigation_observer.yaml` 可按当前实际航迹旁路评估导航，原 SLX 不被修改。`main/closed_loop.yaml` 仍是供将来导航反馈控制使用的通用端口合同，不能直接用于当前根接口。`smoke` 仍只使用积分器验收夹具。
 
 ## 当前模型的导航旁路评估
 
@@ -21,7 +21,9 @@ bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml
   --checkpoint /absolute/path/to/best.pt --duration 60 --device cuda --render-device OPTIX
 ```
 
-初始化脚本 `main/matlab/landing_setup_observer.m` 加载仓库自带 `landingParam.mat`。原状态输出在 `innerLoop1/helicopter_state` / `innerLoop1/ship_state`，宿主在工作副本中加观察分支，无需增加源模型根输出。舰船状态的速度实际为 BODY 坐标，配置 `ship_velocity_frame: body` 在进入导航桥接层前旋转为 NED；原 SLX 转换模块自身的速度根输出尚不做该修正，请以宿主规范化后的传感器状态为准。状态位置不会自动平移去迎合制导目标。
+初始化脚本 `main/matlab/landing_setup_observer.m` 加载仓库自带 `landingParam.mat`。原状态输出在 `innerLoop/helicopter_state` / `innerLoop/ship_state`，宿主在工作副本中加观察分支，无需增加源模型根输出。舰船状态的速度实际为 BODY 坐标，配置 `ship_velocity_frame: body` 在进入导航桥接层前旋转为 NED；原 SLX 转换模块自身的速度根输出尚不做该修正，请以宿主规范化后的传感器状态为准。状态位置不会自动平移去迎合制导目标。
+
+2026-10-22 更新的模型将自主子系统从 `innerLoop1` 改名为 `innerLoop`。修改模块名称时，必须同时更新配置的 `autonomous_subsystem`、`outputs.helicopter_state`、`outputs.ship_state`。若报 `Autonomous subsystem is missing`，先检查报错列出的实际子系统和配置路径，再运行 `inspect`。共享 MATLAB 会话中若已打开旧模型，先保存需要保留的编辑并关闭该模型，再从磁盘重载。
 
 每步在同一时间戳保存 `gear_relative_estimate_ned` 和 `gear_relative_truth_ned`，均为**轮底中心减 H 中心**的 NED 向量，单位 m。真值从 native 状态的同一转换内核取得，估计由本轮导航转换得到。输出 `gear_relative_ned_comparison.png/pdf` 为 North/East/Down 三行真值与估计曲线，`gear_relative_ned.csv` 为数据；无效估计以红点显示。旧的甲板系 `position_comparison.png/pdf` 保留。`controller_feedback.png` 在旁路运行中只是转换后的估计，不能解释为实际控制输入。
 
@@ -29,11 +31,11 @@ STOP 触发后读取保留的末帧输出，退出 Python 循环，写 `terminat
 
 每个内环主步另写 `simulink/plant_steps.jsonl`，记录起始时间、目标时间、实际时间、前后状态及 `step()` 的 `final_step` 标志。若仍出现时间校验错误，控制台给出这些数值，并在该文件保留出错步。终止后 `Simulation.Time` 可能为 NaN（JSON 中为 null），此时以保留输出的 `terminal_time` 为准。旧版 `Plant stopped or missed requested time` 未包含这些信息，单凭该消息不能判断 STOP、暂停或超步；控制台进度每 1 s 才打印一次，最后看到 `iteration=0` 不表示必然在第二步报错。
 
-**当前场景初值（2026-10-20 复核）**：制导 `Ship_trace` 和导出的 `Ship_motion` 质心初值均为 `[50;0;0]`，直升机质心初值为 `[0;0;-50]`。训练 H 偏移仍为 `[-45;0;-5.5]`，所以水平名义轮底中心在甲板系的先验为 `[-5;0;41.6]`，已同步到旁路配置。这个先验由既定场景初值计算，不读取运行时真值。源模型的自主子系统现名为 `innerLoop1`，配置的 `autonomous_subsystem` 与两个 `outputs` 路径已同步；以后重命名时也需更新这些路径。
+**场景初值（2026-10-20 复核）**：制导 `Ship_trace` 和导出的 `Ship_motion` 质心初值均为 `[50;0;0]`，直升机质心初值为 `[0;0;-50]`。训练 H 偏移仍为 `[-45;0;-5.5]`，所以水平名义轮底中心在甲板系的先验为 `[-5;0;41.6]`，已同步到旁路配置。这个先验由既定场景初值计算，不读取运行时真值。后续修改初始状态时也需重新核对该先验。
 
-按用户要求，STOP 保留 `abs(-CG_D-2.9)<0.01`，当前只验证导航对相对位置的估计和接口连通，不据此判定成功触舰。制导的目标点与 H 点仍是不同参考点，但不妨碍将同一时刻的导航估计与轮底减 H 的真值比较。
+2026-10-20 的模型按用户要求保留 `abs(-CG_D-2.9)<0.01`，制导目标与 H 点使用不同参考点；该历史配置不能据此判定成功触舰。用户于 2026-10-22 更新了制导模型以考虑舰船几何，当前目标与 STOP 以 SLX 中保存的实现为准；本次路径修复不覆盖它们。
 
-磁盘文件复核时，`innerLoop1/HELI_CONT/UWV_CONT/Inner system/MATLAB System3` 的 `B_10` 模块参数仍为 `B_5`。这不阻断接口连通；若 MATLAB 中已改为 `B_10`，需将修改保存到实际运行的 `external/innerloop/simu/innerLoop_landing.slx`。旁路配置不覆盖该控制器参数。
+控制器参数修改需保存到实际运行的 `external/innerloop/simu/innerLoop_landing.slx`；旁路配置不覆盖控制器增益。
 
 该模型用到的 `bodyToNedVel`、`nedVelToBody` 原先依赖本机仓库外 `HELI_CONT/src/trans` 的 MATLAB 路径；现已将同一实现纳入 `external/inner_loop/model/`，避免拷贝仓库到 Ubuntu 后丢失这两个转换类。它们只旋转速度，不改变速度单位。
 

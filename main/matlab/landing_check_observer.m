@@ -6,7 +6,15 @@ if ~isfield(c,'evaluation_mode') || ~strcmp(c.evaluation_mode,'observer'), retur
 assert(isfield(c,'input_contract') && strcmp(c.input_contract,'conversion'), ...
     'landing:Observer','Observer mode requires the conversion input contract');
 plant=[model '/' char(c.autonomous_subsystem)];
-assert(getSimulinkBlockHandle(plant)>0,'landing:Observer','Autonomous subsystem is missing');
+if getSimulinkBlockHandle(plant)<=0
+    candidates=find_system(model,'SearchDepth',1,'BlockType','SubSystem');
+    available=strjoin(candidates,', ');
+    if isempty(available), available='(none)'; end
+    error('landing:Observer', ...
+        ['Autonomous subsystem is missing: %s. Available root subsystems: %s. ' ...
+         'Update autonomous_subsystem and outputs.helicopter_state/ship_state in the observer config.'], ...
+        plant,available);
+end
 ports=get_param(plant,'PortHandles');
 assert(isempty(ports.Inport),'landing:Observer','Observer plant must have no external inputs');
 % Cross-boundary Goto/Data Store/function calls would bypass physical ports.
