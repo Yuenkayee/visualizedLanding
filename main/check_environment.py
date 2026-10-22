@@ -21,7 +21,8 @@ from shell.server_dependencies import (
     run,
 )
 from shell.closed_loop_dependencies import (
-    absolute_executable, ensure_venv, matlab_destination, python_matches,
+    absolute_executable, ensure_venv, matlab_destination, matlab_engine_environment,
+    python_matches,
 )
 
 
@@ -106,8 +107,9 @@ def main():
         raise RuntimeError(
             f"This dependency profile is tested against R2024b; found {release}"
         )
-    os.environ["PATH"] = str(root / "bin") + os.pathsep + os.environ["PATH"]
-    os.environ["MATLAB_ROOT"] = str(root)
+    # Also support direct python -m main.check_environment calls: the isolated
+    # Engine build inherits this environment. The wrapper sets it at startup.
+    os.environ.update(matlab_engine_environment(root))
     if (
         platform.system() == "Linux"
         and platform.machine() == "x86_64"

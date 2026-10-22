@@ -90,6 +90,15 @@ done
   IFS= read -r MATLAB_ROOT < "$LANDING_LOG_DIR/matlab-root.txt"
   export MATLAB_ROOT
   export PATH="$MATLAB_ROOT/bin:$PATH"
+  # The Engine wheel builder searches LD_LIBRARY_PATH, not MATLAB_ROOT/PATH.
+  # Export before Python starts so pip's isolated build and the runtime loader
+  # both see a non-default MATLAB installation. Do not add sys/os libraries.
+  if [[ "$(uname -s)" == Linux && "$LANDING_MODE" != analyze ]]; then
+    case ":${LD_LIBRARY_PATH:-}:" in
+      *":$MATLAB_ROOT/bin/glnxa64:"*) ;;
+      *) export LD_LIBRARY_PATH="$MATLAB_ROOT/bin/glnxa64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+    esac
+  fi
   "$LANDING_PYTHON" -c 'import sys; print("Python:", sys.executable, sys.version.split()[0], flush=True)'
   if [[ "$LANDING_MODE" == analyze ]]; then
     "$LANDING_PYTHON" shell/utility_dependencies.py replay

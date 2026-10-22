@@ -195,6 +195,28 @@ def matlab_destination():
     return Path.home() / "MATLAB/R2024b"
 
 
+def matlab_engine_environment(root):
+    """Environment inherited by pip's build subprocess for a custom MATLAB root.
+
+    The Linux matlabengine 24.2.2 builder searches bin/glnxa64 in
+    LD_LIBRARY_PATH; setting MATLAB_ROOT or PATH alone is insufficient.
+    The shell wrapper also exports it before starting the Python runtime.
+    """
+    root = Path(root)
+    env = dict(os.environ)
+    env["MATLAB_ROOT"] = str(root)
+    env["PATH"] = str(root / "bin") + os.pathsep + env.get("PATH", "")
+    if platform.system() == "Linux":
+        library = root / "bin/glnxa64"
+        if not library.is_dir():
+            raise RuntimeError(f"MATLAB Linux library directory missing: {library}; check MATLAB_ROOT and the installed platform")
+        entries = [entry for entry in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if entry]
+        if str(library) not in entries:
+            entries.insert(0, str(library))
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(entries)
+    return env
+
+
 def ensure_matlab(root, check=False):
     release = "R2024b"
     info = root / "VersionInfo.xml"

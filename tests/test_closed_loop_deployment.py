@@ -129,8 +129,73 @@ def test_explicit_matlab_destination_is_not_replaced(tmp_path, monkeypatch):
     assert deploy.matlab_destination() == tmp_path / "custom"
 
 
+@pytest.mark.parametrize("old_path", [None, "", "/usr/local/cuda/lib64:/usr/lib/nvidia"])
+def test_linux_engine_build_env_preserves_paths_and_reaches_child(tmp_path, monkeypatch, old_path):
+    root = tmp_path / "custom MATLAB/R2024b"
+    library = root / "bin/glnxa64"
+    library.mkdir(parents=True)
+    monkeypatch.setattr(deploy.platform, "system", lambda: "Linux")
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    if old_path is not None:
+        monkeypatch.setenv("LD_LIBRARY_PATH", old_path)
+    env = deploy.matlab_engine_environment(root)
+    expected = str(library) + (":" + old_path if old_path else "")
+    assert env["LD_LIBRARY_PATH"] == expected
+    assert os.environ.get("LD_LIBRARY_PATH") == old_path  # no ambient mutation
+    child = subprocess.run([sys.executable, "-c", "import os; print(os.environ['LD_LIBRARY_PATH'])"],
+                           env=env, capture_output=True, text=True, check=True)
+    assert child.stdout.strip() == expected
+    monkeypatch.setenv("LD_LIBRARY_PATH", expected)
+    assert deploy.matlab_engine_environment(root)["LD_LIBRARY_PATH"] == expected
+
+
+def test_linux_engine_missing_library_fails_before_pip(tmp_path, monkeypatch):
+    monkeypatch.setattr(deploy.platform, "system", lambda: "Linux")
+    with pytest.raises(RuntimeError, match="bin/glnxa64"):
+        deploy.matlab_engine_environment(tmp_path)
+
+
+def test_macos_engine_setup_does_not_add_linux_libraries(tmp_path, monkeypatch):
+    monkeypatch.setattr(deploy.platform, "system", lambda: "Darwin")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/existing")
+    monkeypatch.setenv("DYLD_LIBRARY_PATH", "/mac-existing")
+    env = deploy.matlab_engine_environment(tmp_path)
+    assert env["LD_LIBRARY_PATH"] == "/existing"
+    assert env["DYLD_LIBRARY_PATH"] == "/mac-existing"
+
+
+def test_direct_environment_check_configures_engine_before_install(tmp_path, monkeypatch):
+    from main import check_environment as check
+    root = tmp_path / "MATLAB"
+    (root / "bin/glnxa64").mkdir(parents=True)
+    (root / "VersionInfo.xml").write_text("<root><release>R2024b</release></root>")
+    monkeypatch.setattr(check, "matlab_root", lambda: root)
+    monkeypatch.setattr(deploy.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(check, "ensure_torch", lambda *a: None)
+    monkeypatch.setattr(sys, "argv", ["check_environment"])
+    # Restore each environment key changed by main when the test finishes.
+    for key in ("PATH", "MATLAB_ROOT", "LD_LIBRARY_PATH"):
+        monkeypatch.setenv(key, os.environ.get(key, ""))
+    profiles = []
+
+    class ReachedEngineInstall(Exception):
+        pass
+
+    def requirements(python, profile, only_check):
+        profiles.append(profile.name)
+        if profile.name == "requirements-matlab.txt":
+            assert os.environ["LD_LIBRARY_PATH"].split(":")[0] == str(root / "bin/glnxa64")
+            raise ReachedEngineInstall
+
+    monkeypatch.setattr(check, "ensure_requirements", requirements)
+    with pytest.raises(ReachedEngineInstall):
+        check.main()
+    assert profiles == ["requirements-closed-loop.txt", "requirements-matlab.txt"]
+
+
+@pytest.mark.parametrize("host_os", ["Linux", "Darwin"])
 @pytest.mark.parametrize("fail_at", ["bootstrap", "environment", None])
-def test_launcher_stops_after_failure_and_forwards_environment(tmp_path, fail_at):
+def test_launcher_stops_after_failure_and_forwards_environment(tmp_path, fail_at, host_os):
     """Execute the real shell wrapper with harmless bootstrap/worker stubs."""
     shell = tmp_path / "shell"
     shell.mkdir()
@@ -154,10 +219,29 @@ import os,sys,json
 from pathlib import Path
 Path('environment_called').write_text(json.dumps(sys.argv))
 assert os.environ['MATLAB_ROOT'] == str(Path.cwd()/'MATLAB')
+expected = '/existing/cuda'
+if os.environ['TEST_HOST_OS'] == 'Linux':
+    expected = str(Path.cwd()/'MATLAB/bin/glnxa64') + ':' + expected
+assert os.environ['LD_LIBRARY_PATH'] == expected
 if os.environ.get('TEST_FAIL') == 'environment': sys.exit(19)
 ''')
-    (main / "run.py").write_text("from pathlib import Path; Path('run_called').touch()\n")
-    env = {**os.environ, "PYTHON_BIN": sys.executable, "TEST_FAIL": fail_at or ""}
+    (main / "run.py").write_text('''
+from pathlib import Path
+import os
+expected = '/existing/cuda'
+if os.environ['TEST_HOST_OS'] == 'Linux':
+    expected = str(Path.cwd()/'MATLAB/bin/glnxa64') + ':' + expected
+assert os.environ['LD_LIBRARY_PATH'] == expected
+Path('run_called').touch()
+''')
+    commands = tmp_path / "test-bin"
+    commands.mkdir()
+    uname = commands / "uname"
+    uname.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_HOST_OS"\n')
+    uname.chmod(0o755)
+    env = {**os.environ, "PYTHON_BIN": sys.executable, "TEST_FAIL": fail_at or "",
+           "TEST_HOST_OS": host_os, "LD_LIBRARY_PATH": "/existing/cuda",
+           "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
     env.pop("MATLAB_ROOT", None)
     result = subprocess.run(["bash", str(script), "run", "--duration", "0.2", "--device=cuda",
                              "--checkpoint", "/weights/best.pt"], cwd=tmp_path, env=env, capture_output=True, text=True)
