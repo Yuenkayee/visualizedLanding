@@ -113,7 +113,19 @@ bash shell/run_landing_closed_loop.sh check --login \
   --config main/navigation_observer.yaml --device cuda --render-device OPTIX
 ```
 
-MATLAB 首次授权需要本人按终端提示输入账号/OTP；成功进入 `>>` 后输入 `exit`，部署会继续。此交互直接连接 `/dev/tty`，不写入 `console.log`，必须在交互式 SSH 或 tmux 内执行。已有许可证文件、网络许可证或已经登录时，省略 `--login`。如许可证使用 MathWorks New Licensing Technology，可设置 `MATLAB_LICENSE_MODE=onlinelicensing`；默认使用 `online`。登录和运行使用同一 Linux 用户。
+MATLAB 首次授权需要本人按终端提示输入账号/OTP；成功进入 `>>` 后输入 `exit`，部署会继续。此交互直接连接 `/dev/tty`，不写入 `console.log`，必须在交互式 SSH 或 tmux 内执行。已有许可证文件、网络许可证或已经登录时，省略 `--login`。账号授权设置 `MATLAB_LICENSE_MODE=online`；如许可证使用 MathWorks New Licensing Technology，设置 `MATLAB_LICENSE_MODE=onlinelicensing`。环境检查与实际仿真都向 Engine 传入同一个 `-licmode`，Linux 同时传入 `-nodisplay`。
+
+`--login` 无既有配置时默认选择 `online`；成功退出交互 MATLAB 后，仅将模式和本地安装/用户标识保存在 `.tools/closed-loop/matlab-startup.json`，不存账号、密码或令牌。同一用户、同一安装目录的后续 `check/run` 自动复用该选择，环境变量可覆盖。无配置时非交互启动保持 `auto`（不传 `-licmode`，保留 MATLAB 默认许可证搜索）；许可证文件/网络许可证用户也可显式设置 `MATLAB_LICENSE_MODE=file` 并配置自己的 `MLM_LICENSE_FILE`，无需 `--login`。
+
+若日志已经出现 Blender/OPTIX 渲染成功，但随后报 `Unable to launch MVM server: License Error: Licensing shutdown`，当前阻塞是 MATLAB 授权启动。尤其注意旧版本仅登录时传 `-licmode online`、Engine 未传的配置差异。更新代码后，用同一 Linux 用户执行：
+
+```bash
+export MATLAB_LICENSE_MODE=online
+bash shell/run_landing_closed_loop.sh check --login \
+  --config main/navigation_observer.yaml --device cuda --render-device OPTIX
+```
+
+本次日志目录的 `matlab-startup.json` 记录实际模式、启动选项和结果。该错误没有具体授权编号时，不能仅凭它判定许可证过期；若直接执行 `"$MATLAB_ROOT/bin/matlab" -licmode online -nodisplay` 也失败，应根据交互终端的具体错误检查账号许可、MathWorks Service Host 和官方授权服务连接。无需因此重装 bpy/CUDA。官方说明：[终端账号授权](https://www.mathworks.com/matlabcentral/answers/547302-is-login-named-user-available-on-machines-without-a-display)、[Login Named User 启动模式](https://www.mathworks.com/matlabcentral/answers/168441-what-is-login-named-user-and-how-can-i-use-it)。
 
 自动检查/安装的内容：
 

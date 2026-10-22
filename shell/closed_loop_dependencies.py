@@ -17,6 +17,11 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
+if __package__:
+    from .matlab_startup import license_mode, remember_login_mode
+else:
+    from matlab_startup import license_mode, remember_login_mode
+
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / ".tools/closed-loop"
 PYTHON_RELEASES = {"3.12": "3.12.12", "3.11": "3.11.14"}
@@ -330,10 +335,8 @@ def ensure_matlab(root, check=False):
 
 
 def matlab_login(root):
-    mode = os.environ.get("MATLAB_LICENSE_MODE", "online")
-    if mode not in ("online", "onlinelicensing"):
-        raise RuntimeError("MATLAB_LICENSE_MODE must be online or onlinelicensing")
-    print("[deploy] MATLAB account login: follow the terminal prompts; enter exit at >> to continue deployment. "
+    mode = license_mode(root, login=True)
+    print(f"[deploy] MATLAB account login (license_mode={mode}): follow the terminal prompts; enter exit at >> to continue deployment. "
           "Login input/output bypass console.log.", flush=True)
     try:
         tty_input = open("/dev/tty", "rb", buffering=0)
@@ -342,6 +345,7 @@ def matlab_login(root):
     with tty_input, open("/dev/tty", "wb", buffering=0) as tty_output:
         subprocess.run([str(root / "bin/matlab"), "-licmode", mode, "-nodisplay"],
                        stdin=tty_input, stdout=tty_output, stderr=tty_output, check=True)
+    remember_login_mode(root, mode)
 
 
 def main():
@@ -389,5 +393,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
+    except (RuntimeError, ValueError, OSError, subprocess.CalledProcessError) as exc:
         sys.exit(f"Deployment failed: {exc}")

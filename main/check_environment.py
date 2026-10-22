@@ -25,6 +25,7 @@ from shell.closed_loop_dependencies import (
     python_matches,
 )
 from shell.render_environment import probe_renderer, renderer_environment
+from shell.matlab_startup import license_mode, start_matlab
 
 
 def matlab_root():
@@ -167,14 +168,7 @@ def main():
             env=renderer_environment(),
         )
     print("[environment] Starting MATLAB and checking toolbox licenses", flush=True)
-    try:
-        engine = matlab.engine.start_matlab("-nodesktop -nosplash")
-    except Exception as exc:
-        raise RuntimeError(
-            "MATLAB Engine startup failed. For first account authorization, run "
-            "bash shell/run_landing_closed_loop.sh check --login with the same Linux user. "
-            f"MATLAB error: {exc}"
-        ) from exc
+    engine = start_matlab(root, Path(a.report).with_name("matlab-startup.json") if a.report else None)
     try:
         features = sorted(set(["Simulink", *config.get("required_toolboxes", [])]))
         licenses = {name: bool(engine.license("checkout", name)) for name in features}
@@ -196,6 +190,7 @@ def main():
             python=sys.version,
             matlab=engine.version(),
             matlab_root=str(root),
+            matlab_license_mode=license_mode(root),
             matlab_platform=engine.computer(),
             licenses=licenses,
             torch=torch.__version__,

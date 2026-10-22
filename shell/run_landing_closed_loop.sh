@@ -20,6 +20,7 @@ for LANDING_ARG in "$@"; do
       'Options: --config FILE --device {cpu,cuda,mps} --render-device {CPU,CUDA,OPTIX}' \
       'Run/smoke: --duration SECONDS --checkpoint FILE --output DIR --weather NAME' \
       'Environment: MATLAB_ROOT, PYTHON_BIN, RENDER_PYTHON, UV_PYTHON_INSTALL_MIRROR.' \
+      'MATLAB_LICENSE_MODE={online,onlinelicensing,file,auto} applies to login/check/run.' \
       'LANDING_DOWNLOAD_PROFILE=china: TUNA PyPI/Ubuntu/Python source + NJU CPython binaries.' \
       'Default run/check/inspect config: main/navigation_observer.yaml. See main/README.md.'
     exit 0

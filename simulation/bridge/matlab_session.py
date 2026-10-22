@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from shell.matlab_startup import start_matlab
 
 
 class MatlabSession:
@@ -17,7 +18,7 @@ class MatlabSession:
                 "install requirements-matlab.txt with MATLAB R2024b present"
             ) from exc
         try:
-            self.engine = matlab.engine.start_matlab("-nodesktop -nosplash")
+            self.engine = start_matlab()
             self.engine.addpath(str(self.root / "simulation/matlab"), nargout=0)
             self.engine.setup_paths(str(self.root), nargout=0)
         except Exception:
