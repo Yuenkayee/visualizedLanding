@@ -27,6 +27,8 @@ bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml
 
 STOP 触发后读取保留的末帧输出，退出 Python 循环，写 `termination_reason: model_stop`、MATLAB `stop_reason` 和 `terminal_state.json`，照常生成图和误差统计。边界时刻可能出现最后一次 `advanced_s=0`：Simulink 在暂停时刻的下一次执行才求值 STOP，这是正常终止，不是假装推进一个 dt。运行错误仍报错；不会吞掉求解器错误。`duration_reached` 表示达到用户指定的运行上限。
 
+每个内环主步另写 `simulink/plant_steps.jsonl`，记录起始时间、目标时间、实际时间、前后状态及 `step()` 的 `final_step` 标志。若仍出现时间校验错误，控制台给出这些数值，并在该文件保留出错步。终止后 `Simulation.Time` 可能为 NaN（JSON 中为 null），此时以保留输出的 `terminal_time` 为准。旧版 `Plant stopped or missed requested time` 未包含这些信息，单凭该消息不能判断 STOP、暂停或超步；控制台进度每 1 s 才打印一次，最后看到 `iteration=0` 不表示必然在第二步报错。
+
 **当前场景初值（2026-10-20 复核）**：制导 `Ship_trace` 和导出的 `Ship_motion` 质心初值均为 `[50;0;0]`，直升机质心初值为 `[0;0;-50]`。训练 H 偏移仍为 `[-45;0;-5.5]`，所以水平名义轮底中心在甲板系的先验为 `[-5;0;41.6]`，已同步到旁路配置。这个先验由既定场景初值计算，不读取运行时真值。源模型的自主子系统现名为 `innerLoop1`，配置的 `autonomous_subsystem` 与两个 `outputs` 路径已同步；以后重命名时也需更新这些路径。
 
 按用户要求，STOP 保留 `abs(-CG_D-2.9)<0.01`，当前只验证导航对相对位置的估计和接口连通，不据此判定成功触舰。制导的目标点与 H 点仍是不同参考点，但不妨碍将同一时刻的导航估计与轮底减 H 的真值比较。
@@ -92,7 +94,7 @@ bash shell/run_landing_closed_loop.sh configure
 
 两个接口 SLX 的 FixedStep、模型构建脚本、验收夹具和 CETI 默认离散周期均为 0.02 s；H_inf、LPV_H_inf、NDO、LPV_NDO 也使用 0.02 s。启动时会检查源模型的固定步长及这些模块的采样参数，防止工作副本覆盖步长后掩盖不一致。已有点质量仿真入口的默认反馈也为 50 Hz。云台内部 `integration_step_s=0.002` 是用于伺服数值稳定性的积分细分，不是内环时钟；相机曝光/读出时间和训练数据采样率各自保留其物理含义。
 
-MATLAB `simulation` 保持一次连续仿真，每段通过 `step(PauseTime=...)` 推进；暂停时修改工作副本中的反馈 Constant。控制器内部积分器、滤波器及 MATLAB System 私有状态跨 tick 保留。原 SLX 不被运行过程修改。快照调用与转换模块相同的 `innerLoop_conversion` 内核；测试通过实际转换 SLX 检查 15 个输出一致。运行宿主不要求 `innerLoop.slx` 永久保持纯转换模型，因此可以继续在该文件中接入完整控制器和动力学。
+MATLAB `simulation` 保持一次连续仿真，每个内环周期通过 `step(NumberOfSteps=1)` 推进一个主步，再校验实际时间与整数 tick 计算的目标时间；暂停时修改工作副本中的反馈 Constant。同时检查 `step()` 返回的 `finalstep` 和 `Status`：普通模式的最后一步可能暂停而非立即成为 inactive，此时先结束执行并保留末帧，再按模型停止处理。不得通过放宽时间误差、额外补步或重写时间戳来掩盖时钟错位。控制器内部积分器、滤波器及 MATLAB System 私有状态跨 tick 保留。原 SLX 不被运行过程修改。快照调用与转换模块相同的 `innerLoop_conversion` 内核；测试通过实际转换 SLX 检查 15 个输出一致。运行宿主不要求 `innerLoop.slx` 永久保持纯转换模型，因此可以继续在该文件中接入完整控制器和动力学。
 
 初始化时先对模型做一次 `StopTime=0` 的零时长采样，以获得真实初值；`initialize()` 刚完成时运行时端口尚未计算，不能直接当作初值读取。随后启动一次持续仿真，第一段积分已使用 t=0 导航反馈。零时长采样不推进时间；随机动力学/初始化回调应使用自身固定种子的随机流，且初始化脚本应可重复执行。
 

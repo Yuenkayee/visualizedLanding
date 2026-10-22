@@ -31,11 +31,27 @@ for threshold=[.06 .04 0]
     read_sensor_truth(); % conversion still works with captured final state
     finalize_external_model();clear cleanup;
 end
+% A finite StopTime can leave a stepped normal-mode simulation paused at its
+% final step. The return value of step(), not just Status, identifies this.
+file=jsondecode(landing_build_interface_fixture(folder,geometryJSON));
+c.model=file;
+cleanup=onCleanup(@()finalize_external_model());
+initialize_external_model(jsonencode(c)); truth=jsondecode(read_sensor_truth());
+s=evalin('base','landingState');
+set_param(s.live_model,'StopTime','0.04');
+e.timestamp=0; e.T_deck_camera=truth.T_deck_camera;
+e.gimbal=jsondecode(read_gimbal_telemetry());
+write_navigation_estimate(jsonencode(e)); advance_external_model(.1);
+status=jsondecode(read_landing_live_status());
+assert(status.stopped && abs(status.timestamp-.04)<1e-10);
+read_sensor_truth();
+finalize_external_model();clear cleanup;
 % Body velocity exported by Ship_motion must rotate into NED exactly once.
 v=zeros(12,1);v(4)=10;v(9)=pi/2;
 [~,ship]=landing_normalize_native(zeros(12,1),v,struct('ship_velocity_frame','body'));
 assert(norm(ship(4:6)-[0;10;0])<1e-10);
 result=jsonencode(struct('passed',true,'stop_times',[.06 .04 0], ...
     'terminal_native_state_preserved',true,'ship_velocity_rotation',true, ...
+    'finite_stop_time_recognized',true, ...
     'stop_reason',status.stop_reason));
 end

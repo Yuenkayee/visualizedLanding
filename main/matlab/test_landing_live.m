@@ -1,6 +1,10 @@
 function result=test_landing_live(folder,geometryJSON)
 % Real Simulink integrator test, never presented as helicopter flight validation.
 g=jsondecode(geometryJSON);
+timingFile=fullfile(folder,'plant_steps.jsonl'); previousRecords=0;
+if isfile(timingFile)
+    previousRecords=numel(splitlines(strtrim(fileread(timingFile))));
+end
 % Existing controller coordinate helpers must resolve inside this repository.
 root=fileparts(fileparts(fileparts(mfilename('fullpath'))));
 assert(startsWith(which('bodyToNedVel'),root) && startsWith(which('nedVelToBody'),root));
@@ -76,6 +80,34 @@ previous=s.helicopter_state;
 write_navigation_estimate(jsonencode(e)); advance_external_model(.02); s=evalin('base','landingState');
 assert(abs(s.timestamp-.06)<1e-12);
 assert(norm(s.helicopter_state(1:3)-previous(1:3))<1e-10,'landing:Invalid','Fixture must consume nav_valid');
+% Exercise the complete 2 s / 100-step clock, including floating-point
+% boundaries such as .12+.02 and .58+.02, with state held by invalid feedback.
+truth=jsondecode(read_sensor_truth()); e.timestamp=s.timestamp;
+e.T_deck_camera=truth.T_deck_camera; e.gimbal=jsondecode(read_gimbal_telemetry());
+write_navigation_estimate(jsonencode(e)); advance_external_model(1.94);
+s=evalin('base','landingState');
+assert(abs(s.timestamp-2)<1e-12 && ~s.stopped);
+assert(norm(s.helicopter_state(1:3)-previous(1:3))<1e-10,'landing:StateMemory','State changed under invalid feedback');
+records=splitlines(strtrim(fileread(timingFile)));
+assert(numel(records)==previousRecords+100);
+records=records(previousRecords+1:end);
+for k=1:100
+    row=jsondecode(records{k});
+    assert(abs(row.target-k*.02)<1e-12 && abs(row.actual_time-row.target)<1e-12);
+    assert(~row.final_step && isempty(row.error));
+end
+% Deliberately request a wrong host period from the already compiled plant.
+% A real time mismatch must still fail and retain evidence, not be relabeled
+% as STOP or repaired by inventing a timestamp/additional integration step.
+truth=jsondecode(read_sensor_truth()); e.timestamp=s.timestamp;
+e.T_deck_camera=truth.T_deck_camera; e.gimbal=jsondecode(read_gimbal_telemetry());
+write_navigation_estimate(jsonencode(e)); bad=evalin('base','landingState');
+bad.config.plant_step=.04;
+must_fail(@()landing_live_step(bad,.04),'landing:Time');
+records=splitlines(strtrim(fileread(timingFile)));
+row=jsondecode(records{end});
+assert(strcmp(row.error_identifier,'landing:Time') && contains(row.error,'actual='));
+assert(abs(row.target-2.04)<1e-12 && abs(row.actual_time-2.02)<1e-12 && ~row.stopped);
 assert(isequal(before,fileread_binary(file)),'landing:Source','Source model was modified');
 finalize_external_model();
 c.model=fullfile(root,'external','innerloop','simu','innerLoop.slx');
@@ -97,6 +129,8 @@ result=jsonencode(struct('passed',true,'first_feedback_consumed',true, ...
     'source_unchanged',true,'slx_kernel_equivalent',true, ...
     'base_workspace_setup',true,'interface_only_model_rejected',true, ...
     'full_model_named_innerLoop_supported',true,'time',s.timestamp, ...
+    'two_second_clock_and_step_diagnostics',true, ...
+    'genuine_time_mismatch_rejected_and_logged',true, ...
     'plant_step',.02,'mismatched_solver_and_controller_rejected',true, ...
     'off_grid_advance_rejected',true));
 end
