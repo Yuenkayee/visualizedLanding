@@ -1,6 +1,6 @@
 """Classical white H baseline or learned segmentation + ordered keypoints."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import cv2
 import numpy as np
 
@@ -13,6 +13,19 @@ class HDetection:
     ordered: bool = False
     visibility: np.ndarray | None = None
     network_mask: np.ndarray | None = None
+    # Native mask pixels -> original camera pixels, including a possible ROI.
+    network_scale: np.ndarray | None = None
+    network_origin: np.ndarray | None = None
+
+    def mask_coordinates(self, image_shape):
+        if self.network_mask is None:
+            raise ValueError("No network mask")
+        scale = (np.array(image_shape[1::-1], float) / self.network_mask.shape[::-1]
+                 if self.network_scale is None else np.asarray(self.network_scale, float))
+        origin = np.zeros(2) if self.network_origin is None else np.asarray(self.network_origin, float)
+        if scale.shape != (2,) or origin.shape != (2,) or not np.isfinite([scale, origin]).all() or (scale <= 0).any():
+            raise ValueError("Invalid network-to-image coordinates")
+        return scale, origin
 
 
 class HDetector:
@@ -43,6 +56,51 @@ class HDetector:
                 ).to(device)
                 self.model.load_state_dict(payload["model"])
                 self.model.eval()
+
+    def detect_roi(self, image, detection, config):
+        """Retry a learned target at higher scale, using only its current mask.
+
+        Keep the native crop mask and its affine pixel mapping. Camera intrinsics
+        stay unchanged: ALL returned landmarks are in original image pixels.
+        """
+        if self.model is None and self.session is None:
+            return None, dict(status="not_learned")
+        if detection is None or detection.network_mask is None:
+            return None, dict(status="no_target_mask")
+        mask = np.asarray(detection.network_mask, np.uint8)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if not contours:
+            return None, dict(status="empty_mask")
+        contour = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(contour) < config.get("roi_minimum_mask_area_px", 9):
+            return None, dict(status="small_mask")
+        x, y, w, h = cv2.boundingRect(contour)
+        if x == 0 or y == 0 or x+w == mask.shape[1] or y+h == mask.shape[0]:
+            return None, dict(status="truncated_mask")
+        scale, origin = detection.mask_coordinates(image.shape)
+        center = np.array([x+w/2, y+h/2])*scale + origin
+        height, width = image.shape[:2]
+        aspect = width / height
+        context = float(config.get("roi_context_scale", 2.5))
+        minimum = float(config.get("roi_minimum_width_px", 256))
+        if not np.isfinite([context, minimum]).all() or context <= 1 or minimum <= 0:
+            raise ValueError("ROI context must exceed 1 and minimum width must be positive")
+        cw = min(width, max(minimum, w*scale[0]*context, h*scale[1]*context*aspect))
+        ch = cw/aspect
+        if cw*ch >= width*height*config.get("roi_maximum_area_fraction", .9):
+            return None, dict(status="no_magnification")
+        left = int(np.clip(center[0]-cw/2, 0, width-cw))
+        top = int(np.clip(center[1]-ch/2, 0, height-ch))
+        right, bottom = min(width, left+round(cw)), min(height, top+round(ch))
+        box = [left, top, right, bottom]
+        cropped = self(image[top:bottom, left:right])
+        if cropped is None:
+            return None, dict(status="no_target", box=box)
+        full_mask = np.zeros((height, width), np.uint8)
+        full_mask[top:bottom, left:right] = cropped.mask
+        return replace(cropped, keypoints=cropped.keypoints+[left, top], mask=full_mask,
+                       network_scale=np.array([right-left, bottom-top])/cropped.network_mask.shape[::-1],
+                       network_origin=np.array([left, top])), dict(status="evaluated", box=box)
 
     def __call__(self, image):
         h, w = image.shape[:2]

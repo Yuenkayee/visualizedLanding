@@ -28,8 +28,14 @@ from visual_training.metrics import grouped_metrics
 
 class FixedDetection:
     detection = None
+    def __init__(self, detector=None):
+        self.detector = detector
     def __call__(self, image):
         return copy.deepcopy(self.detection)
+    def detect_roi(self, image, detection, config):
+        if self.detector is None or not hasattr(self.detector, "detect_roi"):
+            return None, dict(status="unavailable")
+        return self.detector.detect_roi(image, detection, config)
 
 
 def clean(value):
@@ -119,10 +125,11 @@ def replay_sequence(records, root, detector, config, args):
     R = R @ Rotation.from_euler("xyz", args.initial_rotation_error, degrees=True).as_matrix()
     configs = {"current": cfg}
     if args.compare_baseline:
-        configs["baseline"] = dict(cfg, mask_geometry=False, adaptive_pixel_noise=False, minimum_keypoint_visibility=0., refine_pnp=False, acceleration_noise=.5)
+        configs["baseline"] = dict(cfg, mask_geometry=False, roi_recovery=False, reacquisition_confirmations=1,
+                                   adaptive_pixel_noise=False, minimum_keypoint_visibility=0., refine_pnp=False, acceleration_noise=.5)
     pipelines = {name: NavigationPipeline(calibration, first["points_deck"], c,
                  ESKFState(position=p.copy(), rotation=R.copy(), timestamp=first["timestamp"])) for name, c in configs.items()}
-    fixed = FixedDetection()
+    fixed = FixedDetection(detector)
     for pipeline in pipelines.values():
         pipeline.detector = fixed
     results = {name: [] for name in pipelines}

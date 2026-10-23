@@ -40,6 +40,69 @@ def error_statistics(error, mask):
     )
 
 
+def recovery_metrics(rows):
+    """Count camera packets, not diagnostic values held over host iterations."""
+    invalid = []
+    start = None
+    for i, row in enumerate(rows):
+        if not row["feedback"]["valid"] and start is None:
+            start = row["timestamp"]
+        if start is not None and (row["feedback"]["valid"] or i == len(rows)-1):
+            end = row["timestamp"] if row["feedback"]["valid"] else row["next_timestamp"]
+            invalid.append(dict(start_s=start, end_s=end, duration_s=end-start))
+            start = None
+    camera = [r.get("estimate", {}).get("diagnostics", {}) for r in rows if r.get("sensors", {}).get("camera")]
+    ages = [r.get("estimate", {}).get("diagnostics", {}).get("measurement_age") for r in rows]
+    ages = [age for age in ages if age is not None]
+    attempts = [attempt for d in camera for attempt in d.get("vision_attempts", [])]
+    return dict(invalid_intervals=invalid, invalid_duration_s=sum(v["duration_s"] for v in invalid),
+        max_invalid_duration_s=max((v["duration_s"] for v in invalid), default=0.),
+        max_pose_age_s=max(ages, default=None),
+        accepted_paths=dict(Counter(d.get("vision_path", "legacy") for d in camera if d.get("vision_accepted"))),
+        roi_attempted_frames=sum(bool(d.get("vision_roi_attempted")) for d in camera),
+        retry_rejections=dict(Counter(a.get("vision_rejection", "unspecified") for a in attempts
+                                      if a.get("vision_path") != "full" and not a.get("vision_accepted"))),
+        reacquisitions=sum(bool(d.get("vision_reacquired")) for d in camera),
+        max_vision_correction_m=max((d.get("vision_position_correction_m", 0.) for d in camera), default=0.))
+
+
+def plot_recovery(rows, root):
+    import matplotlib.pyplot as plt
+    camera = [r for r in rows if r.get("sensors", {}).get("camera")]
+    if not camera:
+        return
+    t = [r["timestamp"] for r in camera]
+    diagnostics = [r.get("estimate", {}).get("diagnostics", {}) for r in camera]
+    fig, axes = plt.subplots(3, 1, figsize=(11, 8), sharex=True, constrained_layout=True)
+    axes[0].plot(t, [d.get("measurement_age", np.nan) for d in diagnostics], label="Accepted pose age")
+    axes[0].set_ylabel("Age (s)")
+    axes[1].plot(t, [d.get("vision_position_correction_m", 0.) for d in diagnostics], label="Vision position correction")
+    axes[1].set_ylabel("Correction (m)")
+    paths = ["full", "roi", "roi_mask", "full_small_mask"]
+    for i, p in enumerate(paths):
+        times = [s for s, d in zip(t, diagnostics) if d.get("vision_accepted") and d.get("vision_path", "full") == p]
+        axes[2].scatter(times, [i]*len(times), s=15, label=p)
+    axes[2].set_yticks(range(len(paths)), paths)
+    axes[2].set_ylabel("Accepted path")
+    for ax in axes:
+        for interval in recovery_metrics(rows)["invalid_intervals"]:
+            ax.axvspan(interval["start_s"], interval["end_s"], color="red", alpha=.15)
+        ax.grid(alpha=.2)
+    axes[0].legend()
+    axes[1].legend()
+    axes[-1].set_xlabel("Simulation time (s)")
+    fig.savefig(root / "navigation_recovery.png", dpi=160)
+    plt.close(fig)
+    with (root / "vision_diagnostics.csv").open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["time_s", "accepted", "path", "primary_rejection", "final_rejection", "pose_age_s",
+                         "position_correction_m", "recovery_pending", "roi", "attempts"])
+        for s, d in zip(t, diagnostics):
+            writer.writerow([s, d.get("vision_accepted"), d.get("vision_path"), d.get("vision_primary_rejection"),
+                d.get("vision_rejection"), d.get("measurement_age"), d.get("vision_position_correction_m"),
+                d.get("vision_recovery_pending"), json.dumps(d.get("vision_roi", {})), json.dumps(d.get("vision_attempts", []))])
+
+
 def gimbal_analysis(rows, metadata, root):
     """Commands and geometric FOV coverage are evaluation, not navigation input."""
     import matplotlib.pyplot as plt
@@ -138,6 +201,8 @@ def analyze(directory):
         note="Position error is wheel-centre minus H-centre in bow/port/up deck axes; completion is not a touchdown certification.",
     )
     metrics["observations"] = {}
+    metrics["navigation_recovery"] = recovery_metrics(rows)
+    plot_recovery(rows, root)
     metrics["gimbal_tracking"] = gimbal_analysis(rows, metadata, root)
     for sensor, prefix in (("camera", "vision"), ("lidar", "lidar")):
         fresh = [r.get("estimate", {}).get("diagnostics", {}) for r in rows
@@ -232,6 +297,10 @@ def analyze(directory):
         f"# 离线闭环结果\n\n完成迭代：{len(rows)}；有效反馈比例：{valid.mean():.1%}。\n\n"
         f"全时段三维 RMSE：{metrics['all']['rmse_3d_m']:.3f} m；P95：{metrics['all']['p95_3d_m']:.3f} m。\n\n"
         f"相机更新：{metrics['observations']['camera']}；LiDAR更新：{metrics['observations']['lidar']}。\n\n"
+        f"连续失效区间：{metrics['navigation_recovery']['invalid_intervals']}；"
+        f"最大完整位姿观测年龄：{metrics['navigation_recovery']['max_pose_age_s']} s。\n\n"
+        "`navigation_recovery.png` 展示观测年龄、视觉纠偏量和接受路径；"
+        "`vision_diagnostics.csv` 保存每张相机图像的主路径拒绝、ROI 框及各级重试结果。\n\n"
         + ("`gimbal_tracking.png` 展示参考角速度、实际朝向与指令的差值，以及 H 中心的视场位置；"
            "视场投影统计不代表没有遮挡或视觉识别成功。\n\n" if metrics["gimbal_tracking"] else "")
         + ("本段没有有效导航估计；曲线包含先验外推，不能用较小误差认定导航已收敛。\n\n" if not valid.any() else "") +

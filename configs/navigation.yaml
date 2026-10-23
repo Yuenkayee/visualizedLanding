@@ -23,6 +23,10 @@ plane_threshold: 0.08
 # Quality checks use predicted segmentation and the causal pose prior only.
 mask_geometry: true
 mask_minimum_side_px: 32
+# Full-image primary path stays conservative. Smaller masks are tried only
+# after rejection, with shape/edge/pose gates and inflated pixel uncertainty.
+mask_fallback_minimum_side_px: 16
+mask_fallback_adaptive_edges: true
 mask_min_iou: 0.82
 mask_recovery_difference_px: 3.0
 mask_pixel_sigma: 1.0
@@ -30,3 +34,17 @@ marker_stroke_fraction: [0.2, 0.2]
 minimum_keypoint_visibility: 0.5
 adaptive_pixel_noise: true
 refine_pnp: true
+
+# One extra learned forward pass at most, only after a rejected primary pose.
+# All outputs map back to original camera pixels; intrinsics stay unchanged.
+roi_recovery: true
+roi_context_scale: 2.5
+roi_minimum_width_px: 256
+roi_minimum_mask_area_px: 9
+roi_maximum_area_fraction: 0.9
+roi_pixel_sigma: 1.0
+
+# After a pose timeout, require two consecutive accepted camera poses before
+# re-enabling feedback. No timeout extension or cosmetic position smoothing.
+reacquisition_confirmations: 2
+reacquisition_max_gap_s: 0.3

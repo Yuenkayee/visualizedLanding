@@ -32,6 +32,12 @@ class NavigationPipeline:
         self.gimbal = None
         self.last_gimbal = None
         self.reference_rate_deck = np.zeros(3)
+        self.recovering = False
+        self.recovery_count = 0
+        self.last_camera_timestamp = None
+        self.recovery_required = int(self.config.get("reacquisition_confirmations", 2))
+        if self.recovery_required < 1:
+            raise ValueError("reacquisition_confirmations must be positive")
         point = self.config.get("filter_point_body")
         self.filter_point_body = (
             None if point is None else finite_array(point, (3,), "filter_point_body")
@@ -116,41 +122,121 @@ class NavigationPipeline:
         if not ok:
             self.diagnostics["vision_rejection"] = "innovation_gate"
         if ok:
+            self.diagnostics.pop("vision_rejection", None)
+            previous = self.health.last_measurement
+            age = None if previous is None else measurement.timestamp - previous
+            reacquired = age is not None and age > self.health.max_age
+            if reacquired:
+                self.recovering, self.recovery_count = True, 0
+            if self.recovering:
+                if age is not None and age > self.config.get("reacquisition_max_gap_s", .3):
+                    self.recovery_count = 0
+                self.recovery_count += 1
+                self.recovering = self.recovery_count < self.recovery_required
+            self.diagnostics.update(vision_previous_measurement_age_s=age,
+                                    vision_reacquired=bool(reacquired))
             self.health.record(measurement.timestamp)
         return self.estimate()
 
     def process_camera(self, frame):
+        if self.last_camera_timestamp is not None and frame.timestamp <= self.last_camera_timestamp:
+            raise ValueError("Camera frames must have strictly increasing timestamps")
+        self.last_camera_timestamp = frame.timestamp
         self.process_gimbal(frame.gimbal, frame.timestamp)
-        self.diagnostics["vision_accepted"] = False
-        for key in ("vision_rejection", "reprojection_error", "vision_mahalanobis", "mask_iou", "mask_keypoint_difference_px"):
+        self.diagnostics.update(vision_attempts=[], vision_roi_attempted=False,
+                                vision_roi={"status": "not_needed"}, vision_primary_rejection=None)
+        self._clear_vision_candidate()
+        if (self.config.get("require_gimbal", False) or self.filter_point_body is not None) and not self.gimbal_synchronized(frame.timestamp):
+            self.diagnostics["vision_rejection"] = "missing_or_stale_gimbal"
+            if self.recovering:
+                self.recovery_count = 0
+            return self.estimate()
+        detection = self.detector(frame.image)
+        if self._try_camera(frame, detection, "full", "primary"):
+            return self.estimate()
+        primary = self.diagnostics["vision_attempts"][0].copy()
+        self.diagnostics["vision_primary_rejection"] = primary["vision_rejection"]
+        # Rejecting an innovation does not mutate the ESKF. Retry the same
+        # image at the same timestamp; return immediately after ONE accepted update.
+        if self.config.get("roi_recovery", True) and hasattr(self.detector, "detect_roi"):
+            cropped, detail = self.detector.detect_roi(frame.image, detection, self.config)
+            self.diagnostics["vision_roi"] = detail
+            self.diagnostics["vision_roi_attempted"] = "box" in detail
+            if cropped is not None:
+                if self._try_camera(frame, cropped, "roi", "learned"):
+                    return self.estimate()
+                if (self.config.get("mask_geometry", True) and self.config.get("mask_fallback_minimum_side_px", 16) > 0
+                        and self._try_camera(frame, cropped, "roi_mask", "mask")):
+                    return self.estimate()
+        if self.config.get("mask_geometry", True) and self.config.get("mask_fallback_minimum_side_px", 16) > 0:
+            if self._try_camera(frame, detection, "full_small_mask", "mask"):
+                return self.estimate()
+        # Keep the primary rejection as the top-level reason, with every retry
+        # recorded separately; do not report a stale residual from another path.
+        self._clear_vision_candidate()
+        self.diagnostics.update(primary)
+        if self.recovering:
+            self.recovery_count = 0
+        return self.estimate()
+
+    _vision_candidate_keys = ("vision_accepted", "vision_rejection", "vision_source", "vision_path",
+        "reprojection_error", "vision_mahalanobis", "mask_iou", "mask_keypoint_difference_px",
+        "vision_position_correction_m", "vision_pixel_sigma", "vision_mask",
+        "vision_previous_measurement_age_s", "vision_reacquired")
+
+    def _clear_vision_candidate(self):
+        for key in self._vision_candidate_keys:
             self.diagnostics.pop(key, None)
+        self.diagnostics["vision_accepted"] = False
         self.diagnostics["vision_source"] = "learned"
         self.diagnostics["vision_position_correction_m"] = 0.0
-        detection = self.detector(frame.image)
+        self.diagnostics["vision_reacquired"] = False
+
+    def _try_camera(self, frame, detection, path, mode):
+        self._clear_vision_candidate()
+        self.diagnostics["vision_path"] = path
+        def finish(reason=None):
+            if reason:
+                self.diagnostics["vision_rejection"] = reason
+            self.diagnostics["vision_attempts"].append({k: self.diagnostics[k]
+                for k in self._vision_candidate_keys if k in self.diagnostics})
+            return self.diagnostics["vision_accepted"]
         pixel_sigma = self.config.get("pixel_sigma", 1.5)
         if detection is None:
-            self.diagnostics["vision_rejection"] = "no_target"
-            return self.estimate()
-        if self.config.get("mask_geometry", True) and detection.ordered:
+            return finish("no_target")
+        pixels, visibility = detection.keypoints, detection.visibility
+        if path.startswith("roi"):
+            scale, _ = detection.mask_coordinates(frame.image.shape)
+            pixel_sigma = max(pixel_sigma, float(scale.max()) * self.config.get("roi_pixel_sigma", 1.))
+        if mode != "learned" and self.config.get("mask_geometry", True) and detection.ordered:
+            cfg = self.config
+            if mode == "mask":
+                cfg = {**cfg, "mask_minimum_side_px": cfg.get("mask_fallback_minimum_side_px", 16),
+                       "mask_adaptive_edges": cfg.get("mask_fallback_adaptive_edges", True)}
+            mask_diagnostics = {}
             recovery = recover_from_mask(detection, frame.image.shape, self.marker_points,
-                                         self.calibration, self.estimate().T_deck_camera, self.config)
+                                         self.calibration, self.estimate().T_deck_camera, cfg, mask_diagnostics)
+            self.diagnostics["vision_mask"] = mask_diagnostics
             if recovery is not None:
-                pixels, iou, disagreement, scale = recovery
+                recovered, iou, disagreement, scale = recovery
                 self.diagnostics.update(mask_iou=iou, mask_keypoint_difference_px=disagreement)
-                if disagreement > self.config.get("mask_recovery_difference_px", 3):
-                    detection.keypoints = pixels
-                    detection.visibility = None  # Independent, complete silhouette evidence.
+                if mode == "mask" or disagreement > self.config.get("mask_recovery_difference_px", 3):
+                    pixels = recovered
+                    visibility = None  # Independent, complete silhouette evidence.
                     self.diagnostics["vision_source"] = "mask_recovery"
-                    pixel_sigma = max(pixel_sigma, float(scale.max()) * self.config.get("mask_pixel_sigma", 1.))
-        if detection.visibility is not None and np.min(detection.visibility) < self.config.get("minimum_keypoint_visibility", .5):
-            self.diagnostics["vision_rejection"] = "invisible_keypoint"
-            return self.estimate()
-        if detection is not None and valid_keypoints(
-            detection.keypoints, frame.image.shape
-        ):
+                    pixel_sigma = max(pixel_sigma, float(scale.max()) * self.config.get("mask_pixel_sigma", 1.)
+                                      * mask_diagnostics["noise_multiplier"])
+            elif mode == "mask":
+                return finish("mask_geometry")
+        elif mode == "mask":
+            return finish("mask_unavailable")
+        self.diagnostics["vision_pixel_sigma"] = float(pixel_sigma)
+        if visibility is not None and np.min(visibility) < self.config.get("minimum_keypoint_visibility", .5):
+            return finish("invisible_keypoint")
+        if valid_keypoints(pixels, frame.image.shape):
             match = associate_keypoints(
                 self.marker_points,
-                detection.keypoints,
+                pixels,
                 self.calibration,
                 self.estimate().T_deck_camera,
                 detection.ordered,
@@ -160,21 +246,22 @@ class NavigationPipeline:
                 T, error, _ = match
                 self.diagnostics["reprojection_error"] = error
                 if error <= self.config.get("max_reprojection_error", 5.0):
+                    if self.config.get("adaptive_pixel_noise", True):
+                        pixel_sigma = max(pixel_sigma, error / np.sqrt(2))
+                    self.diagnostics["vision_pixel_sigma"] = float(pixel_sigma)
                     P = estimate_covariance(
                         self.marker_points,
                         T,
                         self.calibration,
-                        max(pixel_sigma, error / np.sqrt(2)) if self.config.get("adaptive_pixel_noise", True) else pixel_sigma,
+                        pixel_sigma,
                     )
-                    return self.process_pose(
-                        PoseMeasurement(frame.timestamp, T, P, error)
-                    )
-                self.diagnostics["vision_rejection"] = "reprojection"
+                    self.process_pose(PoseMeasurement(frame.timestamp, T, P, error))
+                    return finish()
+                return finish("reprojection")
             else:
-                self.diagnostics["vision_rejection"] = "pnp_failed"
+                return finish("pnp_failed")
         else:
-            self.diagnostics["vision_rejection"] = "invalid_quad"
-        return self.estimate()
+            return finish("invalid_quad")
 
     def process_lidar(self, frame):
         synchronized = self.process_gimbal(frame.gimbal, frame.timestamp)
@@ -227,6 +314,10 @@ class NavigationPipeline:
 
     def estimate(self):
         healthy, health = self.health.check(self.state)
+        healthy = healthy and not self.recovering
+        health.update(vision_recovery_pending=self.recovering,
+                      vision_recovery_count=self.recovery_count,
+                      vision_recovery_required=self.recovery_required)
         if self.config.get("require_gimbal", False) or self.filter_point_body is not None:
             healthy = healthy and self.gimbal_synchronized(self.state.timestamp)
         pose = self.state.pose

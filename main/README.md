@@ -3,6 +3,35 @@
 主入口为 `main/run.py`，结果分析为 `main/analyze.py`，MATLAB 适配器在 `main/matlab/`。
 复用现有 `NavigationPipeline`、训练场景、LiDAR 和云台动力学；不新增直升机动力学、制导或飞行控制律。
 
+## 2026-10-23 视觉失效恢复
+
+使用现有 `four_weather_v1/best.pt`，不需要重新生成训练集或训练。`configs/navigation.yaml` 默认启用：
+
+- 全图视觉未通过几何或创新门限时，根据当前分割最大连通区域裁剪并放大，最多增加一次网络推理。ROI 角点映射回原图，PnP 仍使用原相机内参、5 px 重投影门限及原创新检验。一张相机图像最多产生一次有效滤波更新。
+- 32 px 的全图轮廓主路径保留；失败后允许 16 px 的小目标备用解算，仍检查 H 形状 IoU、边缘支持、裁剪边界、姿态先验与重投影。小目标增加像素噪声；五顶点凸包只允许有限简化，不能用任意外接矩形代替 H。
+- 完整位姿超过 1 s 未更新后，重新获得两张连续、通过门限且相隔不超过 0.3 s 的位姿才恢复 `healthy/nav_valid`。期间滤波正常纠偏，反馈有效标志保持 false；不会延长超时或平滑掩盖误差。初始首次收敛不需要此重捕获流程。
+
+`vision_attempts` 记录各候选路径的拒绝、轮廓质量、有效像素噪声与纠偏量；`vision_roi` 保存裁剪框；`vision_recovery_pending` 表示恢复确认中。所有运行入口复用同一导航模块，现有 MATLAB 端口、0.02 s 步长和旁路控制方式不变。未来接入控制时，仍需由控制器执行 `nav_valid=false` 下的失效策略。
+
+无需 MATLAB 即可用已下载的 `run.json`、`steps.jsonl` 和完整 `sensors/` 验证当前算法：
+
+```bash
+bash shell/replay_closed_loop_sensors.sh \
+  outputs/closed_loop/run_20261023_121915_777920 \
+  --device cuda --compare-baseline
+```
+
+本地 macOS 使用 `--device cpu`。脚本检查并安装已有 replay requirements，保存控制台日志，不执行关机。结果在 `outputs/closed_loop/sensor_replay_*/current/`，旧算法对照在 `baseline/`。每组包含 NED 曲线、`metrics.json`、`navigation_recovery.png`、`vision_diagnostics.csv`；`comparison.json` 汇总两组。基线使用同一权重和原日志的导航参数，关闭本次新恢复路径。老日志若未保存 LiDAR 标定，从当前 landing 配置补齐，并写明 `legacy_calibration_fallback`；新闭环日志已完整保存标定。
+
+保存观测重放固定了云台编码器和参考指令，不重新生成图像。要验证新的导航结果反馈到云台后的完整效果，运行实际模型至 STOP（至少覆盖 33 s）：
+
+```bash
+bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml \
+  --duration 60 --device cuda --render-device OPTIX --save-sensors
+```
+
+仅运行 2 s 用于检查启动与接口，无法覆盖已知的 30–33 s 困难航段。
+
 **当前仓库模型的实际状态（2026-10-22）**：`external/innerloop/simu/innerLoop.slx` 是坐标转换模型。用户更新的 `innerLoop_landing.slx` 已由内部 `innerLoop` 子系统生成飞机/舰船状态，制导和控制在该子系统内部闭环；导航输入仅接到根层转换模块。使用 `main/navigation_observer.yaml` 可按当前实际航迹旁路评估导航，原 SLX 不被修改。`main/closed_loop.yaml` 仍是供将来导航反馈控制使用的通用端口合同，不能直接用于当前根接口。`smoke` 仍只使用积分器验收夹具。
 
 ## 当前模型的导航旁路评估
