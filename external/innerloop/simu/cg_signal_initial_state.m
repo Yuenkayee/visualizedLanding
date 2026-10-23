@@ -1,0 +1,6 @@
+function s=cg_signal_initial_state()
+% Explicit per-instance state; no persistent/shared state across simulations.
+s=struct('initialized',false,'time',-1,'sample_time',-1,'valid_time',-1, ...
+    'healthy',false,'position',zeros(3,1),'feed_velocity',zeros(3,1), ...
+    'velocity',zeros(3,1),'reference_position',zeros(3,1),'tracking_error',0);
+end

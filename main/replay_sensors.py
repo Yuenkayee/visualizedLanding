@@ -13,6 +13,7 @@ import yaml
 from main.config import load, path
 from main.run import output_directory, write_json
 from main.analyze import analyze
+from main.cg_replay import CgReplay
 from navigation.common.contracts import CameraCalibration, CameraFrame, LidarFrame, GimbalSample, GimbalReference
 from navigation.common.reference_points import body_point_estimate
 from navigation.fusion.eskf_state import ESKFState
@@ -59,6 +60,9 @@ def replay(source, output, config="main/navigation_observer.yaml", device="cpu",
             velocity=np.array(nav.get("initial_velocity", [0., 0., 0.])),
             rotation=np.array(nav["initial_rotation"]), timestamp=rows[0]["timestamp"])
         pipe = NavigationPipeline(cal, points, nav, state)
+        cg_available = "H_ship_body" in geometry and all(
+            "T_body_camera" in r["truth"] and "T_deck_camera" in r["truth"] for r in rows)
+        cg = CgReplay(geometry, c.get("cg_signal")) if cg_available else None
         target = output / name
         target.mkdir(parents=True, exist_ok=False)
         metadata = {**original, "kind": "recorded_sensor_replay", "source": str(source),
@@ -93,7 +97,10 @@ def replay(source, output, config="main/navigation_observer.yaml", device="cpu",
                     feedback = dict(timestamp=t, valid=estimate.healthy,
                         gear_relative_ned_m=(R @ position).tolist(),
                         velocity_gear_ned_mps=(R @ velocity).tolist(), covariance_ned=(R @ covariance @ R.T).tolist())
+                    cg_values = cg.update(row, estimate) if cg is not None else {}
+                    feedback.update(cg_values)
                     result = {**row, "estimate": estimate.to_dict(), "feedback": feedback,
+                        **cg_values,
                         "gear_estimate_deck_m": pipe.state.position.tolist(),
                         "gear_relative_estimate_ned": feedback["gear_relative_ned_m"],
                         "navigation_applied_to_control": False}
@@ -106,6 +113,13 @@ def replay(source, output, config="main/navigation_observer.yaml", device="cpu",
             metadata.update(status="failed", error=str(exc))
             raise
         finally:
+            metadata["cg_comparison_available"] = cg is not None
+            if cg is not None:
+                metadata["cg_ship_rate_source"] = ("causal ship-attitude backward difference (legacy log)"
+                    if cg.rate_fallback_used else "recorded communicated ship angular rate")
+                metadata["cg_signal_parameters"] = cg.signal.parameters
+            else:
+                metadata["cg_comparison_unavailable_reason"] = "Recording lacks ship H offset or actual camera/body pose"
             metadata["elapsed_s"] = time.perf_counter()-start
             write_json(target / "run.json", metadata)
         summaries[name] = analyze(target)

@@ -39,6 +39,16 @@ for k=1:numel(inputs)
         'landing:Observer','Root inputs may only feed the conversion block');
 end
 p=get_param(conversion,'PortHandles');
+expected=innerloop_output_fields(true);
+assert(numel(p.Outport)==numel(expected),'landing:Observer', ...
+    'Conversion CG ports are missing. Sync both SLX files or run upgrade_innerLoop_gimbal after saving a backup.');
+for k=16:numel(expected)
+    wire=get_param(p.Outport(k),'Line');
+    assert(wire~=-1,'landing:Observer','CG output %s is disconnected',expected{k});
+    destinations=get_param(wire,'DstBlockHandle');
+    names=arrayfun(@(h)get_param(h,'Name'),destinations,'UniformOutput',false);
+    assert(any(strcmp(names,expected{k})),'landing:Observer','CG output %s is miswired',expected{k});
+end
 for port=p.Outport(:)'
     line=get_param(port,'Line'); if line==-1, continue; end
     destinations=get_param(line,'DstBlockHandle');
@@ -48,5 +58,6 @@ for port=p.Outport(:)'
     end
 end
 report=struct('enabled',true,'verified_no_navigation_control_path',true, ...
-    'autonomous_subsystem',plant);
+    'autonomous_subsystem',plant,'cg_signals_available',true, ...
+    'cg_signal_parameters',get_param(conversion,'CgSignalParameters'));
 end

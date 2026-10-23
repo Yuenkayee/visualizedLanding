@@ -14,6 +14,7 @@ from main.analyze import analyze
 from main.sensors import Sensors
 from navigation.common.contracts import CameraFrame, LidarFrame
 from navigation.common.gimbal import Gimbal, gimbal_config
+from navigation.common.cg_signal import DEFAULTS as CG_DEFAULTS, parameters as cg_parameters
 from navigation.fusion.eskf_state import ESKFState
 from navigation.pipeline import NavigationPipeline
 from simulation.bridge.external_model_adapter import MatlabExternalModel
@@ -121,6 +122,7 @@ def run(c, landing, cal, geometry, output, smoke=False):
         input_contract=c.get("input_contract", "feedback"),
         autonomous_subsystem=c.get("autonomous_subsystem", ""),
         ship_velocity_frame=c.get("ship_velocity_frame", "ned"),
+        cg_signal_parameters=cg_parameters(c.get("cg_signal")),
     )
     checkpoint_hash = None
     if checkpoint:
@@ -141,6 +143,10 @@ def run(c, landing, cal, geometry, output, smoke=False):
                     lidar_mount=cal.lidar_mount,
                     T_body_lidar=None if cal.T_body_lidar is None else cal.T_body_lidar.tolist()),
         marker=landing["marker"],
+        cg_signal=dict(parameters={**CG_DEFAULTS, **c.get("cg_signal", {})},
+                       output_period_s=c["dt"], direction="helicopter CG minus ship CG, NED",
+                       method="causal velocity prediction with bounded exponential position correction",
+                       age_policy="age of navigation packet, not age of camera/lidar observation"),
         checkpoint_sha256=checkpoint_hash,
         truth_policy="Truth only drives sensor synthesis and evaluation; no truth poses enter NavigationPipeline.",
         order=[
@@ -217,6 +223,11 @@ def run(c, landing, cal, geometry, output, smoke=False):
                     feedback=feedback,
                     gear_relative_estimate_ned=feedback["gear_relative_ned_m"],
                     gear_relative_truth_ned=truth_ned.tolist(),
+                    **{key: feedback[key] for key in (
+                        "cg_relative_truth_ned", "cg_relative_estimate_ned", "cg_relative_estimate_50hz_ned",
+                        "navigation_velocity_cg_ned_mps", "cg_relative_velocity_50hz_ned_mps",
+                        "cg_signal_valid", "cg_signal_age_s")},
+                    ship_angular_velocity_deck=feedback.get("ship_angular_velocity_deck"),
                     navigation_applied_to_control=metadata["navigation_applied_to_control"],
                     sensors=dict(camera=has_camera, lidar=has_lidar),
                     next_timestamp=following.timestamp,
@@ -244,6 +255,7 @@ def run(c, landing, cal, geometry, output, smoke=False):
                                 iteration=i,
                                 time=following.timestamp,
                                 feedback_valid=feedback["valid"],
+                                cg_signal_valid=feedback["cg_signal_valid"],
                                 wall_s=row["wall_s"],
                             )
                         ),
@@ -339,6 +351,7 @@ def main():
                     geometry=geometry,
                     backup_dir=str(backup),
                     plant_step=c["plant_step"],
+                    cg_signal_parameters=cg_parameters(c.get("cg_signal")),
                 ),
             )
     elif a.command == "inspect":

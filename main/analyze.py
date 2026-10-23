@@ -40,6 +40,74 @@ def error_statistics(error, mask):
     )
 
 
+def cg_analysis(rows, root):
+    """Raw conversion vs causal 50 Hz signal, with separate validity masks."""
+    import matplotlib.pyplot as plt
+    keys = ("cg_relative_truth_ned", "cg_relative_estimate_ned", "cg_relative_estimate_50hz_ned")
+    if not all(all(k in row for k in keys) for row in rows):
+        return None  # Legacy logs cannot supply CG truth without extra geometry.
+    t = np.array([r["timestamp"] for r in rows])
+    truth, raw, signal = (np.array([r[k] for r in rows]).reshape(-1, 3) for k in keys)
+    valid = np.array([r["feedback"]["valid"] for r in rows], bool)
+    signal_valid = np.array([r["cg_signal_valid"] for r in rows], bool)
+    common = valid & signal_valid
+    all_rows = np.ones(len(rows), bool)
+    result = dict(direction="helicopter CG minus ship CG", axes=["north", "east", "down"],
+                  raw_valid_fraction=float(valid.mean()), signal_valid_fraction=float(signal_valid.mean()),
+                  clock_50hz_checked=bool(np.allclose(np.diff(t), .02, atol=1e-8, rtol=0)),
+                  raw=dict(all=error_statistics(raw-truth, all_rows), valid=error_statistics(raw-truth, valid),
+                           common_valid=error_statistics(raw-truth, common)),
+                  signal_50hz=dict(all=error_statistics(signal-truth, all_rows),
+                                  valid=error_statistics(signal-truth, signal_valid),
+                                  common_valid=error_statistics(signal-truth, common)),
+                  maximum_signal_raw_difference_m=float(np.linalg.norm(signal-raw, axis=1).max()),
+                  max_navigation_packet_age_s=max(r["cg_signal_age_s"] for r in rows),
+                  note="Signal validity does not certify control performance. Signal age is navigation packet age; sensor age is recorded separately.")
+    velocities = np.array([r["navigation_velocity_cg_ned_mps"] for r in rows]).reshape(-1, 3)
+    dt = np.diff(t)
+    for name, values in (("raw", raw), ("signal_50hz", signal)):
+        if len(t) > 1:
+            # Position change unexplained by estimated velocity, not total flight motion.
+            innovations = np.diff(values, axis=0) - .5 * (velocities[1:]+velocities[:-1]) * dt[:, None]
+            result[name]["max_step_residual_m"] = float(np.linalg.norm(innovations, axis=1).max())
+    with (root / "cg_relative_ned.csv").open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["time_s", "raw_valid", "signal_valid", "navigation_packet_age_s", *[
+            f"{kind}_{axis}_m" for kind in ("truth", "raw", "signal_50hz", "raw_error", "signal_error")
+            for axis in ("north", "east", "down")], "truth_distance_m", "raw_distance_m", "signal_distance_m"])
+        for i, row in enumerate(rows):
+            writer.writerow([t[i], int(valid[i]), int(signal_valid[i]), row["cg_signal_age_s"],
+                *truth[i], *raw[i], *signal[i], *(raw[i]-truth[i]), *(signal[i]-truth[i]),
+                np.linalg.norm(truth[i]), np.linalg.norm(raw[i]), np.linalg.norm(signal[i])])
+    fig, axes = plt.subplots(4, 1, figsize=(11, 10), sharex=True, constrained_layout=True)
+    for k, axis in enumerate(("North", "East", "Down")):
+        axes[k].plot(t, truth[:, k], color="black", lw=1.7, label="CG relative truth")
+        axes[k].plot(t, raw[:, k], color="tab:orange", lw=.9, alpha=.8, label="Raw navigation")
+        axes[k].plot(t, signal[:, k], color="tab:blue", lw=1.1, label="Causal 50 Hz signal")
+        if (~signal_valid).any():
+            axes[k].scatter(t[~signal_valid], signal[~signal_valid, k], color="red", s=8, label="Invalid 50 Hz signal")
+        axes[k].set_ylabel(f"{axis} (m)")
+    axes[3].plot(t, np.linalg.norm(raw-truth, axis=1), color="tab:orange", label="Raw 3D error")
+    axes[3].plot(t, np.linalg.norm(signal-truth, axis=1), color="tab:blue", label="50 Hz 3D error")
+    axes[3].set_ylabel("Error (m)")
+    for ax in axes:
+        ax.grid(alpha=.25)
+    axes[0].legend(loc="best"); axes[3].legend(loc="best")
+    axes[-1].set_xlabel("Simulation time (s)")
+    fig.savefig(root / "cg_relative_ned_comparison.png", dpi=160)
+    fig.savefig(root / "cg_relative_ned_comparison.pdf")
+    plt.close(fig)
+    fig, ax = plt.subplots(figsize=(11, 4), constrained_layout=True)
+    for value, label, color in ((truth, "Truth", "black"), (raw, "Raw navigation", "tab:orange"),
+                                (signal, "Causal 50 Hz signal", "tab:blue")):
+        ax.plot(t, np.linalg.norm(value, axis=1), label=label, color=color)
+    ax.set(xlabel="Simulation time (s)", ylabel="CG separation norm (m)")
+    ax.grid(alpha=.25); ax.legend()
+    fig.savefig(root / "cg_distance_comparison.png", dpi=160)
+    plt.close(fig)
+    return result
+
+
 def recovery_metrics(rows):
     """Count camera packets, not diagnostic values held over host iterations."""
     invalid = []
@@ -204,6 +272,7 @@ def analyze(directory):
     metrics["navigation_recovery"] = recovery_metrics(rows)
     plot_recovery(rows, root)
     metrics["gimbal_tracking"] = gimbal_analysis(rows, metadata, root)
+    metrics["cg_relative"] = cg_analysis(rows, root)
     for sensor, prefix in (("camera", "vision"), ("lidar", "lidar")):
         fresh = [r.get("estimate", {}).get("diagnostics", {}) for r in rows
                  if r.get("sensors", {}).get(sensor)]
@@ -309,6 +378,10 @@ def analyze(directory):
         + ("`gear_relative_ned_comparison.png/pdf` 对比起落架减 H 中心的 North/East/Down 真值与估计；"
            "`gear_relative_ned.csv` 保存对应数据，`metrics.json` 的 `ned` 给出三个方向误差。\n\n"
            if ned is not None else "旧日志缺少甲板姿态，无法恢复 NED 真值。\n\n") +
+        ("`cg_relative_ned_comparison.png/pdf` 对比直升机质心减舰船质心的 N/E/D 真值、原始导航值与 50 Hz 因果平滑值。"
+         "`cg_distance_comparison.png` 为三维距离模长，`cg_relative_ned.csv` 保存逐步数据。"
+         "`metrics.json` 的 `cg_relative` 分别统计两种输出及其共同有效区间误差；"
+         "平滑不会保证精度必然提高，信号有效标志也不代表已验证控制可用性。\n\n" if metrics["cg_relative"] else "") +
         f"结束原因：{metrics['termination_reason']}；模型停止事件：{metrics['stop_reason']}；"
         f"导航接入控制：{metrics['navigation_applied_to_control']}。最后状态单独保存在 `terminal_state.json`（模型 STOP 时）。\n\n"
         "请结合 `run.json` 的运行类型、渲染器、权重和完成状态解读。接口验收模型不代表直升机着舰性能；"

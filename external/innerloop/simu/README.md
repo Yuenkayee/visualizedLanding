@@ -1,6 +1,6 @@
 # innerLoop：着舰接口与转换模型（无动力学/控制器）
 
-`innerLoop.slx` 是 MATLAB/Simulink R2024b 实际模型，包含 15 个根输入、一个 MATLAB System 转换模块、15 个根输出。`build_innerLoop.m` 可重建模型；`convert.m` 是 MATLAB System 类，`innerLoop_conversion.m` 是其调用的几何转换函数。构建函数会重建整个模型；已有手工改动时应更新嵌入转换函数与相关端口，避免覆盖其他模块。
+`innerLoop.slx` 是 MATLAB/Simulink R2024b 实际模型，包含 15 个根输入、一个 MATLAB System 转换模块、23 个根输出。`build_innerLoop.m` 可重建模型；`convert.m` 是 MATLAB System 类，`innerLoop_conversion.m` 是其调用的几何转换函数。构建函数会重建整个模型；已有手工改动时应更新嵌入转换函数与相关端口，避免覆盖其他模块。
 
 云台模型和完整算法说明见 [稳定云台与闭环接口](../../../docs/gimbal_navigation.md)。`innerLoop_landing.slx` 同步更新转换模块和云台端口，保留已有制导/控制子系统。`upgrade_innerLoop_gimbal.m` 可在原模型中迁移，避免重建已有控制器。
 
@@ -64,6 +64,22 @@ Python/MATLAB 适配层沿用 `config.geometry` 三个字段，通过 Simulation
 | T_body_camera_actual | 4×4 | 实际动态外参，仅用于渲染和评估 |
 | nav_T_deck_body | 4×4 | 用导航相机位姿和编码器得到的机体位姿 |
 | navigation_velocity_gear_ned_mps | 3 | 轮底相对 H 的 NED 位置导数，含云台速率和旋转甲板补偿 |
+| cg_relative_truth_ned | 3 | 端口 16：直升机质心减舰船质心，NED，m，仅评估 |
+| cg_relative_estimate_ned | 3 | 端口 17：相同参考点的原始导航估计，m |
+| navigation_velocity_cg_ned_mps | 3 | 端口 18：上述质心相对位置的 NED 导数，m/s，含旋转甲板和 H 偏移补偿 |
+| cg_relative_covariance_ned | 3×3 | 端口 19：原始质心相对位置协方差，m² |
+| cg_relative_estimate_50hz_ned | 3 | 端口 20：速度前馈预测和限速指数校正后的质心相对位置，m |
+| cg_relative_velocity_50hz_ned_mps | 3 | 端口 21：端口 20 的后向差分，m/s；首次初始化用导航速度 |
+| cg_signal_valid | 1 | 端口 22：平滑信号独立有效标志 |
+| cg_signal_age_s | 1 | 端口 23：距最近一次健康导航包的时间，s；非相机观测年龄 |
+
+端口 1–15 保留原编号。`cg_signal_step.m` 是独立、显式传入状态的因果重采样模块，
+`convert` 的每个实例保存自己的状态，采样周期 0.02 s。宿主在 `innerloop_feedback` 每个时间戳调用同一函数一次，
+`innerloop_snapshot` 仍为无状态几何转换，不会因为读真值而更新平滑状态。
+`CgSignalParameters=[0.04;5;0.30;1]` 分别为校正时间常数、最大校正速度、最大导航包年龄和最大跟踪残差。
+默认每步校正项范数不超过 0.10 m；这不限制真实相对运动速度。重复包只外推已有参考，不重复降低协方差。
+不健康包立即撤销有效标志；缺包最多外推 0.30 s，之后冻结数值并保持无效；恢复后限速追踪，残差超过 1 m 时仍无效。
+真值不参与平滑。原始位置协方差不作为平滑后的协方差发布。
 
 
 轮底在甲板上方时，NED 下向误差为负。deck 为船首/左舷/向上，H 原点，`R_NED_deck=R_NED_ship diag(1,-1,-1)`；world 是现有代码的 ENU，用 `A=[0 1 0;1 0 0;0 0 -1]` 转换。
@@ -102,7 +118,7 @@ MATLAB 根目录运行：
 ```matlab
 addpath('external/innerloop/simu'); upgrade_innerLoop_gimbal; % 原位迁移两个模型
 % build_innerLoop; % 仅在需要重建空白接口模型时使用
-addpath('simulation/matlab'); test_innerloop_interfaces; test_gimbal_interfaces;
+addpath('simulation/matlab'); test_innerloop_interfaces; test_gimbal_interfaces; test_cg_signals;
 ```
 
 测试运行实际 SLX，覆盖 knot 转换、NED/ENU/甲板旋转、不同偏移点、旋转参考系速度有限差分、协方差、失效/过期反馈及因果顺序。测试尺寸为人工非对称夹具，不是 UH-60 实际参数。

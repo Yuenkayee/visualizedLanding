@@ -1,11 +1,11 @@
 function upgrade_innerLoop_gimbal(names)
-% Add gimbal ports in-place; preserve existing guidance/controller subsystems.
+% Append gimbal/CG ports in-place; preserve guidance/controller subsystems.
 if nargin<1, names={'innerLoop','innerLoop_landing'}; end
 folder=fileparts(mfilename('fullpath')); addpath(folder);
 inputs={'gimbal_angles_rad',3;'nav_R_body_camera','[3 3]'; ...
     'nav_gimbal_omega_camera',3;'nav_gimbal_covariance','[3 3]'; ...
     'nav_gimbal_valid',1;'nav_gimbal_timestamp',1;'nav_angular_velocity_camera',3};
-outputs={'T_body_camera_actual','nav_T_deck_body','navigation_velocity_gear_ned_mps'};
+allOutputs=innerloop_output_fields(true); outputs=allOutputs(13:end);
 for j=1:numel(names)
     name=names{j}; load_system(fullfile(folder,[name '.slx']));
     block=[name '/Frame_Unit_ReferencePoint_Conversion'];
@@ -24,6 +24,9 @@ for j=1:numel(names)
         end
     end
     parameters={get_param(block,'T_body_camera'),get_param(block,'H_ship_body'),get_param(block,'gear_body')};
+    position=get_param(block,'Position');
+    signalParameters='[0.04;5;0.30;1]';
+    try, signalParameters=get_param(block,'CgSignalParameters'); catch, end
     % Delete branches explicitly before removing the block; do not retain port
     % handles, because Simulink can recycle them when constructing the new block.
     for k=1:numel(sources)
@@ -39,7 +42,7 @@ for j=1:numel(names)
     add_block('simulink/User-Defined Functions/MATLAB System',block, ...
         'System','convert','SimulateUsing','Interpreted execution', ...
         'T_body_camera',parameters{1},'H_ship_body',parameters{2},'gear_body',parameters{3}, ...
-        'Position',[370 70 700 960]);
+        'CgSignalParameters',signalParameters,'Position',position);
     for k=1:numel(sources)
         if ~isempty(sources{k})
             add_line(name,sources{k},['Frame_Unit_ReferencePoint_Conversion/' num2str(k)],'autorouting','on');
@@ -71,7 +74,6 @@ for j=1:numel(names)
                 [outputs{k} '/1'],'autorouting','on');
         end
     end
-    set_param(block,'Position',[370 70 700 960]);
     set_param(name,'PreLoadFcn',"addpath(fileparts(get_param(bdroot,'FileName')));");
     save_system(name); close_system(name,0);
 end

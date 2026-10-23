@@ -25,5 +25,7 @@ s.helicopter_state=c.helicopter_state(:); s.ship_state=c.ship_state(:);
 s.gimbal_state=[];
 s=innerloop_update_gimbal(s);
 s.phase='read'; s.feedback=[];
+s.cg_signal_state=cg_signal_initial_state();
+if ~isfield(s.config,'cg_signal_parameters'), s.config.cg_signal_parameters=[.04;5;.3;1]; end
 innerloop_evaluate(s); % Validate selected path: actual SLX, or the live host's tested kernel.
 end

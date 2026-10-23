@@ -18,6 +18,9 @@ for k=1:numel(c.models)
         if numel(value)==3, value=value(:); end
         assignin(ws,name,value); set_param(block,name,name);
     end
+    if isfield(c,'cg_signal_parameters')
+        set_param(block,'CgSignalParameters',mat2str(c.cg_signal_parameters(:),17));
+    end
     set_param(model,'SolverType','Fixed-step','FixedStep',num2str(c.plant_step,17));
     timing=landing_check_timing(model,c.plant_step);
     save_system(model); close_system(model,0);

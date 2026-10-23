@@ -52,6 +52,9 @@ assert(f.valid && norm(f.gear_relative_ned_m(:)-o.gear_relative_truth_ned)<1e-9)
 expected=Rb*(s.helicopter_state(4:6)*1852/3600+cross(s.helicopter_state(10:12),config.geometry.gear_body)) ...
     -s.ship_state(4:6)*1852/3600-Rs*cross(s.ship_state(10:12),config.geometry.H_ship_body);
 assert(norm(f.velocity_gear_ned_mps(:)-expected)<1e-9);
+assert(norm(f.cg_relative_estimate_ned(:)-(s.helicopter_state(1:3)-s.ship_state(1:3)))<1e-9);
+assert(norm(f.navigation_velocity_cg_ned_mps(:)- ...
+    (Rb*s.helicopter_state(4:6)-s.ship_state(4:6))*1852/3600)<1e-9);
 % Two sensor-only advances can hold the last control sample.
 advance_external_model(.02); read_sensor_truth(); advance_external_model(.02); read_sensor_truth();
 s=evalin('base','landingState'); assert(abs(s.timestamp-.04)<1e-10);

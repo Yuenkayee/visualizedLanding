@@ -15,6 +15,13 @@ dt: 0.02
 plant_step: 0.02
 camera_hz: 10.0
 lidar_hz: 5.0
+# Causal 50 Hz CG signal conditioning. Validity is separate from raw navigation.
+# Max correction speed limits ONLY the correction, not aircraft relative speed.
+cg_signal:
+  time_constant_s: 0.04
+  max_correction_speed_mps: 5.0
+  max_age_s: 0.30
+  max_tracking_error_m: 1.0
 seed: 42
 weather: clear
 renderer: blender

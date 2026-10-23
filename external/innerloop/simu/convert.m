@@ -5,9 +5,14 @@ classdef convert < matlab.System
         T_body_camera = nan(4,4)
         H_ship_body = nan(3,1)
         gear_body = nan(3,1)
+        CgSignalParameters = [0.04;5;0.30;1]
+    end
+    properties (Access=private)
+        CgState
     end
     methods (Access=protected)
         function setupImpl(obj,varargin)
+            obj.CgState=cg_signal_initial_state();
             validateattributes(obj.T_body_camera,{'double'},{'size',[4 4],'finite','real'},'', 'T_body_camera');
             validateattributes(obj.H_ship_body,{'double'},{'size',[3 1],'finite','real'},'', 'H_ship_body');
             validateattributes(obj.gear_body,{'double'},{'size',[3 1],'finite','real'},'', 'gear_body');
@@ -18,24 +23,33 @@ classdef convert < matlab.System
                 'landing:Geometry','Invalid homogeneous transform');
         end
         function varargout=stepImpl(obj,t,heli,ship,nav_T,nav_v,nav_P,nav_ok,nav_t,q,Rbc,wg,Pg,okg,tg,wnav)
-            [varargout{1:15}]=innerLoop_conversion(t,heli,ship, ...
+            [varargout{1:19}]=innerLoop_conversion(t,heli,ship, ...
                 obj.T_body_camera,obj.H_ship_body,obj.gear_body, ...
                 nav_T,nav_v,nav_P,nav_ok,nav_t,q,Rbc,wg,Pg,okg,tg,wnav);
+            [obj.CgState,varargout{20:23}]=cg_signal_step(obj.CgState,t, ...
+                varargout{17},varargout{18},varargout{10},nav_t,obj.CgSignalParameters);
+        end
+        function resetImpl(obj)
+            obj.CgState=cg_signal_initial_state();
+        end
+        function ts=getSampleTimeImpl(obj)
+            ts=createSampleTime(obj,'Type','Discrete','SampleTime',0.02);
         end
         function n=getNumInputsImpl(~), n=15; end
-        function n=getNumOutputsImpl(~), n=15; end
+        function n=getNumOutputsImpl(~), n=23; end
         function varargout=getOutputSizeImpl(~)
             varargout={[4 4],[4 4],[3 1],[3 1],[3 1],[3 1], ...
-                [3 1],[1 1],[3 3],[1 1],[3 1],[1 1],[4 4],[4 4],[3 1]};
+                [3 1],[1 1],[3 3],[1 1],[3 1],[1 1],[4 4],[4 4],[3 1], ...
+                [3 1],[3 1],[3 1],[3 3],[3 1],[3 1],[1 1],[1 1]};
         end
         function varargout=getOutputDataTypeImpl(~)
-            varargout=repmat({'double'},1,15);
+            varargout=repmat({'double'},1,23);
         end
         function varargout=isOutputComplexImpl(~)
-            varargout=repmat({false},1,15);
+            varargout=repmat({false},1,23);
         end
         function varargout=isOutputFixedSizeImpl(~)
-            varargout=repmat({true},1,15);
+            varargout=repmat({true},1,23);
         end
         function varargout=getInputNamesImpl(~)
             varargout={'timestamp','helicopter_state','ship_state', ...
@@ -45,12 +59,7 @@ classdef convert < matlab.System
                 'nav_gimbal_timestamp','nav_angular_velocity_camera'};
         end
         function varargout=getOutputNamesImpl(~)
-            varargout={'T_world_deck','T_deck_camera','velocity_deck', ...
-                'helicopter_velocity_ned_mps','ship_velocity_ned_mps', ...
-                'gear_relative_truth_ned','gear_relative_estimate_ned', ...
-                'relative_distance_estimate_m','relative_covariance_ned', ...
-                'feedback_valid','navigation_velocity_camera_ned_mps','state_timestamp', ...
-                'T_body_camera_actual','nav_T_deck_body','navigation_velocity_gear_ned_mps'};
+            varargout=innerloop_output_fields(true);
         end
     end
 end

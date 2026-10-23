@@ -3,6 +3,49 @@
 主入口为 `main/run.py`，结果分析为 `main/analyze.py`，MATLAB 适配器在 `main/matlab/`。
 复用现有 `NavigationPipeline`、训练场景、LiDAR 和云台动力学；不新增直升机动力学、制导或飞行控制律。
 
+## 质心相对位置与 50 Hz 导航信号
+
+当前 `navigation_observer.yaml` 继续采用旁路观测，导航不进入制导/控制。两个 SLX 的 `convert` 已追加端口 16–23，
+原起落架端口及自主制导控制子系统保留。启动会检查新增端口连线以及旁路隔离。
+
+- `cg_relative_truth_ned`：直升机质心减舰船质心的 N/E/D 真值，单位 m。
+- `cg_relative_estimate_ned`：同一参考点的原始导航估计。
+- `cg_relative_estimate_50hz_ned`：独立模块 `cg_signal_step.m` 生成的 50 Hz 因果预测/平滑输出。
+- `navigation_velocity_cg_ned_mps`、`cg_relative_velocity_50hz_ned_mps`：原始相对速度与处理后位置的后向差分。
+- `cg_signal_valid`、`cg_signal_age_s`：处理后的有效标志、健康导航包年龄。不能用原有 `feedback_valid` 替代新标志。
+
+转换采用 `p_CG/deck = T_deck_camera * inv(T_body_camera)` 的平移分量，
+`r_CG/NED = R_NED/deck * p_CG/deck + R_NED/ship * H_ship_body`。
+飞机姿态来自导航与云台编码器；船姿态和角速度延用现有同步通信假设。速度包含旋转甲板及船体 H 偏移的运输项。
+真值支路直接取两者原生 CG 坐标之差。触舰时此向量一般不是零，不能直接当作起落架至着舰点的控制误差。
+
+相机 10 Hz、LiDAR 5 Hz，导航 ESKF 本身每 0.02 s 外推。新模块进一步以导航速度预测位置，并对导航纠偏作限速指数校正；
+不使用未来样本的插值，不修改导航状态或协方差。参数在配置的 `cg_signal` 中：
+时间常数 0.04 s，最大校正速度 5 m/s（每步最多校正 0.10 m），最大缺包外推 0.30 s，跟踪残差上限 1 m。
+原始导航无效时新标志立即无效；数值短时外推后冻结；恢复后逐渐追踪，超过残差门限期间仍无效。
+平滑降低纠偏跳变，但可能增加少量滞后，因此必须同时查看原始值、平滑值和各自有效性。
+
+服务器在仓库根目录运行（依赖、MATLAB 账号授权及权重沿用现有部署）：
+
+```bash
+# 实际内环 + Blender + 当前权重，2 秒 / 100 步接口测试
+bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml \
+  --duration 2 --device cuda --render-device OPTIX
+
+# 正式旁路仿真，达到 60 秒上限或模型 STOP 自动正常结束
+bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml \
+  --duration 60 --device cuda --render-device OPTIX --save-sensors
+```
+
+同步本次两个 SLX、MATLAB 和 Python 文件即可，无需重新训练或手动添加端口。已打开的共享 MATLAB 会话应先保存并关闭旧模型，再从磁盘加载。
+运行每秒打印仿真时间及两种有效标志，逐步记录 `steps.jsonl`，结束或已有数据后出错时自动分析。
+结果保存在本次 `outputs/closed_loop/run_*/`：`cg_relative_ned_comparison.png/pdf`（三轴与误差）、
+`cg_distance_comparison.png`（三维距离模长）、`cg_relative_ned.csv`，`metrics.json` 的 `cg_relative` 分别统计原始、平滑、共同有效区间误差。
+相机/雷达观测年龄仍在原有导航诊断中；`cg_signal_age_s` 不替代传感器健康检查。
+终端日志在 `outputs/logs/closed_loop/*/console.log`；脚本不关机。
+保存观测重放也输出这些曲线；旧日志若缺舰船角速度，采用已记录船姿态的因果后向差分，并在结果元数据注明；
+若缺必要几何/真值位姿则保留旧分析，明确标记无法生成 CG 对比。
+
 ## 2026-10-23 视觉失效恢复
 
 使用现有 `four_weather_v1/best.pt`，不需要重新生成训练集或训练。`configs/navigation.yaml` 默认启用：

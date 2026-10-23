@@ -43,6 +43,8 @@ def load(filename="main/closed_loop.yaml"):
 
 
 def validate(c):
+    from navigation.common.cg_signal import parameters
+    parameters(c.get("cg_signal"))
     if c.get("ship_velocity_frame", "ned") not in ("body", "ned"):
         raise ValueError("ship_velocity_frame must be body or ned")
     if c.get("evaluation_mode", "feedback") not in ("feedback", "observer"):
@@ -58,6 +60,8 @@ def validate(c):
         raise ValueError("dt, plant_step and duration must be finite and positive")
     if abs(h - 0.02) > 1e-12:
         raise ValueError("The supplied inner loop requires plant_step=0.02 seconds")
+    if abs(dt - 0.02) > 1e-12:
+        raise ValueError("50 Hz navigation output requires dt=0.02 seconds")
     for ratio in (dt / h, duration / dt):
         if abs(ratio - round(ratio)) > 1e-7:
             raise ValueError(

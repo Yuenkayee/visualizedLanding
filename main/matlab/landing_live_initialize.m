@@ -43,6 +43,10 @@ try
         v=c.geometry.(key{1}); if numel(v)==3, v=v(:); end
         assignin(ws,key{1},v);
     end
+    conversion=[copy '/Frame_Unit_ReferencePoint_Conversion'];
+    if getSimulinkBlockHandle(conversion)>0 && isfield(c,'cg_signal_parameters')
+        set_param(conversion,'CgSignalParameters',mat2str(c.cg_signal_parameters(:),17));
+    end
     fields=fieldnames(c.inputs);
     conversionInputs=isfield(c,'input_contract') && strcmp(c.input_contract,'conversion');
     if conversionInputs, initial=landing_conversion_inputs(s); end
