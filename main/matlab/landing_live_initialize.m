@@ -15,6 +15,7 @@ load_system(source);
 assert(strcmp(get_param(original,'Dirty'),'off'),'landing:Unsaved','Save the source model before running');
 landing_check_timing(original,c.plant_step);
 landing_check_observer(original,c);
+control=landing_check_feedback(original,c);
 inputs=find_system(original,'SearchDepth',1,'BlockType','Inport');
 actual=cellfun(@(p)get_param(p,'Name'),inputs,'UniformOutput',false);
 assert(isequal(sort(actual(:)),sort(fieldnames(c.inputs))), 'landing:Ports', ...
@@ -30,6 +31,7 @@ try
     set_param(copy,'SimulationMode','normal','StartTime','0','StopTime','inf', ...
         'SolverType','Fixed-step','FixedStep',num2str(c.plant_step,17), ...
         'BlockReduction','off','SignalLogging','off','SaveOutput','on','SaveTime','on', ...
+        'OptimizeBlockIOStorage','off','BufferReuse','off', ...
         'SaveFormat','Dataset','OutputSaveName','yout','TimeSaveName','tout', ...
         'ReturnWorkspaceOutputs','on','LimitDataPoints','on','MaxDataPoints','2');
     % Keep the original solver if fixed-step; otherwise select the standard
@@ -46,6 +48,9 @@ try
     conversion=[copy '/Frame_Unit_ReferencePoint_Conversion'];
     if getSimulinkBlockHandle(conversion)>0 && isfield(c,'cg_signal_parameters')
         set_param(conversion,'CgSignalParameters',mat2str(c.cg_signal_parameters(:),17));
+    end
+    if control.enabled
+        control.latch=landing_prepare_control(copy,c);
     end
     fields=fieldnames(c.inputs);
     conversionInputs=isfield(c,'input_contract') && strcmp(c.input_contract,'conversion');
@@ -113,6 +118,10 @@ try
     [native{1},native{2}]=landing_normalize_native(native{1},native{2},c);
     live=simulation(copy); initialize(live);
     s.live=live; s.live_model=copy; s.native_indices=nativeIndices;
+    s.control_interface_report=control;
+    file=fullfile(c.workdir,'control_interface.json'); fid=fopen(file,'w');
+    assert(fid~=-1,'landing:Log','Cannot write control interface report');
+    fprintf(fid,'%s\n',jsonencode(control)); fclose(fid);
     s.stopped=false; s.stop_reason='';
     s.config.helicopter_state=native{1}; s.config.ship_state=native{2};
     % Use the tested conversion kernel directly. The user may extend the

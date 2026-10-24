@@ -23,7 +23,7 @@ for LANDING_ARG in "$@"; do
       'MATLAB_LICENSE_MODE={online,onlinelicensing,file,auto} applies to login/check/run.' \
       'MATLAB_SHARED_SESSION=NAME: check/run connect to an existing named MATLAB session.' \
       'LANDING_DOWNLOAD_PROFILE=china: TUNA PyPI/Ubuntu/Python source + NJU CPython binaries.' \
-      'Default run/check/inspect config: main/navigation_observer.yaml. See main/README.md.'
+      'Default run/check/inspect config: main/navigation_feedback.yaml (navigation drives guidance). See main/README.md.'
     exit 0
   fi
 done
@@ -51,7 +51,7 @@ if [[ "$LANDING_MODE" == analyze ]]; then
   LANDING_BOOTSTRAP_ARGS+=(--analysis-only)
 elif [[ "$LANDING_HAS_CONFIG" == 0 ]]; then
   case "$LANDING_MODE" in
-    check|run|inspect) LANDING_ARGUMENTS+=(--config main/navigation_observer.yaml) ;;
+    check|run|inspect) LANDING_ARGUMENTS+=(--config main/navigation_feedback.yaml) ;;
     smoke|configure) LANDING_ARGUMENTS+=(--config main/closed_loop.yaml) ;;
   esac
 fi

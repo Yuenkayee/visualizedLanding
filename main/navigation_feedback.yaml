@@ -1,0 +1,61 @@
+# Navigation CG position drives the user guidance/controller.
+# Host latches current feedback before each 0.02 s plant advance.
+model: external/innerloop/simu/innerLoop_landing.slx
+evaluation_mode: feedback
+input_contract: conversion
+autonomous_subsystem: innerLoop
+control_interface: cg_position
+# Invalid navigation cancels relative closing/descent; ship feedforward remains.
+control_invalid_policy: zero_relative_velocity
+ship_velocity_frame: body
+setup_script: main/matlab/landing_setup_observer.m
+landing_config: configs/landing_dataset.yaml
+navigation_config: configs/navigation.yaml
+lidar_config: configs/lidar.yaml
+checkpoint: visual_training/checkpoints/four_weather_v1/best.pt
+duration: 60.0
+dt: 0.02
+plant_step: 0.02
+camera_hz: 10.0
+lidar_hz: 5.0
+# Causal 50 Hz CG signal conditioning. Validity is separate from raw navigation.
+# Max correction speed limits ONLY the correction, not aircraft relative speed.
+cg_signal:
+  time_constant_s: 0.04
+  max_correction_speed_mps: 5.0
+  max_age_s: 0.30
+  max_tracking_error_m: 1.0
+seed: 42
+weather: clear
+renderer: blender
+render_python: null
+render_device: CPU
+render_threads: 8
+device: cpu
+sensor_timeout_s: 300
+save_sensors: false
+# Communicated nominal prior from the scenario's prescribed ICs:
+# heli CG [0,0,-50], Ship_motion CG [95,0,0], H offset [-45,0,-5.5].
+# Ship_trace and Ship_motion now share the nominal CG origin.
+# Rounded wheel position; never initialized from runtime truth.
+navigation:
+  initial_position: [-50.0, 0.0, 41.6]
+  initial_velocity: [0.0, 0.0, 0.0]
+inputs:
+  timestamp: timestamp
+  nav_T_deck_camera: nav_T_deck_camera
+  nav_velocity_deck: nav_velocity_deck
+  nav_covariance: nav_covariance
+  nav_healthy: nav_healthy
+  nav_timestamp: nav_timestamp
+  gimbal_angles_rad: gimbal_angles_rad
+  nav_R_body_camera: nav_R_body_camera
+  nav_gimbal_omega_camera: nav_gimbal_omega_camera
+  nav_gimbal_covariance: nav_gimbal_covariance
+  nav_gimbal_valid: nav_gimbal_valid
+  nav_gimbal_timestamp: nav_gimbal_timestamp
+  nav_angular_velocity_camera: nav_angular_velocity_camera
+outputs:
+  helicopter_state: innerLoop/helicopter_state
+  ship_state: innerLoop/ship_state
+required_toolboxes: [Simulink, Control_Toolbox, Robust_Toolbox]

@@ -4,7 +4,10 @@ classdef uvw_Gen < matlab.System
     % respect to the ship in the NED frame from relative position error.
     %
     % Input:
-    %   Delta_r = r_ship - r_heli = [Delta_x; Delta_y; Delta_z]
+    %   Delta_r = r_target - r_heli = [Delta_x; Delta_y; Delta_z] (NED, m)
+    %   With a ship-relative target offset d_target = r_target - r_ship
+    %   and navigation r_cg = r_heli - r_ship: Delta_r = d_target - r_cg.
+    %   The target offset is applied once by LAND_CMD, before this block.
     %
     % Output:
     %   Delta_v = [Delta_v_n; Delta_v_e; Delta_v_d]

@@ -40,6 +40,48 @@ def error_statistics(error, mask):
     )
 
 
+def control_analysis(rows, root):
+    """Audit actual plant-side command probes against feedback at the same tick."""
+    import matplotlib.pyplot as plt
+    selected = [r for r in rows if r.get("control_used")]
+    if not selected:
+        return None
+    t = np.array([r["timestamp"] for r in selected])
+    used = [r["control_used"] for r in selected]
+    position = np.array([r["cg_relative_ned_m"] for r in used]).reshape(-1, 3)
+    expected = np.array([r["cg_relative_estimate_50hz_ned"] for r in selected]).reshape(-1, 3)
+    target = np.array([r["target_relative_ned_m"] for r in used]).reshape(-1, 3)
+    error = np.array([r["error_ned_m"] for r in used]).reshape(-1, 3)
+    velocity = np.array([r["velocity_command_knots"] for r in used]).reshape(-1, 3)
+    relative_velocity = np.array([r["relative_velocity_command_knots"] for r in used]).reshape(-1, 3)
+    valid = np.array([r["valid"] for r in used], bool)
+    result = dict(samples=len(selected), valid_fraction=float(valid.mean()),
+        max_position_latch_error_m=float(np.max(np.abs(position-expected))),
+        max_reference_sign_error_m=float(np.max(np.abs(error-(target-position)))),
+        source_timestamp_checked=all(abs(r["source_timestamp"]-s)<1e-8 for r, s in zip(used, t)),
+        invalid_relative_command_zero=bool(np.all(np.abs(relative_velocity[~valid])<1e-12)),
+        note="NED guidance velocity commands are in knots in the supplied plant; invalid input retains ship feedforward.")
+    with (root / "navigation_control.csv").open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["time_s", "nav_valid", *[f"{name}_{axis}" for name in
+            ("cg_used_m", "cg_target_m", "error_m", "command_knots") for axis in ("north", "east", "down")]])
+        for i in range(len(t)):
+            writer.writerow([t[i], int(valid[i]), *position[i], *target[i], *error[i], *velocity[i]])
+    fig, axes = plt.subplots(4, 1, figsize=(11, 10), sharex=True, constrained_layout=True)
+    for i, axis in enumerate(("North", "East", "Down")):
+        axes[i].plot(t, position[:, i], label="Navigation consumed by guidance")
+        axes[i].plot(t, target[:, i], label="CG relative target", ls="--")
+        axes[i].set_ylabel(f"{axis} (m)"); axes[i].grid(alpha=.25)
+        if (~valid).any():
+            axes[i].scatter(t[~valid], position[~valid, i], s=8, color="red", label="Invalid: closing command zero")
+    for i, axis in enumerate(("North", "East", "Down")):
+        axes[3].plot(t, velocity[:, i], label=axis)
+    axes[0].legend(); axes[3].legend(); axes[3].grid(alpha=.25)
+    axes[3].set(xlabel="Simulation time (s)", ylabel="Command (knots)")
+    fig.savefig(root / "navigation_control.png", dpi=160); plt.close(fig)
+    return result
+
+
 def cg_analysis(rows, root):
     """Raw conversion vs causal 50 Hz signal, with separate validity masks."""
     import matplotlib.pyplot as plt
@@ -273,6 +315,7 @@ def analyze(directory):
     plot_recovery(rows, root)
     metrics["gimbal_tracking"] = gimbal_analysis(rows, metadata, root)
     metrics["cg_relative"] = cg_analysis(rows, root)
+    metrics["navigation_control"] = control_analysis(rows, root)
     for sensor, prefix in (("camera", "vision"), ("lidar", "lidar")):
         fresh = [r.get("estimate", {}).get("diagnostics", {}) for r in rows
                  if r.get("sensors", {}).get(sensor)]
@@ -382,6 +425,9 @@ def analyze(directory):
          "`cg_distance_comparison.png` 为三维距离模长，`cg_relative_ned.csv` 保存逐步数据。"
          "`metrics.json` 的 `cg_relative` 分别统计两种输出及其共同有效区间误差；"
          "平滑不会保证精度必然提高，信号有效标志也不代表已验证控制可用性。\n\n" if metrics["cg_relative"] else "") +
+        ("`navigation_control.png/csv` 展示内环实际消费的导航、目标及速度指令；"
+         "`metrics.json` 的 `navigation_control` 检查当步信号一致性、误差方向和失效门控。\n\n"
+         if metrics["navigation_control"] else "") +
         f"结束原因：{metrics['termination_reason']}；模型停止事件：{metrics['stop_reason']}；"
         f"导航接入控制：{metrics['navigation_applied_to_control']}。最后状态单独保存在 `terminal_state.json`（模型 STOP 时）。\n\n"
         "请结合 `run.json` 的运行类型、渲染器、权重和完成状态解读。接口验收模型不代表直升机着舰性能；"

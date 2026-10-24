@@ -257,7 +257,7 @@ Path('run_called').touch()
         assert "--duration" not in args
         assert "--device=cuda" in args
         assert "/weights/best.pt" in args
-        assert "main/navigation_observer.yaml" in args
+        assert "main/navigation_feedback.yaml" in args
     assert len(list(tmp_path.glob("outputs/logs/closed_loop/*/console.log"))) == 1
 
 

@@ -1,5 +1,10 @@
 # innerLoop：着舰接口与转换模型（无动力学/控制器）
 
+2026-10-24：本页的接口空模型指 `innerLoop.slx`。`innerLoop_landing.slx` 已包含用户控制器并接入
+`convert/20` 的平滑 CG 相对位置和 `convert/22` 的独立有效标志。制导误差为相对目标减导航值，
+导航无效时相对速度置零且禁止阶段切换，保留舰船速度前馈。使用 `main/navigation_feedback.yaml`
+及 `shell/run_landing_closed_loop.sh run` 执行完整闭环，详见 `main/README.md`。
+
 `innerLoop.slx` 是 MATLAB/Simulink R2024b 实际模型，包含 15 个根输入、一个 MATLAB System 转换模块、23 个根输出。`build_innerLoop.m` 可重建模型；`convert.m` 是 MATLAB System 类，`innerLoop_conversion.m` 是其调用的几何转换函数。构建函数会重建整个模型；已有手工改动时应更新嵌入转换函数与相关端口，避免覆盖其他模块。
 
 云台模型和完整算法说明见 [稳定云台与闭环接口](../../../docs/gimbal_navigation.md)。`innerLoop_landing.slx` 同步更新转换模块和云台端口，保留已有制导/控制子系统。`upgrade_innerLoop_gimbal.m` 可在原模型中迁移，避免重建已有控制器。

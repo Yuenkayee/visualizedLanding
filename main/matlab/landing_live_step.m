@@ -5,6 +5,12 @@ assert(abs(s.feedback.timestamp-s.timestamp)<1e-8,'landing:Stale','Stale feedbac
 h=s.config.plant_step; n=round(dt/h);
 assert(n>=1 && abs(n*h-dt)<1e-8,'landing:Time','dt must be a multiple of plant_step');
 fields=fieldnames(s.config.inputs);
+cgControl=isfield(s.config,'control_interface') && strcmp(s.config.control_interface,'cg_position');
+if cgControl
+    assert(abs(dt-h)<1e-8,'landing:Time','CG control requires a fresh feedback at every 0.02 s step');
+    set_param([s.live_model '/LandingControlCG'],'Value',mat2str(s.feedback.cg_relative_estimate_50hz_ned(:),17));
+    set_param([s.live_model '/LandingControlValid'],'Value',mat2str(double(s.feedback.cg_signal_valid),17));
+end
 values=s.feedback;
 if isfield(s.config,'input_contract') && strcmp(s.config.input_contract,'conversion')
     values=landing_conversion_inputs(s);
@@ -59,6 +65,10 @@ for k=1:n
             s.timestamp=double(s.live.Time);
         end
         [s.helicopter_state,s.ship_state]=landing_live_read(s);
+        if cgControl && ~s.stopped
+            s.control_used=landing_control_used(s);
+            record.control=s.control_used;
+        end
         s=innerloop_update_gimbal(s); % sample actual attitude at inner-loop rate
     catch err
         record.actual_time=double(s.live.Time);

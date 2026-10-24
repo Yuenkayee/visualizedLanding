@@ -45,6 +45,14 @@ def load(filename="main/closed_loop.yaml"):
 def validate(c):
     from navigation.common.cg_signal import parameters
     parameters(c.get("cg_signal"))
+    if c.get("control_interface"):
+        if c["control_interface"] != "cg_position" or (
+            c.get("evaluation_mode") != "feedback" or c.get("input_contract") != "conversion"
+            or not c.get("autonomous_subsystem")
+        ):
+            raise ValueError("CG control requires feedback mode, conversion inputs and a plant subsystem")
+        if c.get("control_invalid_policy") != "zero_relative_velocity":
+            raise ValueError("CG control requires the explicit zero_relative_velocity invalid policy")
     if c.get("ship_velocity_frame", "ned") not in ("body", "ned"):
         raise ValueError("ship_velocity_frame must be body or ned")
     if c.get("evaluation_mode", "feedback") not in ("feedback", "observer"):

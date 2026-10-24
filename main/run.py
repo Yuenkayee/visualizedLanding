@@ -123,6 +123,8 @@ def run(c, landing, cal, geometry, output, smoke=False):
         autonomous_subsystem=c.get("autonomous_subsystem", ""),
         ship_velocity_frame=c.get("ship_velocity_frame", "ned"),
         cg_signal_parameters=cg_parameters(c.get("cg_signal")),
+        control_interface=c.get("control_interface", ""),
+        control_invalid_policy=c.get("control_invalid_policy", ""),
     )
     checkpoint_hash = None
     if checkpoint:
@@ -228,6 +230,7 @@ def run(c, landing, cal, geometry, output, smoke=False):
                         "navigation_velocity_cg_ned_mps", "cg_relative_velocity_50hz_ned_mps",
                         "cg_signal_valid", "cg_signal_age_s")},
                     ship_angular_velocity_deck=feedback.get("ship_angular_velocity_deck"),
+                    control_used=plant_status.get("control_used"),
                     navigation_applied_to_control=metadata["navigation_applied_to_control"],
                     sensors=dict(camera=has_camera, lidar=has_lidar),
                     next_timestamp=following.timestamp,
@@ -290,7 +293,7 @@ def run(c, landing, cal, geometry, output, smoke=False):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("command", choices=["run", "smoke", "configure", "inspect"])
-    p.add_argument("--config", default="main/closed_loop.yaml")
+    p.add_argument("--config", help="Defaults to navigation_feedback.yaml for run/inspect, closed_loop.yaml for fixtures/configure")
     p.add_argument("--model")
     p.add_argument("--checkpoint")
     p.add_argument("--output")
@@ -304,6 +307,8 @@ def main():
     p.add_argument("--weather", choices=["clear", "fog", "night", "night_fog"])
     p.add_argument("--save-sensors", action="store_true")
     a = p.parse_args()
+    if a.config is None:
+        a.config = "main/navigation_feedback.yaml" if a.command in ("run", "inspect") else "main/closed_loop.yaml"
     c = yaml.safe_load(path(a.config).read_text())
     for name in (
         "model",

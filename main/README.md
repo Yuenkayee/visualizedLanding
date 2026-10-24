@@ -3,9 +3,68 @@
 主入口为 `main/run.py`，结果分析为 `main/analyze.py`，MATLAB 适配器在 `main/matlab/`。
 复用现有 `NavigationPipeline`、训练场景、LiDAR 和云台动力学；不新增直升机动力学、制导或飞行控制律。
 
+## 2026-10-24 导航接入制导控制
+
+当前 `innerLoop_landing.slx` 已接入导航，正式入口为 **`main/navigation_feedback.yaml`**。
+脚本 `check/run/inspect` 默认使用此配置。`navigation_observer.yaml` 保留旁路语义，
+会拒绝当前已连接的模型；不应通过关闭旁路检查来运行。
+
+接口路径：`convert/20 cg_relative_estimate_50hz_ned` → `innerLoop/cg_relative_estimate` →
+`LAND_CMD/Plus`（`-+`）→ 原有 `uvw_Gen` → 有效性门控 → 原有舰船速度前馈和内环。
+`convert/22 cg_signal_valid` 接入第二个内环输入，控制相对速度门控与制导阶段切换。
+
+坐标和符号：导航量为 **直升机 CG 减舰船 CG，NED，m**。制导目标为同一参考点的
+`[-45,0,-13.4]`（悬停）和 `[-45,0,-8.4]`（接触）等原模型目标，误差必须为 **目标减导航量**。
+不能再叠加舰船的绝对 NED 位置。阶段切换中的距离条件同步去除舰船绝对坐标，并使用导航量；
+舰船运动/预测模型、原有控制增益和真实飞机状态积分保留。原 STOP 仍按模型内真实海平面高度判定，
+属于仿真终止条件，不代表基于导航完成了触舰判定或实机着舰安全验证。
+
+记导航输出 `r = p_heli - p_ship`，目标相对舰船的偏移 `d = p_target - p_ship`，
+则制导输入 `e = d - r = p_target - p_heli`。如果采用“两项相加”的画法，
+应为 `(-r) + d`；当前模型用 `Plus` 的 `-+` 完成同一运算。`target_pos` 已经输出 `d`，
+不能在 `uvw_Gen` 后再重复加入位置偏移。其后的 `[30,0,0]` 是舰船速度前馈（knot），不是位置偏移。
+名义初始状态 `r=[-95,0,-50] m`、悬停目标 `d=[-45,0,-13.4] m` 对应
+`e=[50,0,36.6] m`，即向北接近并沿 Down 正方向下降。
+
+导航无效策略：相对速度指令置零，保留原有 `[30,0,0]` knot 舰船速度前馈；不使用真值接管，
+不重置控制器积分器。此策略是当前联调用的明确失效策略，并不保证机体马上停止运动或实现安全复飞。
+同时禁止无效导航触发制导阶段切换。`uvw_Gen` 输出沿用既有模型的 knot 指令链，CG 位置仍为米。
+
+宿主每 0.02 s 先完成传感器/导航/平滑，再把本步 CG 信号和有效标志锁存到**执行副本**的
+`LandingControlCG` / `LandingControlValid`，然后推进一步。这样控制和日志使用同一份信号，
+避免模型内部转换器重复更新或直接反馈环路影响离线求值次序。源 SLX 中保留直观的 `convert` 接线，
+控制器本体不被重建；应通过脚本执行完整导航闭环，直接在 Simulink 点 Run 并不会启动 Python 图像导航。
+
+```bash
+# 仓库根目录；先核对模型接口
+bash shell/run_landing_closed_loop.sh inspect --config main/navigation_feedback.yaml
+
+# RTX 4090：实际内环 + 当前视觉权重 + Blender，2 秒测试
+bash shell/run_landing_closed_loop.sh run --config main/navigation_feedback.yaml \
+  --duration 2 --device cuda --render-device OPTIX
+
+# 正式闭环：达到 60 秒上限或模型 STOP
+bash shell/run_landing_closed_loop.sh run --config main/navigation_feedback.yaml \
+  --duration 60 --device cuda --render-device OPTIX --save-sensors
+```
+
+可在 `tmux new -s landing_nav` 中执行正式命令，`Ctrl+B` 后按 `D` 脱离，`tmux attach -t landing_nav` 返回。
+脚本不关机。MATLAB 在线/共享会话授权方式沿用部署配置；若共享会话已加载旧模型，应先保存自己的编辑并关闭它再运行。
+
+结果仍在 `outputs/closed_loop/run_*/`，终端日志在 `outputs/logs/closed_loop/*/console.log`。
+`run.json` 应为 `kind=aircraft_closed_loop`、`navigation_applied_to_control=true`。
+新增 `navigation_control.png/csv` 展示内环实际消费的导航、相对目标和速度指令；`steps.jsonl` 的
+`control_used` 与 `simulink/plant_steps.jsonl` 的 `control` 记录消费时间戳、有效标志和门控输入输出。
+`metrics.json/navigation_control` 检查消费值与当步导航一致、误差符号正确、无效时相对速度为零。
+模型 STOP 释放 RuntimeObject 后不伪造末步控制探针，末态仍由原有保留输出读取。
+原有 CG/起落架真值和估计曲线继续生成。运行副本关闭信号缓冲复用，确保 RuntimeObject 读到真实的中间信号。
+
+接口修正前的本地模型备份在 `outputs/metrics/closed_loop_integration_20261024/`。
+`landing_connect_navigation.m` 是可复用迁移脚本；本次已更新源 SLX，服务器同步后无需再执行迁移。
+
 ## 质心相对位置与 50 Hz 导航信号
 
-当前 `navigation_observer.yaml` 继续采用旁路观测，导航不进入制导/控制。两个 SLX 的 `convert` 已追加端口 16–23，
+2026-10-23 的 `navigation_observer.yaml` 采用旁路观测，导航不进入制导/控制；当前闭环入口见上节。两个 SLX 的 `convert` 已追加端口 16–23，
 原起落架端口及自主制导控制子系统保留。启动会检查新增端口连线以及旁路隔离。
 
 - `cg_relative_truth_ned`：直升机质心减舰船质心的 N/E/D 真值，单位 m。

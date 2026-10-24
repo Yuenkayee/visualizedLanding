@@ -84,7 +84,7 @@ def renderer(check, python=None, report_path=None):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--check", action="store_true", help="Do not install anything")
-    p.add_argument("--config", default="main/navigation_observer.yaml")
+    p.add_argument("--config", default="main/navigation_feedback.yaml")
     p.add_argument("--renderer", choices=["cpu", "blender"])
     p.add_argument("--render-python")
     p.add_argument("--report")
