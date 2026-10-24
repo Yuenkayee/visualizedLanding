@@ -292,7 +292,7 @@ def run(c, landing, cal, geometry, output, smoke=False):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("command", choices=["run", "smoke", "configure", "inspect"])
+    p.add_argument("command", choices=["run", "smoke", "configure", "inspect", "connect-navigation"])
     p.add_argument("--config", help="Defaults to navigation_feedback.yaml for run/inspect, closed_loop.yaml for fixtures/configure")
     p.add_argument("--model")
     p.add_argument("--checkpoint")
@@ -308,7 +308,7 @@ def main():
     p.add_argument("--save-sensors", action="store_true")
     a = p.parse_args()
     if a.config is None:
-        a.config = "main/navigation_feedback.yaml" if a.command in ("run", "inspect") else "main/closed_loop.yaml"
+        a.config = "main/navigation_feedback.yaml" if a.command in ("run", "inspect", "connect-navigation") else "main/closed_loop.yaml"
     c = yaml.safe_load(path(a.config).read_text())
     for name in (
         "model",
@@ -359,6 +359,18 @@ def main():
                     cg_signal_parameters=cg_parameters(c.get("cg_signal")),
                 ),
             )
+    elif a.command == "connect-navigation":
+        validate(c)
+        if c.get("control_interface") != "cg_position":
+            raise ValueError("connect-navigation requires main/navigation_feedback.yaml")
+        backup = output / "backups"
+        backup.mkdir()
+        with MatlabSession() as session:
+            result = session.call("landing_connect_navigation", {
+                **c, "model": str(path(c["model"])),
+                "setup_script": str(path(c["setup_script"])) if c.get("setup_script") else "",
+                "backup": str(backup / path(c["model"]).name),
+            })
     elif a.command == "inspect":
         with MatlabSession() as session:
             result = session.call(

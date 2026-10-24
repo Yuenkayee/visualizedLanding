@@ -10,7 +10,7 @@
 会拒绝当前已连接的模型；不应通过关闭旁路检查来运行。
 
 接口路径：`convert/20 cg_relative_estimate_50hz_ned` → `innerLoop/cg_relative_estimate` →
-`LAND_CMD/Plus`（`-+`）→ 原有 `uvw_Gen` → 有效性门控 → 原有舰船速度前馈和内环。
+`LAND_CMD/Plus`（直接 `-+`，或先乘 `-1` 再 `++`）→ 原有 `uvw_Gen` → 有效性门控 → 原有舰船速度前馈和内环。
 `convert/22 cg_signal_valid` 接入第二个内环输入，控制相对速度门控与制导阶段切换。
 
 坐标和符号：导航量为 **直升机 CG 减舰船 CG，NED，m**。制导目标为同一参考点的
@@ -21,7 +21,7 @@
 
 记导航输出 `r = p_heli - p_ship`，目标相对舰船的偏移 `d = p_target - p_ship`，
 则制导输入 `e = d - r = p_target - p_heli`。如果采用“两项相加”的画法，
-应为 `(-r) + d`；当前模型用 `Plus` 的 `-+` 完成同一运算。`target_pos` 已经输出 `d`，
+应为 `(-r) + d`；当前模型保留用户的 `-1 Gain + ++`，接口检查也接受直接 `-+`。`target_pos` 已经输出 `d`，
 不能在 `uvw_Gen` 后再重复加入位置偏移。其后的 `[30,0,0]` 是舰船速度前馈（knot），不是位置偏移。
 名义初始状态 `r=[-95,0,-50] m`、悬停目标 `d=[-45,0,-13.4] m` 对应
 `e=[50,0,36.6] m`，即向北接近并沿 Down 正方向下降。
@@ -60,7 +60,22 @@ bash shell/run_landing_closed_loop.sh run --config main/navigation_feedback.yaml
 原有 CG/起落架真值和估计曲线继续生成。运行副本关闭信号缓冲复用，确保 RuntimeObject 读到真实的中间信号。
 
 接口修正前的本地模型备份在 `outputs/metrics/closed_loop_integration_20261024/`。
-`landing_connect_navigation.m` 是可复用迁移脚本；本次已更新源 SLX，服务器同步后无需再执行迁移。
+`landing_connect_navigation.m` 是可复用迁移脚本；本次已更新源 SLX，服务器同步后通常无需再执行迁移。
+
+若出现 `Expected CG and validity inputs`，说明转换器输出不是 23 个，或 `innerLoop` 输入不是两个。
+常见情况是同步了闭环代码，但 SLX 仍只有 `cg_relative_estimate`，缺少 `cg_navigation_valid`。
+可在仓库根目录显式修复现有模型；命令先备份源文件，补齐位置/有效标志接线、失效门控和阶段切换，
+保留正确的 `-1 Gain + ++` 符号处理，通过接口检查后才保存：
+
+```bash
+bash shell/run_landing_closed_loop.sh connect-navigation --config main/navigation_feedback.yaml
+bash shell/run_landing_closed_loop.sh inspect --config main/navigation_feedback.yaml
+```
+
+备份位于本次 `outputs/closed_loop/connect-navigation_*/backups/innerLoop_landing.slx`；
+`result.json` 记录实际模型、备份、端口数和误差计算方式。修复针对当前仓库的 `LAND_CMD` 布局。
+启动和检查时会重新加载磁盘上的模型，以免共享 MATLAB 会话继续使用同步前的旧版本。
+对于运行中或有未保存修改的模型，程序会明确报错，保留该模型和编辑内容；应先处理再重试。
 
 ## 质心相对位置与 50 Hz 导航信号
 

@@ -2,11 +2,29 @@ function result=landing_connect_navigation(requestJSON)
 % Repair the user's CG connection in place, without replacing controllers.
 % Input/target are both heli CG minus ship CG, NED metres. uvw_Gen expects
 % target MINUS current. Navigation-invalid cancels only relative velocity.
-c=jsondecode(requestJSON); [~,model]=fileparts(c.model);
-load_system(c.model);
+c=jsondecode(requestJSON);
+assert(strcmp(c.control_interface,'cg_position') && strcmp(c.evaluation_mode,'feedback'), ...
+    'landing:Feedback','Use main/navigation_feedback.yaml for this migration');
+if isfield(c,'setup_script') && ~isempty(c.setup_script)
+    evalin('base',['run(''' strrep(char(c.setup_script),'''','''''') ''')']);
+end
+model=landing_load_source_model(c.model);
+cleanup=onCleanup(@()close_system(model,0));
 assert(strcmp(get_param(model,'Dirty'),'off'),'landing:Unsaved','Save source model first');
 assert(~isfile(c.backup),'landing:Backup','Backup already exists'); copyfile(c.model,c.backup);
-plant=[model '/innerLoop']; cmd=[plant '/LAND_CMD']; conversion=[model '/Frame_Unit_ReferencePoint_Conversion'];
+plant=[model '/' c.autonomous_subsystem]; cmd=[plant '/LAND_CMD']; conversion=[model '/Frame_Unit_ReferencePoint_Conversion'];
+% A fully connected source needs no rewiring or re-save on repeated runs.
+ready=false;
+try
+    report=landing_check_feedback(model,c); ready=report.enabled;
+catch err
+    if ~strcmp(err.identifier,'landing:Feedback'), rethrow(err); end
+end
+if ready
+    landing_check_timing(model,c.plant_step);
+    result=jsonencode(struct('model',c.model,'backup',c.backup,'changed',false,'feedback',report));
+    return;
+end
 % Replace local root Goto/From with explicit edges, retaining all output logs.
 for name={'From','Goto'}
     block=[model '/' name{1}];
@@ -19,8 +37,14 @@ add_input(plant,'cg_navigation_valid','2',[215 155 245 169]);
 add_input(cmd,'cg_navigation_valid','3',[-30 240 0 254]);
 connect(model,[conversion '/22'],[plant '/2']);
 connect(plant,[plant '/cg_navigation_valid/1'],[cmd '/3']);
-% The ship absolute position must not be added to a CG-relative navigation value.
-set_param([cmd '/Plus'],'Inputs','-+');
+% Preserve the user's equivalent -1 Gain + ++ implementation if correct.
+try
+    landing_guidance_error_contract(cmd);
+catch err
+    if ~strcmp(err.identifier,'landing:Feedback'), rethrow(err); end
+    set_param([cmd '/Plus'],'Inputs','-+');
+    connect(cmd,[cmd '/cg_relative_estimate/1'],[cmd '/Plus/1']);
+end
 connect(cmd,[cmd '/target_pos/1'],[cmd '/Plus/2']);
 connect(cmd,[cmd '/cg_relative_estimate/1'],[cmd '/target_pos/2']);
 % Phase transition now compares relative CG coordinates with relative targets.
@@ -60,10 +84,15 @@ connect(cmd,[cmd '/MATLAB System/1'],[gate '/1']);
 connect(cmd,[cmd '/cg_navigation_valid/1'],[gate '/2']);
 connect(cmd,[zero '/1'],[gate '/3']);
 connect(cmd,[gate '/1'],[cmd '/Plus1/1']);
-save_system(model); close_system(model,0);
-result=jsonencode(struct('model',c.model,'backup',c.backup,'signal_port',20,'valid_port',22, ...
+% Validate in memory before saving. A failed repair leaves disk unchanged.
+report=landing_check_feedback(model,c);
+assert(report.enabled,'landing:Feedback','Feedback contract was not checked');
+landing_check_timing(model,c.plant_step);
+save_system(model);
+result=jsonencode(struct('model',c.model,'backup',c.backup,'changed',true,'signal_port',20,'valid_port',22, ...
     'error','target_relative_cg_ned - estimated_relative_cg_ned', ...
-    'invalid_policy','zero relative velocity; retain original ship velocity feedforward'));
+    'invalid_policy','zero relative velocity; retain original ship velocity feedforward', ...
+    'feedback',report));
 end
 function add_input(parent,name,port,position)
 path=[parent '/' name];

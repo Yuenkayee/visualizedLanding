@@ -10,8 +10,7 @@ if isfield(c,'setup_script') && ~isempty(c.setup_script)
     script=strrep(char(c.setup_script),'''','''''');
     evalin('base',['run(''' script ''')']);
 end
-[folder,original]=fileparts(source); addpath(folder);
-load_system(source);
+original=landing_load_source_model(source);
 assert(strcmp(get_param(original,'Dirty'),'off'),'landing:Unsaved','Save the source model before running');
 landing_check_timing(original,c.plant_step);
 landing_check_observer(original,c);

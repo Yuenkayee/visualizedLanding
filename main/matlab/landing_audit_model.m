@@ -3,7 +3,7 @@ c=jsondecode(requestJSON); [folder,model]=fileparts(c.model); addpath(folder);
 if isfield(c,'setup_script') && ~isempty(c.setup_script)
     evalin('base',['run(''' strrep(char(c.setup_script),'''','''''') ''')']);
 end
-load_system(c.model);
+model=landing_load_source_model(c.model);
 inputs=find_system(model,'SearchDepth',1,'BlockType','Inport');
 outputs=find_system(model,'SearchDepth',1,'BlockType','Outport');
 systems=find_system(model,'LookUnderMasks','all','FollowLinks','on','BlockType','MATLABSystem');

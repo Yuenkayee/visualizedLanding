@@ -10,7 +10,12 @@ plant=[model '/' c.autonomous_subsystem]; cmd=[plant '/LAND_CMD'];
 conversion=[model '/Frame_Unit_ReferencePoint_Conversion'];
 assert(strcmp(get_param(conversion,'System'),'convert'),'landing:Feedback','Expected convert');
 p=get_param(conversion,'PortHandles'); q=get_param(plant,'PortHandles');
-assert(numel(p.Outport)==23 && numel(q.Inport)==2,'landing:Feedback','Expected CG and validity inputs');
+assert(numel(p.Outport)==23 && numel(q.Inport)==2,'landing:Feedback', ...
+    ['CG feedback interface mismatch in %s: convert has %d outputs (expected 23); ' ...
+     '%s has %d inputs (expected 2: CG position and cg_signal_valid). ' ...
+     'Sync the updated SLX, or run bash shell/run_landing_closed_loop.sh connect-navigation ' ...
+     '--config main/navigation_feedback.yaml (backs up the model before repair). convert class: %s'], ...
+    get_param(model,'FileName'),numel(p.Outport),plant,numel(q.Inport),which('convert'));
 rootInputs=find_system(model,'SearchDepth',1,'BlockType','Inport');
 for k=1:numel(rootInputs)
     h=get_param(rootInputs{k},'PortHandles'); line=get_param(h.Outport,'Line');
@@ -29,9 +34,8 @@ for k=1:23
 end
 assert_edge([plant '/cg_relative_estimate'],1,cmd,2);
 assert_edge([plant '/cg_navigation_valid'],1,cmd,3);
-assert_edge([cmd '/cg_relative_estimate'],1,[cmd '/Plus'],1);
 assert_edge([cmd '/target_pos'],1,[cmd '/Plus'],2);
-assert(strcmp(get_param([cmd '/Plus'],'Inputs'),'-+'),'landing:Feedback','Expected target minus current CG');
+signForm=landing_guidance_error_contract(cmd);
 assert_edge([cmd '/cg_relative_estimate'],1,[cmd '/target_pos'],2);
 assert_edge([cmd '/target_pos/current_pos'],1,[cmd '/target_pos/Selector'],1);
 assert_edge([cmd '/target_pos/current_pos'],1,[cmd '/target_pos/Selector1'],1);
@@ -62,7 +66,9 @@ end
 report=struct('enabled',true,'position_source','convert/20 cg_relative_estimate_50hz_ned', ...
     'valid_source','convert/22 cg_signal_valid','sign','target CG relative - helicopter CG relative', ...
     'phase_position_source','navigation CG relative','invalid_policy',c.control_invalid_policy, ...
-    'host_control_latch',true,'truth_feedback',false);
+    'guidance_error_implementation',signForm, ...
+    'host_control_latch',true,'truth_feedback',false, ...
+    'conversion_output_count',numel(p.Outport),'plant_input_count',numel(q.Inport));
 end
 function assert_edge(source,out,destination,in)
 p=get_param(source,'PortHandles'); q=get_param(destination,'PortHandles');

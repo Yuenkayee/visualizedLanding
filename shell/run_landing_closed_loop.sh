@@ -9,14 +9,15 @@ if [[ -n "${MATLAB_ROOT:-}" ]]; then export PATH="$MATLAB_ROOT/bin:$PATH"; fi
 LANDING_MODE="${1:-smoke}"
 if [[ $# -gt 0 ]]; then shift; fi
 case "$LANDING_MODE" in
-  check|configure|inspect|smoke|run|analyze) ;;
-  *) printf 'Usage: %s {check|configure|inspect|smoke|run|analyze} [arguments]\n' "$0" >&2; exit 2 ;;
+  check|configure|inspect|connect-navigation|smoke|run|analyze) ;;
+  *) printf 'Usage: %s {check|configure|inspect|connect-navigation|smoke|run|analyze} [arguments]\n' "$0" >&2; exit 2 ;;
 esac
 for LANDING_ARG in "$@"; do
   if [[ "$LANDING_ARG" == --help || "$LANDING_ARG" == -h ]]; then
     printf '%s\n' 'check: install missing Ubuntu/Python/MATLAB/renderer dependencies and verify licenses/GPU.' \
       'check --check: inspect only. check --login: install, open interactive MATLAB login, then verify.' \
       'Modes: check, inspect, smoke (interface fixture), run (actual aircraft), configure, analyze.' \
+      'connect-navigation: back up and repair the supplied CG feedback model, then validate its wiring.' \
       'Options: --config FILE --device {cpu,cuda,mps} --render-device {CPU,CUDA,OPTIX}' \
       'Run/smoke: --duration SECONDS --checkpoint FILE --output DIR --weather NAME' \
       'Environment: MATLAB_ROOT, PYTHON_BIN, RENDER_PYTHON, UV_PYTHON_INSTALL_MIRROR.' \
@@ -51,7 +52,7 @@ if [[ "$LANDING_MODE" == analyze ]]; then
   LANDING_BOOTSTRAP_ARGS+=(--analysis-only)
 elif [[ "$LANDING_HAS_CONFIG" == 0 ]]; then
   case "$LANDING_MODE" in
-    check|run|inspect) LANDING_ARGUMENTS+=(--config main/navigation_feedback.yaml) ;;
+    check|run|inspect|connect-navigation) LANDING_ARGUMENTS+=(--config main/navigation_feedback.yaml) ;;
     smoke|configure) LANDING_ARGUMENTS+=(--config main/closed_loop.yaml) ;;
   esac
 fi
@@ -65,7 +66,7 @@ for LANDING_CANDIDATE in "${PYTHON_BIN:-}" "$PWD/.venv/bin/python" python3 pytho
 done
 # Forward environment flags only; all run-specific overrides still go to main.run.
 LANDING_ENV_ARGS=()
-if [[ "$LANDING_MODE" == smoke || "$LANDING_MODE" == configure || "$LANDING_MODE" == inspect ]]; then
+if [[ "$LANDING_MODE" == smoke || "$LANDING_MODE" == configure || "$LANDING_MODE" == inspect || "$LANDING_MODE" == connect-navigation ]]; then
   LANDING_ENV_ARGS+=(--renderer cpu)
 fi
 for ((i=0; i<${#LANDING_ARGUMENTS[@]}; i++)); do

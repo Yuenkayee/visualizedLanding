@@ -6,9 +6,27 @@ report=landing_check_feedback(model,c); assert(report.enabled);
 observer=c; observer.evaluation_mode='observer';
 must_fail(@()landing_check_observer(model,observer),'landing:Observer');
 cmd=[model '/' c.autonomous_subsystem '/LAND_CMD'];
-set_param([cmd '/Plus'],'Inputs','++');
+signs=get_param([cmd '/Plus'],'Inputs');
+if strcmp(signs,'++'), wrong='-+'; else, wrong='++'; end
+set_param([cmd '/Plus'],'Inputs',wrong);
 must_fail(@()landing_check_feedback(model,c),'landing:Feedback');
-set_param([cmd '/Plus'],'Inputs','-+');
+set_param([cmd '/Plus'],'Inputs',signs);
+if strcmp(signs,'++')
+    p=get_param([cmd '/Plus'],'PortHandles'); line=get_param(p.Inport(1),'Line');
+    gain=get_param(get_param(line,'SrcPortHandle'),'Parent');
+    value=get_param(gain,'Gain'); set_param(gain,'Gain','1');
+    must_fail(@()landing_check_feedback(model,c),'landing:Feedback');
+    set_param(gain,'Gain',value);
+    % The direct subtraction layout is equivalent; validate both forms.
+    name=get_param(gain,'Name');
+    delete_line(cmd,[name '/1'],'Plus/1');
+    add_line(cmd,'cg_relative_estimate/1','Plus/1');
+    set_param([cmd '/Plus'],'Inputs','-+');
+    equivalent=landing_check_feedback(model,c); assert(equivalent.enabled);
+    delete_line(cmd,'cg_relative_estimate/1','Plus/1');
+    add_line(cmd,[name '/1'],'Plus/1');
+    set_param([cmd '/Plus'],'Inputs',signs);
+end
 set_param([cmd '/ZeroRelativeVelocity'],'Value','[1;0;0]');
 must_fail(@()landing_check_feedback(model,c),'landing:Feedback');
 set_param([cmd '/ZeroRelativeVelocity'],'Value','zeros(3,1)');

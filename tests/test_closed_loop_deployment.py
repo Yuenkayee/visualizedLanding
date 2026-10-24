@@ -195,7 +195,8 @@ def test_direct_environment_check_configures_engine_before_install(tmp_path, mon
 
 @pytest.mark.parametrize("host_os", ["Linux", "Darwin"])
 @pytest.mark.parametrize("fail_at", ["bootstrap", "environment", None])
-def test_launcher_stops_after_failure_and_forwards_environment(tmp_path, fail_at, host_os):
+@pytest.mark.parametrize("mode", ["run", "connect-navigation"])
+def test_launcher_stops_after_failure_and_forwards_environment(tmp_path, fail_at, host_os, mode):
     """Execute the real shell wrapper with harmless bootstrap/worker stubs."""
     shell = tmp_path / "shell"
     shell.mkdir()
@@ -248,7 +249,7 @@ Path('run_called').touch()
            "LD_PRELOAD": "/existing/preload.so",
            "PATH": str(commands) + os.pathsep + os.environ["PATH"]}
     env.pop("MATLAB_ROOT", None)
-    result = subprocess.run(["bash", str(script), "run", "--duration", "0.2", "--device=cuda",
+    result = subprocess.run(["bash", str(script), mode, "--duration", "0.2", "--device=cuda",
                              "--checkpoint", "/weights/best.pt"], cwd=tmp_path, env=env, capture_output=True, text=True)
     assert result.returncode == {"bootstrap": 17, "environment": 19, None: 0}[fail_at], result.stderr + result.stdout
     assert (tmp_path / "run_called").exists() == (fail_at is None)
@@ -258,6 +259,8 @@ Path('run_called').touch()
         assert "--device=cuda" in args
         assert "/weights/best.pt" in args
         assert "main/navigation_feedback.yaml" in args
+        if mode == "connect-navigation":
+            assert args[args.index("--renderer") + 1] == "cpu"
     assert len(list(tmp_path.glob("outputs/logs/closed_loop/*/console.log"))) == 1
 
 
