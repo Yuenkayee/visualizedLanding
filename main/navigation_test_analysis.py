@@ -45,6 +45,7 @@ from pathlib import Path
 import numpy as np
 from scipy.signal import correlate
 from scipy.stats import chi2
+from main.navigation_test_storage import retirement_result_errors, storage_summary
 
 
 STAGES = ("all", "approach", "hover", "descent")
@@ -250,6 +251,16 @@ def _record_check_errors(root, runs):
                 result_errors[run.case["id"], run.method].append(
                     "record evidence invalid: input_record_sha256 missing or mismatched for "
                     f"{run.case['id']}/{run.method}")
+    for rid, dependent in grouped.items():
+        try:
+            invalid = retirement_result_errors(root / "records" / rid,
+                {f"{r.case['id']}/{r.method}": r.path for r in dependent})
+            for run in dependent:
+                key = f"{run.case['id']}/{run.method}"
+                if key in invalid:
+                    result_errors[run.case["id"], run.method].append(invalid[key])
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            errors[rid].append(f"Invalid sensor-retirement evidence: {exc}")
     return errors, result_errors
 
 
@@ -1202,6 +1213,12 @@ def _report(root, summary):
              "This is navigation evidence only. Evaluation limits are not health gates, touchdown criteria or certification.", "",
              f"Manifest cases: {summary['case_count']}. Run cohorts: {dict(counts)}. "
              f"Failure records (case and run records may overlap): {len(summary['failures'])}.", "",
+             "## Sensor storage", "",
+             f"Intentionally retired records: {summary.get('storage', {}).get('pruned_records', 0)}. "
+             "All numerical method results remain available. storage_summary.json reports logical sensor bytes only. "
+             "Diagnostic clips are selected examples, not an unbiased sample for statistics; all numerical flights are scored. "
+             "Pruned observations cannot support full sensor replay without regenerating the entire dependent group. "
+             "Analysis checks retired-result integrity without needing image/point-cloud payloads.", "",
              "## Evaluation and sample definitions", "",
              f"Frozen evaluation configuration: `{json.dumps(summary['evaluation'], ensure_ascii=False)}`.", "",
              "The primary false-valid criterion is strict 3D error > false_valid_error_m, separately for gear, CG and shaped CG. "
@@ -1468,7 +1485,9 @@ def analyze(root: Path, bootstrap_samples=2000) -> dict:
         warnings.add("Results span multiple attempts; timing aggregates may mix runtime environments")
     if provenance["unknown_attempt_runs"] or provenance["unknown_recording_attempt_runs"] or provenance["unknown_runtime_runs"]:
         warnings.add("Some originating attempts/runtimes are unknown; current manifest resources are not attributed to them")
-    summary = dict(schema_version=1, case_count=len(manifest["cases"]), evaluation=evaluation,
+    storage = storage_summary(root)
+    _json(root/"storage_summary.json", storage)
+    summary = dict(schema_version=1, case_count=len(manifest["cases"]), evaluation=evaluation, storage=storage,
                    runtime=manifest.get("runtime"), model_load_s=manifest.get("model_load_s"),
                    runtime_scope="current manifest attempt; originating runtime is recorded per result",
                    attempts=manifest.get("attempts", []), provenance=provenance,
@@ -1483,7 +1502,7 @@ def analyze(root: Path, bootstrap_samples=2000) -> dict:
                               "samples.csv", "raw_steps.jsonl", "events.csv", "categorical_diagnostics.csv", "runs.json",
                               "failure_manifest.json", "figure_5_8.csv", "figure_5_8.png", "figure_5_9.csv", "figure_5_9.png",
                               "figure_5_10.csv", "figure_5_10.png", "figure_5_10_innovations.csv",
-                              "figure_5_10_innovations.png", "analysis.md", "summary.json"])
+                              "figure_5_10_innovations.png", "analysis.md", "summary.json", "storage_summary.json"])
     _report(root, summary)
     _json(root/"summary.json", summary)
     return _clean(summary)

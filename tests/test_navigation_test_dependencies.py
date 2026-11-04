@@ -442,7 +442,8 @@ def test_launcher_preserves_argv_and_logs(launcher, background, equals):
     output = "outputs/quoted ' $(touch OUTPUT_INJECTED) `touch OUTPUT_INJECTED2`\nspace"
     args = ["run" if background else "smoke", "--output", output, "--config=config name.yaml",
             "--device=cpu", "--renderer", "cpu", "--suite", "gimbal", "--seeds-per-cell=2"]
-    concurrency = {"--workers": "2", "--render-threads": "4", "--torch-threads": "2"}
+    concurrency = {"--workers": "2", "--render-threads": "4", "--torch-threads": "2",
+                   "--sensor-retention": "compact", "--retain-replicates": "0"}
     for option, value in concurrency.items():
         args += [f"{option}={value}"] if equals else [option, value]
     if background:
@@ -482,8 +483,27 @@ def test_launcher_leaves_concurrency_defaults_to_main_config(launcher, mode):
     assert result.returncode == 0, result.stdout + result.stderr
     argv = json.loads((root / "launched.json").read_text())["args"]
     preflight = json.loads((root / "preflight.json").read_text())
-    for option in ("--workers", "--render-threads", "--torch-threads"):
+    for option in ("--workers", "--render-threads", "--torch-threads", "--sensor-retention", "--retain-replicates"):
         assert option not in argv and option not in preflight
+
+
+@pytest.mark.parametrize("option,value",[("--sensor-retention","bad"),("--sensor-retention",""),
+    ("--retain-replicates","-1"),("--retain-replicates","1.5"),("--retain-replicates",""),
+    ("--retain-replicates","$(touch INJECTED)")])
+def test_launcher_rejects_bad_storage_options_before_bootstrap(launcher,option,value):
+    root,invoke=launcher
+    result=invoke("run",f"{option}={value}")
+    assert result.returncode==2 and not (root/"preflight.json").exists()
+    assert not (root/"INJECTED").exists()
+
+
+@pytest.mark.parametrize("option,value",[("--sensor-retention","compact"),("--retain-replicates","0")])
+@pytest.mark.parametrize("action",["check","analyze"])
+def test_storage_options_only_apply_to_benchmarks(launcher,option,value,action):
+    root,invoke=launcher
+    result=invoke(action,option,value)
+    assert result.returncode==2 and "allowed only for smoke/run" in result.stderr
+    assert not (root/"preflight.json").exists()
 
 
 @pytest.mark.parametrize("option", ["--workers", "--render-threads", "--torch-threads"])

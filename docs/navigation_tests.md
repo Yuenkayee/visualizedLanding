@@ -159,6 +159,8 @@ Changed code/configuration/weights/input require a new experiment directory.
 Worker count and thread limits are part of the frozen configuration: changing
 `--workers` (including switching from 2 to 1 for isolated timing),
 `--render-threads` or `--torch-threads` requires a **new output directory**.
+Storage policy/retention settings are frozen too. Updating to the cache-retirement
+implementation requires a new experiment; it does not silently prune old runs.
 
 `--suite main|gimbal|stress|all` is optional; the full config defaults to `all`.
 Smoke defaults to one clear/medium primary case, one independent sensor record
@@ -238,6 +240,108 @@ latency measurements, collect a separate experiment with `--workers 1` on idle
 hardware; do not run the concurrent and serial examples simultaneously. Keep
 device, render backend, thread settings and weights comparable and disclose all
 runtime settings. Rendering wall time remains distinct from navigation latency.
+
+## Sensor storage policy
+
+The default `sensor_retention: compact` preserves the entire experiment matrix,
+all numerical result rows and all §5.2.3(9) table/figure inputs. It changes only
+the lifetime of generated sensor files. `--sensor-retention all` retains the
+previous full-archive behaviour. No new packages are required; the same Ubuntu
+dependency checker runs before either mode.
+
+Each worker records one `record_id`, replays **every** dependent main, gimbal and
+stress case, verifies their completed durations, checksums and exact input
+binding, and only then retires observations. Files under `results/`, truth and
+encoder histories, hashes, metadata and diagnostic/statistical outputs are not
+deleted or downsampled.
+
+Default compact retention:
+
+- `retain_replicates: 1` keeps the first seed in each weather/motion/gimbal cell
+  in full: **24 full records** in the default all suite. This is a prespecified
+  selection independent of accuracy. `--retain-replicates N` accepts zero.
+- Other successful groups keep up to `anomaly_windows_per_record: 3` diagnostic
+  clips with `anomaly_context_s: 1.0` seconds on either side of the event. Events
+  are the largest declared-valid 3D error above the evaluation limit and the
+  start/end of the longest outage exceeding the evaluation limit, considering
+  all dependent methods and gear/CG/shaped-CG references. N1 contributes only
+  camera-time errors, not a fictitious continuous-time outage. Windows may
+  overlap or be clipped by flight boundaries. They include the original sensor
+  arrays/labels. Null evaluation limits disable the corresponding selection.
+- **Execution failures** preserve the group's full available sensor archive.
+  Statistical anomalies are represented by the bounded clips and all numerical
+  evidence, not by unlimited complete-flight image archives. Clip selection is
+  for diagnosis; it does not filter any scientific statistics.
+- Imported `--source` files belong to the caller and are never removed. With
+  `--trajectory`, only newly generated observations in this experiment are
+  eligible; source trajectory files remain untouched.
+
+`records/<id>/storage.json` is written atomically before unlinking observations.
+It contains the original input identity, every dependent result-manifest hash,
+retained sensor hashes, clip selections and logical byte counts. On `--resume`,
+intact retired groups are skipped without rendering; an interrupted deletion
+is completed idempotently. Missing/corrupt numerical results or retained clips
+cause regeneration of the **whole** record and rerunning **all** its dependent
+methods, preserving input equality. No old result is mixed with newly generated
+sensors. Corrupt metadata/retirement identities fail closed for inspection.
+The new attempt receives new recording/timing provenance; retained results keep
+their original provenance. Do not manually edit hashes or delete the receipts.
+
+Terminal `sensor_storage` events report each group's retention state and saved
+bytes. `storage_summary.json` is generated on exit and by analysis; counts cover
+receipts only, and exclude numerical files, logs, external/unpruned records and
+filesystem overhead. Use `du -sh` and `df -h` for actual disk usage. Disk demand
+includes active workers, the full representative records, clips and all result
+files; many execution failures can still retain substantial data. Compact mode
+is not a fixed disk quota.
+
+To analyze locally without sensor payloads, keep the experiment's `manifest.json`,
+`frozen.json`, `record_checks/`, **all of `results/`**, and the record metadata
+(`run.json`, `steps.jsonl`, `sensor_hashes.json`, `record_hashes.json`, `storage.json`).
+Keep generated tables/reports and launch/worker logs for audit. Analysis verifies
+retired-result checksums and can regenerate every numerical plot/table without
+reading images. Full sensor replay of retired groups instead requires the
+matching run's `--resume` regeneration when evidence needs repair, or a new
+experiment with `--sensor-retention all`; selected clips alone are not full flights.
+
+Ubuntu example for the 22-vCPU / RTX PRO 6000 server, from the repository root:
+
+```bash
+LANDING_DOWNLOAD_PROFILE=china bash shell/run_navigation_tests.sh check \
+  --device cuda --renderer blender --render-device OPTIX
+
+# Foreground, two records, 2 seconds; exercise retirement even on the first seed.
+bash shell/run_navigation_tests.sh smoke --suite all --duration 2 \
+  --workers 2 --render-threads 2 --torch-threads 1 \
+  --sensor-retention compact --retain-replicates 0 \
+  --device cuda --renderer blender --render-device OPTIX \
+  --output outputs/navigation_tests/compact_smoke_01
+
+# Full matrix, eight workers, background; default representative retention.
+bash shell/run_navigation_tests.sh run --suite all \
+  --workers 8 --render-threads 2 --torch-threads 1 \
+  --sensor-retention compact --retain-replicates 1 \
+  --device cuda --renderer blender --render-device OPTIX \
+  --output outputs/navigation_tests/compact_full_01 \
+  --background --session navigation_compact
+
+# Resume only after the prior process/session has ended; all settings stay fixed.
+bash shell/run_navigation_tests.sh run --suite all \
+  --workers 8 --render-threads 2 --torch-threads 1 \
+  --sensor-retention compact --retain-replicates 1 \
+  --device cuda --renderer blender --render-device OPTIX \
+  --output outputs/navigation_tests/compact_full_01 --resume \
+  --background --session navigation_compact
+
+bash shell/run_navigation_tests.sh analyze \
+  --output outputs/navigation_tests/compact_full_01
+```
+
+Use fresh output directories for a new test, changed settings or updated code.
+Existing full runs are not migrated or cleaned automatically. The initial
+one-seed pilot retains all records with the default `retain_replicates: 1`; use
+`--retain-replicates 0` when specifically testing cache retirement. Smoke still
+does not provide formal accuracy evidence. Neither mode shuts down the server.
 
 ## Trajectory and observation provenance
 

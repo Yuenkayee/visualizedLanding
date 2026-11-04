@@ -23,11 +23,22 @@ from main.navigation_test_data import (cases, clean, digest, generate_record, im
                                        navigation_config, source_provenance, write_json)
 from main.navigation_test_replay import replay_record
 from main.navigation_test_scheduler import experiment_lock, record_groups, run_workers
+from main.navigation_test_storage import (compact_receipt, finish_retirement, retire_record,
+                                          retired_results_valid, storage_summary, verify_result)
 
 METHODS=("N0","N1","N2","N3","A1","A2","A3")
 
 
 def validate_config(config):
+    if config.get("sensor_retention", "all") not in ("all", "compact"):
+        raise ValueError("sensor_retention must be all or compact")
+    for name in ("retain_replicates", "anomaly_windows_per_record"):
+        value = config.get(name, 1 if name == "retain_replicates" else 3)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a nonnegative integer")
+    value = config.get("anomaly_context_s", 1.)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value) or value <= 0:
+        raise ValueError("anomaly_context_s must be positive finite seconds")
     for name in ("workers", "render_threads", "torch_threads"):
         value = config.get(name, 1)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -96,20 +107,6 @@ def verify_record(directory):
     return True
 
 
-def verify_result(directory, input_record_sha256=None):
-    directory=Path(directory)
-    try:
-        meta=json.loads((directory/"run.json").read_text())
-        hashes=json.loads((directory/"result_hashes.json").read_text())
-        if input_record_sha256 is not None and meta.get("input_record_sha256")!=input_record_sha256:
-            return False
-        if meta.get("status")!="complete" or meta.get("completed_duration_s",0)<meta["planned_duration_s"]-1e-8:
-            return False
-        return all((directory/name).is_file() and digest(directory/name)==expected for name,expected in hashes.items()) and {"run.json","steps.jsonl"}<=hashes.keys()
-    except (OSError,KeyError,ValueError):
-        return False
-
-
 def runtime(config):
     import torch
     torch.set_num_threads(config["torch_threads"])
@@ -148,8 +145,26 @@ def run_record_group(job, state):
     check=dict(status="checking",record_id=job["record_id"],attempt_id=state.get("attempt_id"))
     write_json(check_path,check)
     try:
+        receipt=compact_receipt(record)
+        rebuild=False
+        if receipt is not None:
+            if not state["resume"]:
+                raise FileExistsError(f"Retired record already exists: {record}")
+            if retired_results_valid(record,output,job,receipt):
+                receipt=finish_retirement(record,receipt)
+                write_json(check_path,{**check,"status":"passed","input_record_sha256":receipt["input_record_sha256"]})
+                print(json.dumps(dict(event="sensor_storage",record_id=job["record_id"],
+                    state=receipt["state"],released_sensor_bytes=receipt["released_sensor_bytes"])),flush=True)
+                for case in job["cases"]:
+                    print(json.dumps(dict(event="case_finished",case=case["id"],record_id=job["record_id"],
+                        failures=[],skipped_methods=case["methods"],status="complete")),flush=True)
+                return
+            # Rebuild all dependent results when retired evidence needs repair.
+            rebuild=True
+            print(json.dumps(dict(event="retired_record_rebuild",record_id=job["record_id"],
+                reason="result or retained observation failed verification; replaying all dependent methods")),flush=True)
         existing=record/"run.json"
-        reused=existing.exists() and verify_record(record)
+        reused=not rebuild and existing.exists() and verify_record(record)
         if not reused:
             if record.exists():
                 if not state["resume"]:raise FileExistsError(record)
@@ -165,6 +180,7 @@ def run_record_group(job, state):
         record_error=f"{type(exc).__name__}: {exc}"
         write_json(check_path,{**check,"status":"failed","error":record_error})
         print(json.dumps(dict(event="record_failed",record_id=job["record_id"],error=record_error)),flush=True)
+    group_failed=record_error is not None
     for case in job["cases"]:
         failures=[];skipped=[]
         if record_error:
@@ -181,16 +197,29 @@ def run_record_group(job, state):
                 except Exception as exc:
                     failure=dict(case=case["id"],method=method,phase="replay",error=f"{type(exc).__name__}: {exc}")
                     failures.append(failure)
+                    group_failed=True
                     print(json.dumps(dict(event="replay_failed",**failure)),flush=True)
         print(json.dumps(dict(event="case_finished",case=case["id"],record_id=job["record_id"],
             failures=failures,skipped_methods=skipped,status="failed" if failures else "complete")),flush=True)
+    if not group_failed:
+        try:
+            receipt=retire_record(record,output,job,state["config"],external=bool(state["source"]))
+        except Exception as exc:
+            # A post-replay verification failure must not leave a passed marker
+            # that could admit damaged numerical evidence to later analysis.
+            write_json(check_path,{**check,"status":"failed","error":f"Storage verification/cleanup: {exc}"})
+            raise
+        if receipt:
+            print(json.dumps(dict(event="sensor_storage",record_id=job["record_id"],
+                state=receipt["state"],released_sensor_bytes=receipt.get("released_sensor_bytes",0),
+                retained_sensor_files=receipt.get("retained_sensor_files"))),flush=True)
 
 
 def run(args):
     config=yaml.safe_load(path(args.config).read_text())
     config.setdefault("workers",2)
     for key in ("device","renderer","render_device","render_python","seeds_per_cell","suite",
-                "workers","render_threads","torch_threads"):
+                "workers","render_threads","torch_threads","sensor_retention","retain_replicates"):
         value=getattr(args,key,None)
         if value is not None:config[key]=value
     smoke=args.command=="smoke"
@@ -316,6 +345,7 @@ def execute_experiment(output,snapshot,config,plan,jobs,base,landing,cal,geometr
             ended_utc=datetime.now(timezone.utc).isoformat(),failures=metadata["failures"],
             completed_cases=metadata["completed_cases"],error=metadata.get("error"))
         write_json(output/"manifest.json",metadata)
+        write_json(output/"storage_summary.json",storage_summary(output))
     analyze(output,bootstrap_samples=config["evaluation"]["bootstrap_samples"])
     print(json.dumps(dict(event="navigation_tests_complete",output=str(output),status=metadata["status"])),flush=True)
     return 1 if metadata["failures"] else 0
@@ -338,12 +368,14 @@ def main():
     p.add_argument("--workers",type=int,help="concurrent sensor-record jobs (default config: 2)")
     p.add_argument("--render-threads",type=int,help="Blender CPU threads per worker")
     p.add_argument("--torch-threads",type=int,help="PyTorch CPU threads per worker")
+    p.add_argument("--sensor-retention",choices=["compact","all"],help="compact retires successful groups after replay")
+    p.add_argument("--retain-replicates",type=int,help="compact: full records for first N seeds per weather/motion/gimbal cell")
     p.add_argument("--resume",action="store_true")
     a=p.parse_args()
     if a.command=="analyze":
         if not a.output:p.error("analyze requires --output pointing to an experiment")
-        if any(getattr(a,key) is not None for key in ("workers","render_threads","torch_threads")):
-            p.error("workers/thread options apply only to smoke/run")
+        if any(getattr(a,key) is not None for key in ("workers","render_threads","torch_threads","sensor_retention","retain_replicates")):
+            p.error("workers/thread/storage options apply only to smoke/run")
         from main.navigation_test_analysis import analyze
         with experiment_lock(path(a.output)):
             analyze(path(a.output))

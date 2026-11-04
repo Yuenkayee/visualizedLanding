@@ -18,6 +18,12 @@ render_device: OPTIX
 workers: 2
 render_threads: 4
 torch_threads: 2
+# Keep all numerical evidence. Retire generated sensors only after every method
+# and fault sharing the record finishes and passes integrity checks.
+sensor_retention: compact
+retain_replicates: 1  # first seed per weather/motion/gimbal cell (24 records in all)
+anomaly_context_s: 1.0  # +/- seconds around each selected diagnostic event
+anomaly_windows_per_record: 3
 # No model, noise, gate, geometry or training-weight overrides here.
 # Nominal prior for generated kinematic flights is the prescribed mission IC,
 # not the sampled initial truth; recorded runs retain their original prior.

@@ -4,7 +4,6 @@ Trajectory truth is confined to synthesis/scoring. A fixed N3 observer commands
 the camera during recording; no navigation output can change the aircraft path.
 """
 from copy import deepcopy
-import hashlib
 import json
 from pathlib import Path
 import time
@@ -14,6 +13,7 @@ from scipy.spatial.transform import Rotation, Slerp
 import yaml
 
 from main.config import path
+from main.navigation_test_io import clean, digest, read_jsonl, write_json
 from main.sensors import Sensors
 from navigation.common.contracts import CameraFrame, LidarFrame
 from navigation.common.frames import invert, transform
@@ -27,39 +27,6 @@ from visual_modeling.trajectories.landing import make_sortie
 
 NED_FROM_WORLD = np.array([[0., 1., 0.], [1., 0., 0.], [0., 0., -1.]])
 STAGE_NAMES = {"window_hold": "hover", "touchdown": "descent"}
-
-
-def clean(value):
-    """Strict JSON: absent/nonfinite evidence is null, never a fabricated zero."""
-    if isinstance(value, np.ndarray):
-        return clean(value.tolist())
-    if isinstance(value, (np.floating, float)):
-        return float(value) if np.isfinite(value) else None
-    if isinstance(value, np.integer):
-        return int(value)
-    if isinstance(value, np.bool_):
-        return bool(value)
-    if isinstance(value, dict):
-        return {str(k): clean(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [clean(v) for v in value]
-    return value
-
-
-def write_json(filename, value):
-    filename = Path(filename)
-    filename.parent.mkdir(parents=True, exist_ok=True)
-    tmp = filename.with_suffix(filename.suffix + ".tmp")
-    tmp.write_text(json.dumps(clean(value), ensure_ascii=False, indent=2, allow_nan=False) + "\n")
-    tmp.replace(filename)
-
-
-def digest(filename):
-    h = hashlib.sha256()
-    with Path(filename).open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def cases(config, smoke=False):
@@ -124,13 +91,6 @@ def scale_motion(landing, factor):
     for key in ("approach_start_amplitude_rad", "approach_end_amplitude_rad", "hold_amplitude_rad", "touchdown_amplitude_rad"):
         c["motion"]["attitude"][key] = (np.asarray(c["motion"]["attitude"][key]) * factor).tolist()
     return c
-
-
-def read_jsonl(filename):
-    with Path(filename).open() as f:
-        for line in f:
-            if line.strip():
-                yield json.loads(line)
 
 
 def source_provenance(source):
