@@ -67,6 +67,84 @@ def test_missing_pip_check_never_installs(monkeypatch):
         deploy.ensure_pip("/missing/python", True)
 
 
+def cv_report(*providers, error=None):
+    return dict(status="failed" if error else "ready", error=error,
+                packages=[dict(name=p, version="4.10.0.84") for p in providers],
+                numpy=dict(version="1.26.4", path="/env/numpy/__init__.py"),
+                cv2=dict(version="4.10.0", path="/env/cv2/__init__.py"))
+
+
+def test_real_opencv_probe_in_fresh_process():
+    report = deploy.inspect_opencv()
+    assert report["status"] == "ready", report
+    assert report["resize"] == report["torch_numpy"] == "passed"
+    assert report["numpy"]["path"] and report["cv2"]["path"]
+
+
+def test_opencv_probe_reports_native_error(monkeypatch):
+    import cv2
+
+    def fail(*args, **kwargs):
+        raise cv2.error("src is not a numpy array, neither a scalar")
+
+    monkeypatch.setattr(cv2, "resize", fail)
+    report = deploy.opencv_probe()
+    assert report["status"] == "failed"
+    assert "not a numpy array" in report["error"]
+    assert "Traceback" in report["traceback"]
+    assert report["numpy"]["path"] and report["cv2"]["path"]
+
+
+@pytest.mark.parametrize("conflict", [True, False])
+def test_opencv_check_only_preserves_broken_environment(tmp_path, monkeypatch, conflict):
+    report = (cv_report("opencv-python", "opencv-python-headless") if conflict else
+              cv_report("opencv-python-headless", error="src is not a numpy array"))
+    monkeypatch.setattr(deploy, "inspect_opencv", lambda: report)
+    monkeypatch.setattr(deploy.dependencies, "run", lambda *a: pytest.fail("install attempted"))
+    with pytest.raises(RuntimeError, match="rerun without --check-only"):
+        deploy.ensure_opencv(True, tmp_path)
+    assert json.loads((tmp_path / "opencv-numpy-before.json").read_text())["status"] == "failed"
+
+
+@pytest.mark.parametrize("conflict", [True, False])
+def test_opencv_repairs_shared_namespace_or_broken_binary_once(tmp_path, monkeypatch, conflict):
+    bad = (cv_report("opencv-contrib-python", "opencv-python-headless") if conflict else
+           cv_report("opencv-python-headless", error="src is not a numpy array"))
+    reports = iter([bad, cv_report("opencv-python-headless")])
+    monkeypatch.setattr(deploy, "inspect_opencv", lambda: next(reports))
+    commands = []
+    monkeypatch.setattr(deploy.dependencies, "run", lambda cmd: commands.append(cmd))
+    assert deploy.ensure_opencv(False, tmp_path)["status"] == "ready"
+    assert commands[0][:5] == [sys.executable, "-m", "pip", "uninstall", "-y"]
+    assert set(commands[0][5:]) == {p["name"] for p in bad["packages"]}
+    assert set(commands[1][3:]) == {"install", "--no-cache-dir", "--force-reinstall", "--no-deps",
+                                   "numpy==1.26.4", "opencv-python-headless==4.10.0.84"}
+    assert json.loads((tmp_path / "opencv-numpy-before.json").read_text())["status"] == "failed"
+    assert json.loads((tmp_path / "opencv-numpy-after.json").read_text())["status"] == "ready"
+
+
+def test_opencv_shadowing_stops_after_one_repair(monkeypatch):
+    def shadowed():
+        report = cv_report("opencv-python-headless")
+        report["numpy"]["version"] = "2.3.2"
+        return report
+
+    monkeypatch.setattr(deploy, "inspect_opencv", shadowed)
+    commands = []
+    monkeypatch.setattr(deploy.dependencies, "run", lambda cmd: commands.append(cmd))
+    with pytest.raises(RuntimeError, match="repair failed in a fresh interpreter.*NumPy 2.3.2"):
+        deploy.ensure_opencv(False)
+    assert len(commands) == 2
+
+
+def test_opencv_probe_crash_is_failure(monkeypatch):
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *a, **kw:
+                        argparse.Namespace(returncode=-11, stdout="", stderr="native crash"))
+    report = deploy.inspect_opencv()
+    assert report["status"] == "failed" and report["returncode"] == -11
+    assert report["stderr"] == "native crash"
+
+
 def test_real_checkpoint_inference_runs_on_cpu():
     import torch
 
@@ -111,6 +189,7 @@ def test_fixed_replay_and_analysis_skip_renderer(tmp_path, monkeypatch, source, 
     calls = []
     monkeypatch.setattr(deploy, "ensure_pip", lambda *a: None)
     monkeypatch.setattr(deploy.dependencies, "ensure_requirements", lambda *a: calls.append(a))
+    monkeypatch.setattr(deploy, "ensure_opencv", lambda *a: {"status": "ready"})
     monkeypatch.setattr(deploy.dependencies, "ensure_torch", lambda *a: pytest.fail("GPU check attempted"))
     monkeypatch.setattr(deploy.bootstrap, "ensure_matlab", lambda *a: pytest.fail("MATLAB install attempted"))
     monkeypatch.setattr(deploy, "setup_renderer", lambda *a: pytest.fail("renderer was required"))
@@ -133,6 +212,7 @@ def test_config_defaults_and_cli_precedence(tmp_path, monkeypatch, override, cap
     config.write_text(f"device: cpu\nrenderer: cpu\nrender_device: CPU\ncheckpoint: {checkpoint}\n")
     monkeypatch.setattr(deploy, "ensure_pip", lambda *a: None)
     monkeypatch.setattr(deploy.dependencies, "ensure_requirements", lambda *a: None)
+    monkeypatch.setattr(deploy, "ensure_opencv", lambda *a: {"status": "ready"})
     monkeypatch.setattr(deploy.dependencies, "ensure_torch", lambda *a: pytest.fail("CPU config ignored"))
     monkeypatch.setattr(deploy, "check_inference", lambda *a: {"inference": "passed"})
     monkeypatch.setattr(deploy, "setup_renderer", lambda *a: pytest.fail("recorded inputs need no renderer"))
@@ -193,7 +273,9 @@ def test_deserialization_failure_writes_failed_report(tmp_path, monkeypatch):
 
     monkeypatch.setattr(deploy, "setup", fail)
     assert deploy.main(["--runtime", "--config", str(config), "--report-dir", str(report), "--check-only"]) == 1
-    assert json.loads((report / "environment.json").read_text()) == {"status": "failed", "error": "invalid checkpoint"}
+    failure = json.loads((report / "environment.json").read_text())
+    assert failure["status"] == "failed" and failure["error"] == "invalid checkpoint"
+    assert failure["python"] == sys.executable and "UnpicklingError" in failure["traceback"]
 
 
 @pytest.fixture

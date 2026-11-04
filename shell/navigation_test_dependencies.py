@@ -6,6 +6,7 @@ are ready. --check-only permits reports/probes but never installs dependencies.
 
 import argparse
 import hashlib
+import importlib.metadata as metadata
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import traceback
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -25,6 +27,10 @@ from shell.render_environment import probe_renderer, renderer_environment
 
 PROFILE = ROOT / "requirements-navigation-test.txt"
 RENDER_PROFILE = ROOT / "requirements-render-server.txt"
+OPENCV_PACKAGES = (
+    "opencv-python", "opencv-python-headless",
+    "opencv-contrib-python", "opencv-contrib-python-headless",
+)
 
 
 def project_path(value):
@@ -104,6 +110,112 @@ def ensure_tmux(check):
     if not match or tuple(map(int, match.groups())) < (3, 2):
         raise RuntimeError(f"Need tmux >=3.2 for argument-safe background launch; found {version!r}")
     print(f"[navigation] {version}", flush=True)
+
+
+def opencv_probe():
+    """Run only in a disposable interpreter: pip can replace native modules.
+
+    All four OpenCV wheels install the same cv2 namespace. Distribution
+    metadata alone cannot detect overwritten binaries or a broken NumPy bridge.
+    """
+    report = dict(status="failed", python=sys.executable, packages=[])
+    try:
+        for dist in metadata.distributions():
+            name = (dist.metadata.get("Name") or "").lower().replace("_", "-")
+            if name in (*OPENCV_PACKAGES, "numpy"):
+                report["packages"].append(dict(name=name, version=dist.version,
+                                               location=str(dist.locate_file(""))))
+        import cv2
+        import numpy as np
+        import torch
+
+        report.update(numpy=dict(version=np.__version__, path=np.__file__),
+                      cv2=dict(version=cv2.__version__, path=cv2.__file__))
+        source = np.arange(16 * 16 * 3, dtype=np.uint8).reshape(16, 16, 3)
+        resized = cv2.resize(source, (8, 8))
+        assert resized.shape == (8, 8, 3) and resized.dtype == np.uint8
+        # Exercise both image preprocessing and the network's NumPy round trip.
+        value = resized.astype(np.float32).transpose(2, 0, 1)[None] / 255.0
+        restored = torch.from_numpy(value).numpy()
+        assert np.array_equal(value, restored), "PyTorch/NumPy round trip failed"
+        mask = cv2.resize((restored[0, 0] > 0.5).astype(np.uint8), (16, 16),
+                          interpolation=cv2.INTER_NEAREST)
+        assert mask.shape == (16, 16) and mask.dtype == np.uint8
+        assert cv2.cvtColor(source, cv2.COLOR_RGB2GRAY).shape == (16, 16)
+        report.update(status="ready", resize="passed", torch_numpy="passed")
+    except Exception as exc:
+        report.update(error=str(exc), traceback=traceback.format_exc())
+    return report
+
+
+def inspect_opencv():
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).absolute()), "--opencv-probe"],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    try:
+        # Keep preceding native-library diagnostics without treating them as JSON.
+        report = json.loads(result.stdout.splitlines()[-1])
+    except (ValueError, IndexError):
+        report = dict(status="failed", python=sys.executable, packages=[],
+                      error="OpenCV/NumPy probe did not return a report", stdout=result.stdout)
+    report.update(returncode=result.returncode, stderr=result.stderr)
+    if result.returncode:
+        report["status"] = "failed"
+    return report
+
+
+def ensure_opencv(check, report_dir=None):
+    """Repair only the numerical/image bridge; never change Torch or weights."""
+    pins = {r.name: r for r in dependencies.requirements(ROOT / "requirements-data.txt")
+            if r.name in ("numpy", "opencv-python-headless")}
+
+    def inspect(label):
+        report = inspect_opencv()
+        problems = []
+        if report["status"] != "ready":
+            problems.append(report.get("error", "native probe failed"))
+        providers = [p for p in report["packages"] if p["name"] in OPENCV_PACKAGES]
+        if len(providers) != 1 or providers[0]["name"] != "opencv-python-headless":
+            problems.append("cv2 must have exactly one provider: opencv-python-headless; found "
+                            + repr([(p["name"], p["version"]) for p in providers]))
+        numpy_version = report.get("numpy", {}).get("version")
+        if numpy_version and numpy_version not in pins["numpy"].specifier:
+            problems.append(f"Imported NumPy {numpy_version}, expected {pins['numpy']}")
+        # OpenCV omits the wheel build suffix from cv2.__version__.
+        expected_cv = str(next(iter(pins["opencv-python-headless"].specifier)).version).rsplit(".", 1)[0]
+        cv_version = report.get("cv2", {}).get("version")
+        if cv_version and cv_version != expected_cv:
+            problems.append(f"Imported cv2 {cv_version}, expected {expected_cv}")
+        report["problems"] = problems
+        if problems:
+            report["status"] = "failed"
+        if report_dir:
+            directory = Path(report_dir)
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / f"opencv-numpy-{label}.json").write_text(json.dumps(report, indent=2) + "\n")
+        return report
+
+    report = inspect("before")
+    if report["problems"]:
+        print("[navigation] OpenCV/NumPy diagnostics: " + json.dumps(report), flush=True)
+        if check:
+            raise RuntimeError("OpenCV/NumPy runtime check failed; rerun without --check-only: "
+                               + "; ".join(report["problems"]))
+        print("[navigation] Repairing shared cv2 files and pinned NumPy/OpenCV wheels", flush=True)
+        providers = sorted({p["name"] for p in report["packages"] if p["name"] in OPENCV_PACKAGES})
+        if providers:
+            dependencies.run([sys.executable, "-m", "pip", "uninstall", "-y", *providers])
+        dependencies.run([sys.executable, "-m", "pip", "install", "--no-cache-dir",
+                          "--force-reinstall", "--no-deps", *map(str, pins.values())])
+        report = inspect("after")
+        if report["problems"]:
+            raise RuntimeError("OpenCV/NumPy repair failed in a fresh interpreter: "
+                               + "; ".join(report["problems"])
+                               + ". Inspect opencv-numpy-after.json for imported module paths; "
+                                 "use an isolated Python 3.12 environment if Conda/user-site/PYTHONPATH shadows them.")
+    print("[navigation] OpenCV resize and PyTorch/NumPy round trip: OK", flush=True)
+    return report
 
 
 def setup_renderer(check, python, render_device, report_dir=None, threads=8):
@@ -195,6 +307,7 @@ def setup(args):
             raise RuntimeError("CUDA benchmark requires Linux x86_64; select --device cpu locally")
         dependencies.ensure_torch(args.check_only)
     dependencies.ensure_requirements(sys.executable, PROFILE, args.check_only)
+    opencv_report = ensure_opencv(args.check_only, args.report_dir)
     # Probe imports in this fresh selected interpreter, not just package metadata.
     import cv2
     import matplotlib
@@ -210,7 +323,7 @@ def setup(args):
                   torch=torch.__version__, torch_cuda=torch.version.cuda, device=args.device,
                   renderer=args.renderer, render_device=args.render_device, render_python=None,
                   matlab_required=False, requirements_sha256=sha256(PROFILE),
-                  scientific_result=False)
+                  scientific_result=False, opencv_numpy=opencv_report)
     if args.analysis_only:
         return report
     if args.device == "cuda" and (torch.__version__.split("+")[0], torch.version.cuda) != ("2.8.0", "12.8"):
@@ -257,8 +370,13 @@ def main(argv=None):
     parser.add_argument("--with-tmux", action="store_true")
     parser.add_argument("--analysis-only", action="store_true", help="skip checkpoint, GPU and renderer probes")
     parser.add_argument("--runtime", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--opencv-probe", action="store_true", help=argparse.SUPPRESS)
     arguments = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(arguments)
+    if args.opencv_probe:
+        report = opencv_probe()
+        print(json.dumps(report), flush=True)
+        return 0 if report["status"] == "ready" else 1
     if args.report_dir:
         args.report_dir = project_path(args.report_dir)
     try:
@@ -289,7 +407,9 @@ def main(argv=None):
         # failed report, not stale success metadata or an unclassified traceback.
         if args.report_dir:
             args.report_dir.mkdir(parents=True, exist_ok=True)
-            (args.report_dir / "environment.json").write_text(json.dumps(dict(status="failed", error=str(exc)), indent=2) + "\n")
+            (args.report_dir / "environment.json").write_text(json.dumps(dict(
+                status="failed", error=str(exc), python=sys.executable,
+                traceback=traceback.format_exc()), indent=2) + "\n")
         print(f"Navigation dependency check failed: {exc}", file=sys.stderr, flush=True)
         return 1
 

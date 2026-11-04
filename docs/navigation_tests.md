@@ -43,6 +43,26 @@ Torch version. Native imports, a CUDA tensor operation, checkpoint loading and
 an actual `HDetector` forward pass with finite outputs are checked. A blank probe
 image need not produce a detection; this check establishes execution, not accuracy.
 
+The checker also exercises `cv2.resize`, colour conversion and the PyTorch/NumPy
+round trip in a fresh Python process. It requires a single provider of the `cv2`
+namespace: `opencv-python-headless==4.10.0.84`, with `numpy==1.26.4`.
+Preinstalled `opencv-python`/`opencv-contrib-python` variants can overwrite the
+same files even while the required headless distribution's metadata looks correct.
+If the native probe fails or multiple providers are found, normal `check` removes
+the installed OpenCV wheel variants, reinstalls only the pinned NumPy/headless
+wheels without cache, and probes again. Torch is not reinstalled by this repair.
+`--check-only` reports the conflict without changing packages. Logs include
+`opencv-numpy-before.json` and, after a repair, `opencv-numpy-after.json`, with
+package versions, imported paths and errors. A failed `environment.json` also
+contains the Python path and full traceback.
+
+For `resize: src is not a numpy array` during dependency checks, sync the updated
+checker and rerun `check` without `--check-only`. The inference probe uses a
+generated NumPy image; no dataset is read. If repair still fails, use the logged
+import paths to check for Conda, user-site or `PYTHONPATH` shadowing, or select a
+clean Python 3.12 virtual environment through `PYTHON_BIN`. Do not change the
+navigation parameters or checkpoint to work around an environment failure.
+
 The checkpoint comes from the benchmark's `base_config`, currently
 `main/navigation_observer.yaml`, which selects
 `visual_training/checkpoints/four_weather_v1/best.pt`. The checker records its
