@@ -1,0 +1,8 @@
+# Navigation benchmark coordinator; never install the old Torch 2.5/cu124 lock.
+# Production: Ubuntu 22.04 x86_64, Python 3.12, PyTorch 2.8.0 CUDA 12.8.
+-r requirements-data.txt
+torch==2.8.0 ; sys_platform == 'linux'
+# Existing macOS Python 3.11/3.12 environment: local CPU plumbing checks only.
+torch==2.5.1 ; sys_platform == 'darwin'
+matplotlib==3.9.2
+# bpy belongs ONLY in the optional isolated requirements-render-server runtime.

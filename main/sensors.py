@@ -80,6 +80,12 @@ class SensorGenerator:
 
     def observe(self, truth, camera, lidar, index):
         t = truth.timestamp
+        # Optional experiment mode: random draws belong to physical ticks and
+        # channels, independent of method branches and missing sensor packets.
+        # Existing single-flight operation keeps its original RNG behaviour.
+        if self.c.get("sensor_seed_by_tick", False):
+            self.rng_camera = np.random.default_rng(np.random.SeedSequence([self.c["seed"], index, 17]))
+            self.rng_lidar = np.random.default_rng(np.random.SeedSequence([self.c["seed"], index, 29]))
         pose = truth.T_deck_camera
         mount = truth.T_body_camera
         output = dict(timestamp=np.array(t))
@@ -90,6 +96,9 @@ class SensorGenerator:
             from visual_modeling.blender.landing_environment import update_environment
 
             ship, cam, ocean, helicopter = self.scene
+            if self.c.get("sensor_seed_by_tick", False):
+                bpy.context.scene.cycles.seed = int(np.random.SeedSequence(
+                    [self.c["seed"], index, 43]).generate_state(1)[0] % (2**31 - 1))
             apply_poses(ship, cam, truth.T_world_deck, pose)
             helicopter.matrix_world = Matrix(truth.T_world_deck @ pose @ invert(mount))
             sea = {
@@ -139,7 +148,17 @@ class SensorGenerator:
             annotation = make_annotation(
                 t, "live", index, "", "", self.points, pose, self.cal
             )
-            image, _ = apply_landing_effects(
+            if self.c.get("save_sensor_labels", False):
+                from visual_modeling.sensors.airframe_visibility import airframe_occlusion
+                from navigation.common.frames import transform_points
+                visible = np.asarray(annotation["visibility"], bool)
+                visible &= ~airframe_occlusion(mount[:3, 3],
+                    transform_points(mount @ invert(pose), self.points), self.primitives)
+                if self.scene is not None:
+                    from visual_modeling.blender.export_annotations import keypoint_visibility
+                    visible &= keypoint_visibility(self.points, self.scene[0], self.scene[1])
+                annotation["visibility"] = visible.tolist()
+            image, mask = apply_landing_effects(
                 image,
                 mask,
                 annotation,
@@ -152,6 +171,12 @@ class SensorGenerator:
                 self.cal,
             )
             output["image"] = image
+            if self.c.get("save_sensor_labels", False):
+                # Scoring-only arrays. The benchmark passes ONLY RGB/points
+                # and encoder data to the estimator, never these labels.
+                output["label_mask"] = (mask > 0).astype(np.uint8)
+                output["label_keypoints"] = np.asarray(annotation["keypoints"])
+                output["label_visibility"] = np.asarray(annotation["visibility"], bool)
         if lidar:
             T = pose @ self.cal.camera_lidar_at(GimbalSample(t, mount), t)
             cloud = (

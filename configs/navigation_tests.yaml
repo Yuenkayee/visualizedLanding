@@ -1,0 +1,47 @@
+# Thesis 5.2.3 navigation-only experiment. Algorithms/checkpoint remain frozen.
+base_config: main/navigation_observer.yaml
+dt: 0.02
+camera_hz: 10.0
+lidar_hz: 5.0
+weather: [clear, fog, night, night_fog]
+# Internal motion categories, NOT certified sea-state classes. Scale only the
+# scene's roll/pitch/heave and aircraft attitude/vibration amplitudes.
+motion_scales: {low: 0.5, medium: 1.0, high: 1.5}
+seeds_per_cell: 20
+seed: 20261103
+methods: [N0, N1, N2, N3, A1, A2, A3]
+suite: all
+device: cuda
+renderer: blender
+render_device: OPTIX
+render_threads: 8
+torch_threads: 4
+# No model, noise, gate, geometry or training-weight overrides here.
+# Nominal prior for generated kinematic flights is the prescribed mission IC,
+# not the sampled initial truth; recorded runs retain their original prior.
+stress_seeds_per_cell: 3
+stress:
+  - {name: camera_gap_short, kind: camera_gap, stage: descent, start_fraction: 0.25, duration_s: 0.5}
+  - {name: camera_gap_limit, kind: camera_gap, stage: descent, start_fraction: 0.25, duration_s: 1.0}
+  - {name: camera_gap_long, kind: camera_gap, stage: descent, start_fraction: 0.25, duration_s: 2.0}
+  - {name: joint_gap, kind: joint_gap, stage: descent, start_fraction: 0.25, duration_s: 2.0}
+  - {name: camera_dropout, kind: camera_dropout, probability: 0.2}
+  - {name: lidar_dropout, kind: lidar_dropout, probability: 0.5}
+  - {name: lidar_point_loss, kind: lidar_point_loss, probability: 0.5}
+  - {name: initial_position_bias, kind: initial_position_bias, offset_m: [2.0, -2.0, 1.0]}
+  - {name: initial_attitude_bias, kind: initial_attitude_bias, rotation_deg: [2.0, -2.0, 3.0]}
+  - {name: mount_bias, kind: mount_bias, offset_m: [0.05, 0.0, 0.0], rotation_deg: [0.5, 0.0, 0.0]}
+  - {name: ship_attitude_bias, kind: ship_attitude_bias, rotation_deg: [0.5, 0.5, 0.0]}
+  - {name: stale_encoder, kind: stale_encoder, stage: descent, start_fraction: 0.25, duration_s: 1.0, offset_s: 0.02}
+  - {name: delayed_camera, kind: delayed_camera, delay_s: 0.1}
+  - {name: delayed_lidar, kind: delayed_lidar, delay_s: 0.2}
+evaluation:
+  # Evaluation requirements are distinct from the unchanged health gates.
+  # Null leaves false-valid/pass-fail decisions unscored; errors are still saved.
+  false_valid_error_m: 1.0
+  max_outage_s: 0.5
+  false_valid_sensitivity_m: [0.5, 1.0, 2.0]
+  outage_sensitivity_s: [0.2, 0.5, 1.0]
+  threshold_basis: "Provisional navigation evaluation: 1 m detects metre-scale erroneous valid outputs; 0.5 s equals five missing camera periods. Not a touchdown or certification criterion."
+  bootstrap_samples: 2000
+  bootstrap_seed: 192837

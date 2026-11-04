@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.venv-navigation/
 .venv-render-server/
 .venv.backup.*/
 .venv-render-server.backup.*/
@@ -40,3 +41,4 @@ data/landing_robust/
 data/landing_robust_test/
 outputs/replay/
 outputs/closed_loop/
+outputs/navigation_tests/
