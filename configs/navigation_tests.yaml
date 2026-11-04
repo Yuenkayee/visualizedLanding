@@ -14,8 +14,10 @@ suite: all
 device: cuda
 renderer: blender
 render_device: OPTIX
-render_threads: 8
-torch_threads: 4
+# Single RTX 4090 / 16 vCPU starting profile. Each process owns its CUDA state.
+workers: 2
+render_threads: 4
+torch_threads: 2
 # No model, noise, gate, geometry or training-weight overrides here.
 # Nominal prior for generated kinematic flights is the prescribed mission IC,
 # not the sampled initial truth; recorded runs retain their original prior.

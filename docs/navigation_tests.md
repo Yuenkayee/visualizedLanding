@@ -118,25 +118,35 @@ Dependencies are checked before every smoke/run, including background runs.
 # Two seconds of simulated time; always foreground, not a two-second wall timeout.
 bash shell/run_navigation_tests.sh smoke --output outputs/navigation_tests/smoke_check
 
+# Two records (main/tracking shared + fixed), two workers, two simulated seconds.
+bash shell/run_navigation_tests.sh smoke --suite gimbal --workers 2 \
+  --output outputs/navigation_tests/smoke_concurrency
+
 # Local smoke using synthetic CPU rendering; exclude from scientific results.
 PYTHON_BIN=.venv/bin/python bash shell/run_navigation_tests.sh smoke \
   --device cpu --renderer cpu --render-device CPU \
   --output outputs/navigation_tests/local_cpu_smoke
 
-# Full suite, using the frozen configuration's seed count.
-bash shell/run_navigation_tests.sh run --suite all --output outputs/navigation_tests/study_01
+# Formal full suite, two workers, in tmux; thread limits apply to each worker.
+bash shell/run_navigation_tests.sh run --suite all --workers 2 \
+  --render-threads 4 --torch-threads 2 \
+  --output outputs/navigation_tests/study_01 \
+  --background --session navigation_study
 
-# Primary matrix only; background execution is optional and run-only.
-bash shell/run_navigation_tests.sh run --suite main \
-  --output outputs/navigation_tests/primary_01 \
-  --background --session navigation_primary
+# Serial collection for isolated timing; use a separate output and idle hardware.
+bash shell/run_navigation_tests.sh run --suite all --workers 1 \
+  --render-threads 4 --torch-threads 2 \
+  --output outputs/navigation_tests/study_serial \
+  --background --session navigation_serial
 
 # Resume with exactly the original config, suite, sources and other overrides.
-bash shell/run_navigation_tests.sh run --suite main --resume \
-  --output outputs/navigation_tests/primary_01
+bash shell/run_navigation_tests.sh run --suite all --workers 2 \
+  --render-threads 4 --torch-threads 2 --resume \
+  --output outputs/navigation_tests/study_01 \
+  --background --session navigation_study
 
 # Rebuild analysis from an existing experiment without starting a simulation.
-bash shell/run_navigation_tests.sh analyze --output outputs/navigation_tests/primary_01
+bash shell/run_navigation_tests.sh analyze --output outputs/navigation_tests/study_01
 ```
 
 The main entry point is `python -m main.navigation_tests {smoke,run,analyze}`.
@@ -146,9 +156,16 @@ for runs, `smoke_…` for smoke). Analysis and resume require an existing explic
 output. A new run must use a new directory. `--resume` is run-only; the main module
 checks frozen fingerprints and sensor integrity before reusing completed work.
 Changed code/configuration/weights/input require a new experiment directory.
+Worker count and thread limits are part of the frozen configuration: changing
+`--workers` (including switching from 2 to 1 for isolated timing),
+`--render-threads` or `--torch-threads` requires a **new output directory**.
 
 `--suite main|gimbal|stress|all` is optional; the full config defaults to `all`.
-Smoke defaults to one clear/medium primary case and two seconds.
+Smoke defaults to one clear/medium primary case, one independent sensor record
+and two seconds. Even with `--workers 2`, that single record cannot exercise
+multi-record concurrency. Use `smoke --suite gimbal --workers 2` as above: it
+creates two records, with main/tracking sharing one and fixed-gimbal using the
+other, so both worker slots can run during the two-second simulation.
 `--duration SECONDS` is **smoke-only**, positive and a multiple of 0.02 s. Formal
 runs use complete trajectories. `--seeds-per-cell N` overrides the full-run
 matrix for pilots; reduced matrices and smoke are not the 240-sortie study.
@@ -160,9 +177,67 @@ quoted `worker.sh`, and `exit.code` after completion. Preflight and foreground
 failures propagate through `tee`. With `--background`, successful launch means
 the tmux session started; inspect `exit.code` and the benchmark manifest for
 completion. tmux >=3.2 (Ubuntu 22.04 default) is required only for background
-execution. Attach with `tmux attach -t navigation_primary`; detach with Ctrl-B D.
-The worker preserves argument boundaries and selected runtime/GPU variables
+execution. Attach with `tmux attach -t navigation_study`; detach with Ctrl-B D.
+The shell worker preserves argument boundaries and selected runtime/GPU variables
 even when an existing tmux server has an older environment.
+
+## Concurrency and timing
+
+These overrides accept positive integers in either `--option value` or
+`--option=value` form. They are **smoke/run-only**, including resumed runs;
+`check`, standalone `--check-only` and `analyze` reject them before preflight.
+The launcher forwards them only to `main.navigation_tests`, never to the
+dependency checker. Omitted values come from the main module/config.
+
+| Option | Default | Scope |
+| --- | --- | --- |
+| `--workers N` | `workers: 2` | Maximum simultaneous independent record groups. |
+| `--render-threads N` | `render_threads: 4` | Renderer CPU threads per worker. |
+| `--torch-threads N` | `torch_threads: 2` | PyTorch CPU threads per worker. |
+
+The coordinator groups cases by `record_id`. All cases sharing a record run
+serially on the same worker, including their method replays; the shared sensor
+record is generated once. Distinct record groups run concurrently in spawned
+processes using Python's standard library, with no extra dependency. Actual
+concurrency is bounded by both the worker limit and available record groups.
+A fixed-input `--source` replay supplies only one record. The grouping preserves
+the paired design and does not increase the number of independent sorties.
+
+Thread limits are per worker, not a machine-wide pool. With two workers, budget
+for two renderers and two inference processes sharing CPU, GPU memory and GPU
+compute. Each worker retains chronological, causal **0.02 s** navigation steps;
+concurrency is across records, not across timestamps within a replay. Navigation
+algorithms, method definitions, estimator settings and checkpoint weights stay
+unchanged.
+
+Keep the per-worker log files under the experiment output together with the
+runtime metadata in `manifest.json`, `frozen.json`, records and results. Worker
+logs are `workers/worker_<index>_<pid>.log`; terminal progress includes `worker`
+and `pid` so concurrent cases can be distinguished. Use the worker
+logs to diagnose record/replay failures and the runtime metadata to report the
+worker/thread settings and hardware. The launcher's `console.log` and shell
+`worker.sh` describe the overall invocation; retain these preflight/launch logs
+as well when archiving an experiment.
+
+Only the coordinator writes the global manifest and starts final analysis.
+An output-directory lock rejects a second simultaneous run/resume. Ctrl-C,
+SIGTERM and terminal SIGHUP trigger bounded cleanup of workers and their renderer
+children. An abrupt worker crash interrupts the experiment instead of reporting
+success; completed files remain available for a matching `--resume`.
+`record_checks/` holds durable input-validation state, and each replay result is
+bound to its exact sensor-record fingerprint. Regenerating a record invalidates
+its old results across later interruptions as well. Keep this directory with
+the records/results. The manifest preserves `attempts` history on resume; per-run
+metadata records the originating runtime and the recording runtime so retained
+timings are not attributed to a replacement server.
+
+Concurrent per-step/method timings include contention for shared resources.
+Report them as **shared-resource timings**; report total wall time and completed
+records per unit time separately. They are not isolated inference latency. For isolated
+latency measurements, collect a separate experiment with `--workers 1` on idle
+hardware; do not run the concurrent and serial examples simultaneously. Keep
+device, render backend, thread settings and weights comparable and disclose all
+runtime settings. Rendering wall time remains distinct from navigation latency.
 
 ## Trajectory and observation provenance
 

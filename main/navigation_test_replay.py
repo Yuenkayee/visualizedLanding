@@ -113,9 +113,13 @@ def replay_record(record, target, case, config, checkpoint, detector=None):
     signal=CgSignal(meta.get("cg_signal"))
     target.mkdir(parents=True,exist_ok=True)
     run=dict(status="running",method=method,case=case,record=str(record),
+        input_record_sha256=digest(record/"record_hashes.json") if (record/"record_hashes.json").exists() else None,
+        attempt_id=config.get("attempt_id"),runtime=config.get("runtime"),recording_runtime=meta.get("runtime"),
+        recording_attempt_id=meta.get("attempt_id"),
         planned_duration_s=meta["planned_duration_s"],completed_duration_s=0.,
         start_timestamp=rows[0]["timestamp"],
         device=config["device"],torch_threads=config["torch_threads"],render_threads=config["render_threads"],
+        execution=config.get("execution",{}),
         resolution=[cal.width,cal.height],precision="float32",gpu_synchronization="before and after inference blocks",
         fault_active_steps=0,
         excluded_from_formal=case.get("excluded_from_formal",False),

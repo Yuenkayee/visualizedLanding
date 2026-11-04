@@ -22,11 +22,16 @@ from main.config import ROOT, load, path
 from main.navigation_test_data import (cases, clean, digest, generate_record, import_record,
                                        navigation_config, source_provenance, write_json)
 from main.navigation_test_replay import replay_record
+from main.navigation_test_scheduler import experiment_lock, record_groups, run_workers
 
 METHODS=("N0","N1","N2","N3","A1","A2","A3")
 
 
 def validate_config(config):
+    for name in ("workers", "render_threads", "torch_threads"):
+        value = config.get(name, 1)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{name} must be a positive integer")
     if abs(float(config["dt"])-.02)>1e-12:
         raise ValueError("Navigation tests require dt=0.02 s")
     for name in ("camera_hz","lidar_hz"):
@@ -91,11 +96,13 @@ def verify_record(directory):
     return True
 
 
-def verify_result(directory):
+def verify_result(directory, input_record_sha256=None):
     directory=Path(directory)
     try:
         meta=json.loads((directory/"run.json").read_text())
         hashes=json.loads((directory/"result_hashes.json").read_text())
+        if input_record_sha256 is not None and meta.get("input_record_sha256")!=input_record_sha256:
+            return False
         if meta.get("status")!="complete" or meta.get("completed_duration_s",0)<meta["planned_duration_s"]-1e-8:
             return False
         return all((directory/name).is_file() and digest(directory/name)==expected for name,expected in hashes.items()) and {"run.json","steps.jsonl"}<=hashes.keys()
@@ -115,14 +122,75 @@ def runtime(config):
                 torch_threads=torch.get_num_threads(),inference_precision="float32",
                 gpu_timing="torch.cuda.synchronize before/after measured navigation blocks",
                 renderer=config["renderer"],render_threads=config["render_threads"],
+                execution=config.get("execution", {}),
                 matlab="not used; navigation does not feed aircraft control")
 
 
-def run(args):
-    from main.navigation_test_analysis import analyze
+def initialize_worker(payload):
+    import cv2
     from navigation.vision.infer_h import HDetector
+    cv2.setNumThreads(1)
+    resources=runtime(payload["config"])
+    started=time.perf_counter()
+    detector=HDetector(payload["checkpoint"],payload["config"]["device"])
+    worker_config={**deepcopy(payload["config"]),"attempt_id":payload["attempt_id"],"runtime":resources}
+    return dict(payload,detector=detector,config=worker_config), dict(runtime=resources,
+        model_load_s=time.perf_counter()-started,network_input_size=detector.image_size)
+
+
+def run_record_group(job, state):
+    """One worker owns a sensor archive and every case that reuses that archive."""
+    output=Path(state["output"])
+    record=output/"records"/job["record_id"]
+    record_error=None
+    reused=False
+    check_path=output/"record_checks"/(job["record_id"]+".json")
+    check=dict(status="checking",record_id=job["record_id"],attempt_id=state.get("attempt_id"))
+    write_json(check_path,check)
+    try:
+        existing=record/"run.json"
+        reused=existing.exists() and verify_record(record)
+        if not reused:
+            if record.exists():
+                if not state["resume"]:raise FileExistsError(record)
+                shutil.rmtree(record)
+            if state["source"]:
+                import_record(state["source"],record,state["base"],state["duration"])
+            else:
+                generate_record(record,job["cases"][0],state["config"],state["base"],state["landing"],
+                    state["cal"],state["geometry"],state["nav"],state["duration"],state["source_trajectory"])
+        record_signature=digest(record/"record_hashes.json")
+        write_json(check_path,{**check,"status":"passed","input_record_sha256":record_signature})
+    except Exception as exc:
+        record_error=f"{type(exc).__name__}: {exc}"
+        write_json(check_path,{**check,"status":"failed","error":record_error})
+        print(json.dumps(dict(event="record_failed",record_id=job["record_id"],error=record_error)),flush=True)
+    for case in job["cases"]:
+        failures=[];skipped=[]
+        if record_error:
+            failures.append(dict(case=case["id"],record_id=job["record_id"],phase="record",error=record_error))
+        else:
+            for method in case["methods"]:
+                destination=output/"results"/case["id"]/method
+                if state["resume"] and reused and verify_result(destination,record_signature):
+                    skipped.append(method)
+                    continue
+                try:
+                    replay_record(record,destination,dict(case,method=method),state["config"],
+                                  state["checkpoint"],detector=state["detector"])
+                except Exception as exc:
+                    failure=dict(case=case["id"],method=method,phase="replay",error=f"{type(exc).__name__}: {exc}")
+                    failures.append(failure)
+                    print(json.dumps(dict(event="replay_failed",**failure)),flush=True)
+        print(json.dumps(dict(event="case_finished",case=case["id"],record_id=job["record_id"],
+            failures=failures,skipped_methods=skipped,status="failed" if failures else "complete")),flush=True)
+
+
+def run(args):
     config=yaml.safe_load(path(args.config).read_text())
-    for key in ("device","renderer","render_device","render_python","seeds_per_cell","suite"):
+    config.setdefault("workers",2)
+    for key in ("device","renderer","render_device","render_python","seeds_per_cell","suite",
+                "workers","render_threads","torch_threads"):
         value=getattr(args,key,None)
         if value is not None:config[key]=value
     smoke=args.command=="smoke"
@@ -159,6 +227,13 @@ def run(args):
                    source_record=str(source),gimbal_mode="recorded",methods=config["methods"],excluded_from_formal=excluded)]
         if original.get("checkpoint_sha256") and original["checkpoint_sha256"]!=digest(checkpoint):
             raise ValueError("Source used different weights; this study fixes the current four-weather checkpoint")
+    jobs=record_groups(plan)
+    effective=min(config["workers"],len(jobs))
+    config["execution"]=dict(workers_requested=config["workers"],workers_effective=effective,
+        process_start_method="spawn",scheduling="one job per shared sensor record",
+        timing_mode="shared_resources" if effective>1 else "single_worker",
+        timing_note="Concurrent timings include CPU/GPU contention; use --workers 1 for isolated latency",
+        opencv_threads_per_worker=1,blas_threads_per_worker=1)
     output=path(args.output) if args.output else ROOT/"outputs/navigation_tests"/(
         ("smoke_" if smoke else "run_")+datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
     snapshot=freeze(config,base,landing,geometry,checkpoint,source,source_trajectory)
@@ -166,71 +241,80 @@ def run(args):
     snapshot["fingerprint"]=hashlib.sha256(json.dumps(snapshot,sort_keys=True).encode()).hexdigest()
     if output.exists():
         if not args.resume:raise FileExistsError(f"Use a new output directory or --resume: {output}")
-        previous=json.loads((output/"frozen.json").read_text())
-        if previous["fingerprint"]!=snapshot["fingerprint"]:
-            raise ValueError("Frozen configuration/code/weights/input changed; use a new experiment directory")
     else:
         output.mkdir(parents=True)
+    with experiment_lock(output):
+        if args.resume:
+            previous=json.loads((output/"frozen.json").read_text())
+            if previous["fingerprint"]!=snapshot["fingerprint"]:
+                raise ValueError("Frozen configuration/code/weights/input changed; use a new experiment directory")
+        return execute_experiment(output,snapshot,config,plan,jobs,base,landing,cal,geometry,checkpoint,
+                                  source,source_trajectory,duration,provenance,excluded,args.resume)
+
+
+def execute_experiment(output,snapshot,config,plan,jobs,base,landing,cal,geometry,checkpoint,
+                       source,source_trajectory,duration,provenance,excluded,resume):
+    from main.navigation_test_analysis import analyze
     write_json(output/"frozen.json",snapshot)
+    attempts=[]
+    if resume and (output/"manifest.json").exists():
+        previous=json.loads((output/"manifest.json").read_text())
+        attempts=previous.get("attempts",[dict(attempt_id="legacy",runtime=previous.get("runtime"),
+            workers=previous.get("workers",[]),status=previous.get("status"),elapsed_s=previous.get("elapsed_s"))])
+    attempt_id=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+    attempt=dict(attempt_id=attempt_id,status="running",started_utc=datetime.now(timezone.utc).isoformat())
+    attempts.append(attempt)
     metadata=dict(schema_version=1,status="running",kind="navigation_only",cases=plan,
                   evaluation=config["evaluation"],config=config,excluded_from_formal=excluded,
                   fingerprint=snapshot["fingerprint"],runtime=runtime(config),
                   source_mode="recorded_sensors" if source else "recorded_trajectory" if source_trajectory else "kinematic",
                   source_provenance=provenance,
                   stage_definition="generator mission stages; legacy logs: first horizontal radius<=3m and height<=6m enters hover, then height<4.5m enters descent",
-                  failures=[])
-    write_json(output/"manifest.json",metadata)
-    load_start=time.perf_counter()
-    detector=HDetector(checkpoint,config["device"])
-    metadata["model_load_s"]=time.perf_counter()-load_start
-    metadata["network_input_size"]=detector.image_size
+                  failures=[],workers=[],case_status={},completed_cases=0,attempt_id=attempt_id,attempts=attempts)
+    attempt.update(runtime=metadata["runtime"],workers=metadata["workers"])
     write_json(output/"manifest.json",metadata)
     recorded_nav=None
     if source_trajectory:
         recorded_nav=json.loads((source_trajectory/"run.json").read_text())["navigation"]
     nav=navigation_config(base,landing,geometry,checkpoint,config["device"],recorded_nav)
-    checked=set();failed_records=set();start=time.perf_counter()
+    payload=dict(config=config,base=base,landing=landing,cal=cal,geometry=geometry,checkpoint=checkpoint,
+        output=output,source=source,source_trajectory=source_trajectory,duration=duration,nav=nav,resume=resume,
+        attempt_id=attempt_id)
+    start=time.perf_counter()
+    print(json.dumps(dict(event="navigation_workers",records=len(jobs),cases=len(plan),
+        **config["execution"],render_threads_per_worker=config["render_threads"],
+        torch_threads_per_worker=config["torch_threads"])),flush=True)
     try:
-        for index,case in enumerate(plan):
-            record=output/"records"/case["record_id"]
-            if case["record_id"] not in checked:
-                try:
-                    existing=record/"run.json"
-                    complete=existing.exists() and verify_record(record)
-                    if not complete:
-                        if record.exists():
-                            # Only an explicitly resumed, incomplete generated record.
-                            if not args.resume:raise FileExistsError(record)
-                            shutil.rmtree(record)
-                        if source:
-                            import_record(source,record,base,duration)
-                        else:
-                            generate_record(record,case,config,base,landing,cal,geometry,nav,duration,source_trajectory)
-                    checked.add(case["record_id"])
-                except Exception as exc:
-                    failed_records.add(case["record_id"]);checked.add(case["record_id"])
-                    metadata["failures"].append(dict(case=case["id"],phase="record",error=f"{type(exc).__name__}: {exc}"))
-                    print(json.dumps(dict(event="record_failed",**metadata["failures"][-1])),flush=True)
-            if case["record_id"] not in failed_records:
-                for method in case["methods"]:
-                    destination=output/"results"/case["id"]/method
-                    existing=destination/"run.json"
-                    if args.resume and verify_result(destination):
-                        continue
-                    try:
-                        replay_record(record,destination,dict(case,method=method),config,checkpoint,detector=detector)
-                    except Exception as exc:
-                        metadata["failures"].append(dict(case=case["id"],method=method,phase="replay",error=f"{type(exc).__name__}: {exc}"))
-                        print(json.dumps(dict(event="replay_failed",**metadata["failures"][-1])),flush=True)
-            write_json(output/"manifest.json",metadata)
-            print(json.dumps(dict(event="case_complete",case=case["id"],completed=index+1,total=len(plan),
-                wall_s=time.perf_counter()-start,failures=len(metadata["failures"]),output=str(output))),flush=True)
+        for event in run_workers(jobs,config["workers"],payload,initialize_worker,run_record_group,
+                                  output/"workers",config["torch_threads"]):
+            if event["event"]=="worker_ready":
+                metadata["workers"].append(event)
+                metadata["model_load_s"]=sum(w["model_load_s"] for w in metadata["workers"])
+                metadata["model_load_note"]="sum across workers, may overlap in wall time"
+                metadata["network_input_size"]=event["network_input_size"]
+                write_json(output/"manifest.json",metadata)
+            elif event["event"]=="case_finished":
+                if event["case"] in metadata["case_status"]:
+                    raise RuntimeError(f"Duplicate completion: {event['case']}")
+                metadata["case_status"][event["case"]]=event["status"]
+                metadata["completed_cases"]+=1
+                metadata["failures"].extend(event["failures"])
+                write_json(output/"manifest.json",metadata)
+                event={**event,"event":"case_complete","completed":metadata["completed_cases"],
+                    "total":len(plan),"failures":len(metadata["failures"]),"output":str(output),
+                    "wall_s":time.perf_counter()-start}
+            print(json.dumps({**event,"coordinator_wall_s":time.perf_counter()-start}),flush=True)
+        if metadata["completed_cases"]!=len(plan):
+            raise RuntimeError("Missing case completion events")
         metadata["status"]="complete" if not metadata["failures"] else "completed_with_failures"
     except BaseException as exc:
         metadata.update(status="interrupted",error=f"{type(exc).__name__}: {exc}")
         raise
     finally:
         metadata["elapsed_s"]=time.perf_counter()-start
+        attempt.update(status=metadata["status"],elapsed_s=metadata["elapsed_s"],
+            ended_utc=datetime.now(timezone.utc).isoformat(),failures=metadata["failures"],
+            completed_cases=metadata["completed_cases"],error=metadata.get("error"))
         write_json(output/"manifest.json",metadata)
     analyze(output,bootstrap_samples=config["evaluation"]["bootstrap_samples"])
     print(json.dumps(dict(event="navigation_tests_complete",output=str(output),status=metadata["status"])),flush=True)
@@ -251,12 +335,18 @@ def main():
     p.add_argument("--render-python")
     p.add_argument("--suite",choices=["main","gimbal","stress","all"])
     p.add_argument("--seeds-per-cell",type=int)
+    p.add_argument("--workers",type=int,help="concurrent sensor-record jobs (default config: 2)")
+    p.add_argument("--render-threads",type=int,help="Blender CPU threads per worker")
+    p.add_argument("--torch-threads",type=int,help="PyTorch CPU threads per worker")
     p.add_argument("--resume",action="store_true")
     a=p.parse_args()
     if a.command=="analyze":
         if not a.output:p.error("analyze requires --output pointing to an experiment")
+        if any(getattr(a,key) is not None for key in ("workers","render_threads","torch_threads")):
+            p.error("workers/thread options apply only to smoke/run")
         from main.navigation_test_analysis import analyze
-        analyze(path(a.output))
+        with experiment_lock(path(a.output)):
+            analyze(path(a.output))
         return 0
     return run(a)
 

@@ -309,6 +309,176 @@ def test_schema_failures_exclusions_and_missing_generation(tmp_path):
     assert any(f.get("case_id") == "generation_failed" and f["kind"] == "generation_or_missing_results" for f in failures)
 
 
+@pytest.mark.parametrize("scope", [{"case": "main"}, {"case_id": "main"}, {"record_id": "shared"}])
+def test_record_failure_invalidates_every_shared_case_but_preserves_rows(tmp_path, scope):
+    cases = [dict(id="main", record_id="shared", methods=["N0", "N3"]),
+             dict(id="tracking", record_id="shared", methods=["N3"]),
+             dict(id="fixed", record_id="fixed", methods=["N3"])]
+    for case in cases:
+        for method in case["methods"]:
+            save_run(tmp_path, case, method, [row()])
+    manifest(tmp_path, cases, failures=[dict(scope, phase="record", error="sensor checksum mismatch")])
+    runs, failures = analysis._discover(tmp_path, json.loads((tmp_path/"manifest.json").read_text()))
+    for r in runs:
+        assert r.cohort == ("complete" if r.case["id"] == "fixed" else "incomplete")
+        assert len(list(analysis._rows(r))) == 1
+        assert json.loads((r.path/"run.json").read_text())["status"] == "complete"
+        if r.case["id"] != "fixed":
+            assert any("record evidence invalid" in issue for issue in r.issues)
+    assert len([f for f in failures if f["kind"] == "run_incomplete"]) == 3
+
+
+@pytest.mark.parametrize("phase", ["record", "replay"])
+def test_current_failures_retain_descriptive_rows_without_false_complete_cohorts(tmp_path, phase):
+    case = dict(id="c", record_id="shared", methods=["N0", "N3"])
+    for method in case["methods"]:
+        save_run(tmp_path, case, method, [row()])
+    manifest(tmp_path, [case], failures=[dict(case="c", method="N0", phase=phase, error="failed")])
+    result = analysis.analyze(tmp_path, bootstrap_samples=5)
+    assert metric(result, method="N0")["cohort"] == "incomplete"
+    assert metric(result, method="N3")["cohort"] == ("incomplete" if phase == "record" else "complete")
+    assert metric(result, method="N0")["rmse_3d_m"] == 1.
+    assert len(read_csv(tmp_path/"samples.csv")) == 2
+    assert len((tmp_path/"raw_steps.jsonl").read_text().splitlines()) == 2
+    incomplete = [r for r in read_csv(tmp_path/"table_5_13.csv") if r["cohort"] == "incomplete"]
+    assert incomplete and all(not v for r in incomplete for k, v in r.items() if k.endswith(("_ci_low", "_ci_high")))
+    assert any(f.get("issues") for f in result["failures"] if f["kind"] == "run_incomplete")
+
+
+def test_replay_failure_does_not_invalidate_sibling_case_or_historical_repairs(tmp_path):
+    cases = [dict(id=cid, record_id="shared", methods=["N0", "N3"]) for cid in ("main", "tracking")]
+    for case in cases:
+        for method in case["methods"]:
+            save_run(tmp_path, case, method, [row()])
+    manifest(tmp_path, cases, failures=[dict(case="main", method="N0", phase="replay", error="failed")],
+             attempts=[dict(attempt_id="old", failures=[dict(record_id="shared", phase="record", error="repaired")])])
+    runs, _ = analysis._discover(tmp_path, json.loads((tmp_path/"manifest.json").read_text()))
+    assert {(r.case["id"], r.method) for r in runs if r.cohort == "incomplete"} == {("main", "N0")}
+
+
+@pytest.mark.parametrize("marker,result_hash,invalid_scope", [
+    (None, None, None),  # Legacy: no marker or binding.
+    ({"status": "checking", "attempt_id": "new"}, "a"*64, "group"),
+    ({"status": "failed", "error": "checksum mismatch"}, "a"*64, "group"),
+    ("interrupted JSON", "a"*64, "group"),
+    ([], "a"*64, "group"),
+    ({"status": "passed"}, None, "group"),
+    ({"status": "passed", "input_record_sha256": "a"*64}, None, "result"),
+    ({"status": "passed", "input_record_sha256": "a"*64}, "b"*64, "result"),
+    ({"status": "passed", "input_record_sha256": "a"*64}, "a"*64, None),
+])
+def test_record_check_and_binding_failures_have_distinct_scopes(tmp_path, marker, result_hash, invalid_scope):
+    cases = [dict(id="main", record_id="shared", methods=["N0", "N3"]),
+             dict(id="tracking", record_id="shared", methods=["N3"], excluded_from_formal=True),
+             dict(id="fixed", record_id="fixed", methods=["N3"])]
+    for case in cases:
+        for method in case["methods"]:
+            # A stale N0 binding must not invalidate matching sibling results.
+            signature = result_hash if method == "N0" else "a"*64
+            save_run(tmp_path, case, method, [row()], input_record_sha256=signature)
+    marker_path = tmp_path/"record_checks/shared.json"
+    if marker is not None:
+        marker_path.parent.mkdir()
+        marker_path.write_text(marker if isinstance(marker, str) else json.dumps(marker))
+    manifest(tmp_path, cases)
+    runs, _ = analysis._discover(tmp_path, json.loads((tmp_path/"manifest.json").read_text()))
+    for r in runs:
+        invalid = ((invalid_scope == "group" and r.case["record_id"] == "shared")
+                   or (invalid_scope == "result" and (r.case["id"], r.method) == ("main", "N0")))
+        expected = "incomplete" if invalid else "complete"
+        if r.case.get("excluded_from_formal"):
+            expected = "excluded_" + expected
+        assert r.cohort == expected
+        assert bool(r.issues) == invalid
+        assert len(list(analysis._rows(r))) == 1
+
+
+def test_interrupted_recovery_keeps_newly_replayed_siblings_complete(tmp_path):
+    cases = [dict(id=cid, record_id="shared", methods=["N0", "N3"]) for cid in ("main", "tracking")]
+    for case in cases:
+        for method in case["methods"]:
+            stale = (case["id"], method) == ("main", "N3")
+            save_run(tmp_path, case, method, [row()], input_record_sha256=("a" if stale else "b")*64)
+    checks = tmp_path/"record_checks"
+    checks.mkdir()
+    (checks/"shared.json").write_text(json.dumps(dict(status="passed", input_record_sha256="b"*64)))
+    manifest(tmp_path, cases, status="interrupted")
+    runs, failures = analysis._discover(tmp_path, json.loads((tmp_path/"manifest.json").read_text()))
+    assert {(r.case["id"], r.method) for r in runs if r.cohort == "incomplete"} == {("main", "N3")}
+    assert {(f["case_id"], f["method"]) for f in failures} == {("main", "N3")}
+
+
+@pytest.mark.parametrize("recording_attempt,mixed", [(None, None), ("new", False), ("old", True)])
+def test_mixed_attempts_requires_recording_attempt_evidence(recording_attempt, mixed):
+    _, provenance = analysis._run_resources(
+        dict(attempt_id="new", recording_attempt_id=recording_attempt, runtime=dict(device="cpu")), {})
+    summary = analysis._provenance_summary([provenance])
+    assert summary["mixed_attempts"] is mixed
+    assert summary["unknown_recording_attempt_runs"] == (recording_attempt is None)
+
+
+def test_valid_record_marker_does_not_blame_good_method_for_missing_replay(tmp_path):
+    case = dict(id="c", record_id="shared", methods=["N0", "N3"])
+    save_run(tmp_path, case, "N3", [row()], input_record_sha256="a"*64)
+    checks = tmp_path/"record_checks"
+    checks.mkdir()
+    (checks/"shared.json").write_text(json.dumps(dict(status="passed", input_record_sha256="a"*64)))
+    manifest(tmp_path, [case], failures=[dict(case="c", phase="replay", method="N0", error="failed before writing")])
+    runs, _ = analysis._discover(tmp_path, json.loads((tmp_path/"manifest.json").read_text()))
+    assert {r.method: r.cohort for r in runs} == {"N0": "incomplete", "N3": "complete"}
+
+
+def test_resources_keep_originating_runtime_and_mixed_attempts_in_exports(tmp_path):
+    old = dict(device="cuda", gpu="original GPU", torch="old Torch", cuda="old CUDA", torch_threads=2,
+               render_threads=4, inference_precision="float32", gpu_timing="original synchronization",
+               execution=dict(timing_mode="shared_resources", workers_effective=2))
+    current = dict(old, gpu="replacement GPU", torch="new Torch", torch_threads=8)
+    attempts = [dict(attempt_id="old", runtime=old, workers=[dict(pid=11)], status="interrupted"),
+                dict(attempt_id="new", runtime=current, workers=[dict(pid=22)], status="complete")]
+    case = dict(id="c", methods=["N0", "N3", "A1"])
+    manifest(tmp_path, [case], attempt_id="new", runtime=current, attempts=attempts)
+    save_run(tmp_path, case, "N0", [row()], attempt_id="old", runtime=old,
+             recording_runtime=old, input_record_sha256="a"*64)
+    save_run(tmp_path, case, "N3", [row()], attempt_id="new", runtime=current, recording_runtime=old)
+    save_run(tmp_path, case, "A1", [row()], device="cpu")  # Unlinked legacy result.
+    result = analysis.analyze(tmp_path, bootstrap_samples=5)
+    exported = {r["method"]: r for r in json.loads((tmp_path/"runs.json").read_text())}
+    resources = exported["N0"]["resources"]
+    assert resources["gpu"] == "original GPU" and resources["torch_threads"] == 2
+    assert resources["precision"] == "float32" and resources["gpu_synchronization"] == "original synchronization"
+    assert exported["N0"]["runtime"] == exported["N0"]["recording_runtime"] == old
+    assert exported["N0"]["input_record_sha256"] == "a"*64
+    assert exported["N3"]["recording_runtime"] == old and exported["N3"]["runtime"] == current
+    assert exported["A1"]["runtime"] is None and exported["A1"]["runtime_source"] == "unknown"
+    assert exported["A1"]["resources"]["device"] == "cpu"
+    assert exported["A1"]["resources"]["gpu"] is None
+    assert exported["A1"]["resources"]["torch_threads"] is None
+    assert result["attempts"] == attempts
+    assert result["provenance"]["mixed_attempts"] is True
+    assert result["provenance"]["result_attempt_ids"] == ["new", "old"]
+    assert result["provenance"]["unknown_attempt_runs"] == result["provenance"]["unknown_runtime_runs"] == 1
+    assert json.loads((tmp_path/"summary.json").read_text())["attempts"] == attempts
+    prose = (tmp_path/"analysis.md").read_text()
+    assert "original GPU" in prose and "Mixed attempts: yes" in prose
+    assert "Unlinked legacy results remain unknown" in prose
+
+
+@pytest.mark.parametrize("info,source,gpu", [
+    ({"attempt_id": "old", "runtime": {"gpu": "embedded"}}, "run", "embedded"),
+    ({"attempt_id": "old"}, "manifest_attempt", "original"),
+    ({"attempt_id": "new"}, "manifest_current_attempt", "latest"),
+    ({"attempt_id": "unlisted"}, "unknown", None),
+    ({}, "unknown", None),
+])
+def test_runtime_fallback_requires_explicit_attempt_link(info, source, gpu):
+    current = dict(attempt_id="new", runtime=dict(gpu="latest", torch_threads=8),
+                   attempts=[dict(attempt_id="old", runtime=dict(gpu="original"))])
+    resources, provenance = analysis._run_resources(info, current)
+    assert resources["gpu"] == gpu and provenance["runtime_source"] == source
+    if source != "manifest_current_attempt":
+        assert resources["torch_threads"] is None  # Never fill from another attempt.
+
+
 def test_smoke_fallback_and_compact_tables_never_create_formal_CIs(tmp_path):
     case = dict(id="c", methods=list(analysis.METHODS), excluded_from_formal=True,
                 suite="main", pair_id="p", source_record="one-record", weather="clear", motion="low", gimbal_mode="tracking")

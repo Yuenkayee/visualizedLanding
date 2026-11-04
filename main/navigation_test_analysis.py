@@ -215,9 +215,64 @@ def _rows(run, audit=False):
                     run.issues.append(f"steps.jsonl:{line_no}: {exc}")
 
 
+def _record_check_errors(root, runs):
+    """An interrupted shared-record check cannot rehabilitate old result files."""
+    grouped, errors, result_errors = defaultdict(list), defaultdict(list), defaultdict(list)
+    for run in runs:
+        grouped[run.case.get("record_id", run.case["id"])].append(run)
+    for rid, dependent in grouped.items():
+        if not isinstance(rid, str) or Path(rid).name != rid or rid in (".", ".."):
+            raise ValueError(f"invalid record id: {rid!r}")
+        marker = root / "record_checks" / (rid + ".json")
+        if not marker.exists():
+            continue  # Legacy outputs did not persist record-check state.
+        try:
+            check = json.loads(marker.read_text())
+            if not isinstance(check, dict):
+                raise ValueError("record check is not an object")
+        except (OSError, ValueError) as exc:
+            errors[rid].append(f"record evidence invalid: unreadable record check: {exc}")
+            continue
+        if check.get("status") != "passed":
+            errors[rid].append(f"record evidence invalid: record check status {check.get('status')!r}; "
+                               f"{check.get('error', 'validation did not finish')}")
+            continue
+        signature = check.get("input_record_sha256")
+        if not isinstance(signature, str) or not signature:
+            errors[rid].append("record evidence invalid: passed record check lacks input_record_sha256")
+            continue
+        for run in dependent:
+            # A missing result already has no usable evidence. It must not
+            # invalidate a different method that replayed this valid record.
+            if run.info.get("status") == "missing":
+                continue
+            if run.info.get("input_record_sha256") != signature:
+                result_errors[run.case["id"], run.method].append(
+                    "record evidence invalid: input_record_sha256 missing or mismatched for "
+                    f"{run.case['id']}/{run.method}")
+    return errors, result_errors
+
+
 def _discover(root, manifest):
     runs, seen = [], set()
     failures = [dict(kind="runner_failure", **failure) for failure in manifest.get("failures", [])]
+    cases_by_id = {case["id"]: case for case in manifest["cases"]}
+    cases_by_record = defaultdict(set)
+    for case in manifest["cases"]:
+        if case.get("record_id") is not None:
+            cases_by_record[case["record_id"]].add(case["id"])
+    record_errors, replay_errors = defaultdict(list), defaultdict(list)
+    # Only the current attempt's failures invalidate evidence. Historical
+    # attempt failures may have been repaired by a successful resume.
+    for failure in manifest.get("failures", []):
+        cid = failure.get("case", failure.get("case_id"))
+        if failure.get("phase") == "record":
+            rid = failure.get("record_id", cases_by_id.get(cid, {}).get("record_id"))
+            for affected in cases_by_record.get(rid, set()) | ({cid} if cid is not None else set()):
+                record_errors[affected].append("record evidence invalid: " + str(failure.get("error", "record failed")))
+        elif failure.get("phase") == "replay":
+            replay_errors[cid, failure.get("method")].append(
+                "replay evidence invalid: " + str(failure.get("error", "replay failed")))
     for case in manifest["cases"]:
         cid = case["id"]
         if not isinstance(cid, str) or cid in seen or Path(cid).name != cid or cid in (".", ".."):
@@ -244,8 +299,10 @@ def _discover(root, manifest):
             except (OSError, ValueError) as exc:
                 info = dict(status="missing", error=str(exc))
                 issues.append("missing or unreadable run.json")
+            invalid = list(dict.fromkeys(record_errors[cid] + replay_errors[cid, method]))
+            issues.extend(invalid)
             planned, completed = _number(info.get("planned_duration_s")), _number(info.get("completed_duration_s"))
-            complete = (info.get("status") == "complete" and planned is not None and planned > 0
+            complete = (not invalid and info.get("status") == "complete" and planned is not None and planned > 0
                         and completed is not None and completed >= planned - 1e-9
                         and (path / "steps.jsonl").exists())
             excluded = (info.get("excluded_from_formal") is True or case.get("excluded_from_formal") is True
@@ -253,12 +310,92 @@ def _discover(root, manifest):
                         or case.get("suite") == "smoke")
             cohort = ("excluded_" if excluded else "") + ("complete" if complete else "incomplete")
             run = Run(case, method, path, info, cohort, issues)
-            if not complete:
-                failures.append(dict(case_id=cid, method=method, kind="run_incomplete", cohort=cohort,
-                                     status=info.get("status", "unknown"), error=info.get("error"),
-                                     planned_duration_s=planned, completed_duration_s=completed))
             runs.append(run)
+    marker_errors, binding_errors = _record_check_errors(root, runs)
+    for run in runs:
+        invalid = (marker_errors[run.case.get("record_id", run.case["id"])]
+                   + binding_errors[run.case["id"], run.method])
+        if invalid:
+            run.issues.extend(invalid)
+            run.cohort = "excluded_incomplete" if run.cohort.startswith("excluded_") else "incomplete"
+        if run.cohort.endswith("incomplete"):
+            failures.append(dict(case_id=run.case["id"], method=run.method, kind="run_incomplete", cohort=run.cohort,
+                                 status=run.info.get("status", "unknown"), error=run.info.get("error"),
+                                 issues=list(run.issues), planned_duration_s=run.planned,
+                                 completed_duration_s=run.completed))
     return runs, failures
+
+
+def _run_resources(info, manifest):
+    """Resolve only runtime evidence explicitly linked to this result's origin."""
+    attempt_id = info.get("attempt_id")
+    runtime = info.get("runtime")
+    source = "run" if isinstance(runtime, dict) and runtime else "unknown"
+    if source == "unknown" and attempt_id is not None:
+        attempt = next((a for a in manifest.get("attempts", [])
+                        if a.get("attempt_id") == attempt_id), None)
+        if attempt is not None:
+            runtime = attempt.get("runtime")
+            source = "manifest_attempt"
+        elif manifest.get("attempt_id") == attempt_id:
+            runtime = manifest.get("runtime")
+            source = "manifest_current_attempt"
+    if not isinstance(runtime, dict) or not runtime:
+        runtime, source = None, "unknown"
+    aliases = dict(precision="inference_precision", gpu_synchronization="gpu_timing")
+    resources = {key: info.get(key, (runtime or {}).get(aliases.get(key, key)))
+                 for key in ("device", "torch_threads", "render_threads", "resolution", "precision",
+                             "gpu_synchronization", "execution", "gpu", "cuda", "torch", "python",
+                             "platform", "executable")}
+    provenance = dict(attempt_id=attempt_id, runtime=runtime, runtime_source=source,
+                      input_record_sha256=info.get("input_record_sha256"),
+                      recording_runtime=info.get("recording_runtime"),
+                      recording_attempt_id=info.get("recording_attempt_id"))
+    return resources, provenance
+
+
+def _provenance_summary(run_records):
+    attempts = sorted({r["attempt_id"] for r in run_records if r["attempt_id"] is not None})
+    recording_attempts = sorted({r["recording_attempt_id"] for r in run_records if r["recording_attempt_id"] is not None})
+    unknown_attempts = sum(r["attempt_id"] is None for r in run_records)
+    unknown_recording_attempts = sum(r["recording_attempt_id"] is None for r in run_records)
+    groups = {}
+    for run in run_records:
+        for kind, attempt, runtime in (("replay", run["attempt_id"], run["runtime"]),
+                                       ("recording", run["recording_attempt_id"], run["recording_runtime"])):
+            key = (kind, attempt, json.dumps(runtime, sort_keys=True))
+            group = groups.setdefault(key, dict(kind=kind, attempt_id=attempt, runtime=runtime, runs=0))
+            group["runs"] += 1
+    return dict(result_attempt_ids=attempts, recording_attempt_ids=recording_attempts,
+                mixed_attempts=True if len(set(attempts + recording_attempts)) > 1
+                else None if unknown_attempts or unknown_recording_attempts else False,
+                unknown_attempt_runs=unknown_attempts,
+                unknown_recording_attempt_runs=unknown_recording_attempts,
+                unknown_runtime_runs=sum(r["runtime"] is None for r in run_records),
+                unknown_recording_runtime_runs=sum(not r["recording_runtime"] for r in run_records),
+                originating_runtimes=list(groups.values()))
+
+
+def _provenance_report(summary):
+    provenance = summary["provenance"]
+    mixed = {True: "yes", False: "no", None: "unknown"}[provenance["mixed_attempts"]]
+    lines = ["## Originating runtime provenance", "",
+             f"Replay attempt IDs: `{json.dumps(provenance['result_attempt_ids'])}`. Mixed attempts: {mixed}. "
+             f"Unknown attempt: {provenance['unknown_attempt_runs']} runs; "
+             f"unknown recording attempt: {provenance['unknown_recording_attempt_runs']} runs; "
+             f"unknown replay runtime: {provenance['unknown_runtime_runs']} runs; "
+             f"unknown recording runtime: {provenance['unknown_recording_runtime_runs']} runs.", "",
+             "The current manifest runtime describes the latest coordinator attempt, not every retained measurement. "
+             "runs.json retains each result's attempt_id, originating runtime and its source, input_record_sha256, "
+             "and separate recording_runtime for generation timings. Attempt history, including runtime and workers, "
+             "is retained in summary.json. Unlinked legacy results remain unknown; they never inherit the latest hardware.", ""]
+    for group in provenance["originating_runtimes"]:
+        lines.append(f"- {group['kind'].capitalize()} attempt `{group['attempt_id'] or 'unknown'}`: "
+                     f"{group['runs']} result(s); "
+                     f"originating runtime `{json.dumps(group['runtime'], ensure_ascii=False)}`.")
+    lines.extend(["", "Timing aggregates may mix attempts or unknown environments. Use per-run provenance to select "
+                  "comparable measurements; a pooled value does not describe a single machine or isolated latency.", ""])
+    return lines
 
 
 def _eligible(row, method, ref):
@@ -1102,7 +1239,13 @@ def _report(root, summary):
              "null evidence and every diagnostic/count remain in flight_metrics.csv and statistical_raw.csv. "
              "All tables retain suite, condition, stage, reference, sample set and complete/incomplete/excluded cohort. "
              "A complete run must report complete status and completed duration covering planned duration. Short complete-labelled "
-             "runs are incomplete. Smoke/excluded data never enter formal complete inference.", "",
+             "runs are incomplete. Current record-phase failures invalidate all cases sharing that record; replay-phase "
+             "failures invalidate only the named case/method. Their old rows remain descriptive incomplete evidence even "
+             "when run.json says complete. If record_checks/<record_id>.json exists, it must report passed and stored "
+             "results must match its input_record_sha256. An unfinished/failed check invalidates the shared record's "
+             "results; a mismatched binding invalidates only that stale case/method. "
+             "Outputs without markers retain legacy behavior. "
+             "Smoke/excluded data never enter formal complete inference.", "",
              "Bootstrap resamples flight-level scalars within weather/motion/gimbal strata. Method differences are paired to N3 "
              "on the same case. Fixed gimbal N3 is paired with tracking main N3 using pair_id/weather/motion/seed; stress "
              "N3 is paired with main baseline at the same pair and gimbal mode. Cross-recording comparisons do not pretend "
@@ -1129,6 +1272,12 @@ def _report(root, summary):
              "Timing components may overlap and are not summed. LiDAR timing without lidar_sample can include idle rows. "
              "Device/thread/resolution/precision/synchronization metadata is retained in runs.json; missing metadata precludes "
              "hardware-normalized or GPU-synchronized real-time claims.", "",
+             f"Current coordinator execution: `{json.dumps((summary.get('runtime') or {}).get('execution', {}))}`. "
+             "Each retained measurement uses its own originating execution metadata below. "
+             "When timing_mode is shared_resources, other cases may use the same GPU/CPU during a measured block. "
+             "Those times describe concurrent throughput conditions, not isolated algorithm latency. "
+             "Use a separate --workers 1 experiment for latency comparisons; scheduling does not change accuracy cohorts.", "",
+             *_provenance_report(summary),
              "## Missing evidence and limitations", "",
              "No sensor generation, inference, replay, training or controller evaluation is performed by this module. "
              "The 240-flight design and seven methods are planned coverage, not generated results. Missing/generation-failed "
@@ -1138,7 +1287,8 @@ def _report(root, summary):
              "Innovation rejection rates use known gate evaluations (finite d²); association rejection is reported both "
              "as per-packet fractions and as rejected/input point counts. Missing telemetry leaves these rates unscored. "
              "Figure 5-10 innovation detail uses actual recorded *_mahalanobis_threshold fields; missing gates remain absent. "
-             "Runtime provenance, model loading and network input size are retained in summary.json when present in the manifest. "
+             "Originating runtime provenance and attempt history are retained in summary.json; current manifest model loading "
+             "and network input size describe the latest attempt. "
              "Logged covariance alone does not establish Gaussian consistency or independence.", ""]
     lines.extend("- "+warning for warning in summary["warnings"])
     (root/"analysis.md").write_text("\n".join(lines)+"\n", encoding="utf-8")
@@ -1291,13 +1441,10 @@ def analyze(root: Path, bootstrap_samples=2000) -> dict:
                 metrics.extend(dict(meta, common_methods="", planned_duration_s=run.planned, **record) for record in _timing_metrics(rows))
                 for issue in run.issues:
                     warnings.add(f"{cid}/{run.method}: {issue}")
-                runtime = manifest.get("runtime") or {}
-                aliases = dict(precision="inference_precision", gpu_synchronization="gpu_timing")
-                resources = {key: run.info.get(key, runtime.get(aliases.get(key, key)))
-                             for key in ("device", "torch_threads", "render_threads", "resolution", "precision", "gpu_synchronization")}
+                resources, provenance = _run_resources(run.info, manifest)
                 run_records.append(dict(meta, status=run.info.get("status"), planned_duration_s=run.planned,
                                         completed_duration_s=run.completed, usable_rows=len(rows), issues=run.issues,
-                                        resources=resources, metadata=run.info))
+                                        resources=resources, metadata=run.info, **provenance))
     pairs = _paired(metrics, runs, warnings)
     _csv(root/"flight_metrics.csv", metrics)
     _csv(root/"statistical_raw.csv", _long_metrics(metrics), list(DIMENSIONS)+["metric", "value", "weight", "sample_count"])
@@ -1316,8 +1463,16 @@ def analyze(root: Path, bootstrap_samples=2000) -> dict:
                   for r in representative if r["method"] == "N3"]
     _csv(root/"figure_5_9.csv", cg_samples, fields+["zoom_selected"])
     _plots(root, representative, metrics, zoom)
+    provenance = _provenance_summary(run_records)
+    if provenance["mixed_attempts"]:
+        warnings.add("Results span multiple attempts; timing aggregates may mix runtime environments")
+    if provenance["unknown_attempt_runs"] or provenance["unknown_recording_attempt_runs"] or provenance["unknown_runtime_runs"]:
+        warnings.add("Some originating attempts/runtimes are unknown; current manifest resources are not attributed to them")
     summary = dict(schema_version=1, case_count=len(manifest["cases"]), evaluation=evaluation,
                    runtime=manifest.get("runtime"), model_load_s=manifest.get("model_load_s"),
+                   runtime_scope="current manifest attempt; originating runtime is recorded per result",
+                   attempts=manifest.get("attempts", []), provenance=provenance,
+                   model_load_note=manifest.get("model_load_note"), workers=manifest.get("workers",[]),
                    network_input_size=manifest.get("network_input_size"),
                    runs=run_records, flight_metrics=metrics, failures=failures,
                    representative_case=representative_id, zoom_window=zoom, warnings=sorted(warnings),

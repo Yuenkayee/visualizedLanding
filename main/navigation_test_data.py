@@ -255,6 +255,8 @@ def generate_record(target, case, config, base, landing, cal, geometry, nav, dur
                 dt=dt, planned_duration_s=float(times[-1]-times[0]), start_time_s=float(times[0]),
                 trajectory_source=description, motion=scene["motion"], gimbal=servo.config,
                 renderer=config["renderer"], navigation_applied_to_control=False,
+                execution=config.get("execution",{}),
+                attempt_id=config.get("attempt_id"),runtime=config.get("runtime"),
                 camera_reference_source="causal N3 observer (fixed during method replay)",
                 noise_policy="independent SeedSequence per physical tick and channel")
     write_json(target / "run.json", meta)

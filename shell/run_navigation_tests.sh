@@ -22,6 +22,10 @@ Options:
   --render-python PATH         optional isolated Python 3.11 bpy environment
   --suite {main,gimbal,stress,all}  omitted: use main module/config default all
   --seeds-per-cell N            optional positive integer override
+  --workers N                   smoke/run: positive integer; config default 2
+                                independent record groups run in spawned processes
+  --render-threads N            smoke/run: positive integer per worker; config default 4
+  --torch-threads N             smoke/run: positive integer per worker; config default 2
   --source PATH                actual recorded run, fixed inputs, main suite only
   --trajectory PATH            actual recorded body/deck trajectory to rerender
   --background [--session NAME] run only, in tmux; smoke always foreground
@@ -49,6 +53,7 @@ case "$NAV_MODE" in check|smoke|run|analyze) ;; *) usage >&2; exit 2 ;; esac
 NAV_CONFIG=configs/navigation_tests.yaml
 NAV_OUTPUT="" NAV_DEVICE="" NAV_RENDERER="" NAV_RENDER_DEVICE=""
 NAV_RENDER_PYTHON="${RENDER_PYTHON:-}" NAV_SUITE="" NAV_SEEDS="" NAV_DURATION=2
+NAV_WORKERS="" NAV_RENDER_THREADS="" NAV_TORCH_THREADS=""
 NAV_SOURCE="" NAV_TRAJECTORY="" NAV_SESSION=""
 NAV_BACKGROUND=0 NAV_RESUME=0 NAV_CHECK_ONLY=0 NAV_DURATION_SET=0
 while [[ $# -gt 0 ]]; do
@@ -60,7 +65,7 @@ while [[ $# -gt 0 ]]; do
   esac
   NAV_OPTION="${1%%=*}"
   case "$NAV_OPTION" in
-    --config|--output|--device|--renderer|--render-device|--render-python|--suite|--seeds-per-cell|--duration|--source|--trajectory|--session) ;;
+    --config|--output|--device|--renderer|--render-device|--render-python|--suite|--seeds-per-cell|--workers|--render-threads|--torch-threads|--duration|--source|--trajectory|--session) ;;
     *) fail "Unknown option: $1 (see --help)" ;;
   esac
   if [[ "$1" == *=* ]]; then
@@ -79,6 +84,9 @@ while [[ $# -gt 0 ]]; do
     --render-python) NAV_RENDER_PYTHON="$NAV_VALUE" ;;
     --suite) NAV_SUITE="$NAV_VALUE" ;;
     --seeds-per-cell) NAV_SEEDS="$NAV_VALUE" ;;
+    --workers) NAV_WORKERS="$NAV_VALUE" ;;
+    --render-threads) NAV_RENDER_THREADS="$NAV_VALUE" ;;
+    --torch-threads) NAV_TORCH_THREADS="$NAV_VALUE" ;;
     --duration) NAV_DURATION="$NAV_VALUE"; NAV_DURATION_SET=1 ;;
     --source) NAV_SOURCE="$NAV_VALUE" ;;
     --trajectory) NAV_TRAJECTORY="$NAV_VALUE" ;;
@@ -90,6 +98,12 @@ done
 case "$NAV_RENDER_DEVICE" in ''|OPTIX|CUDA|CPU) ;; *) fail 'Choose --render-device OPTIX, CUDA or CPU' ;; esac
 case "$NAV_SUITE" in ''|main|gimbal|stress|all) ;; *) fail 'Choose --suite main, gimbal, stress or all' ;; esac
 [[ -z "$NAV_SEEDS" || "$NAV_SEEDS" =~ ^[1-9][0-9]*$ ]] || fail '--seeds-per-cell must be a positive integer'
+[[ -z "$NAV_WORKERS" || "$NAV_WORKERS" =~ ^[1-9][0-9]*$ ]] || fail '--workers must be a positive integer'
+[[ -z "$NAV_RENDER_THREADS" || "$NAV_RENDER_THREADS" =~ ^[1-9][0-9]*$ ]] || fail '--render-threads must be a positive integer'
+[[ -z "$NAV_TORCH_THREADS" || "$NAV_TORCH_THREADS" =~ ^[1-9][0-9]*$ ]] || fail '--torch-threads must be a positive integer'
+if [[ ( -n "$NAV_WORKERS" || -n "$NAV_RENDER_THREADS" || -n "$NAV_TORCH_THREADS" ) && "$NAV_MODE" != smoke && "$NAV_MODE" != run ]]; then
+  fail '--workers, --render-threads and --torch-threads are allowed only for smoke/run'
+fi
 [[ "$NAV_DURATION_SET" == 0 || "$NAV_MODE" == smoke ]] || fail '--duration is allowed only for smoke'
 [[ "$NAV_DURATION" =~ ^[0-9]+([.][0-9]+)?$ && "$NAV_DURATION" =~ [1-9] ]] || fail '--duration must be positive finite seconds'
 [[ "$NAV_BACKGROUND" == 0 || "$NAV_MODE" == run ]] || fail '--background is allowed only for run; smoke stays foreground'
@@ -154,6 +168,9 @@ NAV_COMMAND=("$NAV_PYTHON" -u -m main.navigation_tests "$NAV_MODE" --config "$NA
 if [[ -n "$NAV_OUTPUT" ]]; then NAV_COMMAND+=(--output "$NAV_OUTPUT"); fi
 if [[ -n "$NAV_SUITE" ]]; then NAV_COMMAND+=(--suite "$NAV_SUITE"); fi
 if [[ -n "$NAV_SEEDS" ]]; then NAV_COMMAND+=(--seeds-per-cell "$NAV_SEEDS"); fi
+if [[ -n "$NAV_WORKERS" ]]; then NAV_COMMAND+=(--workers "$NAV_WORKERS"); fi
+if [[ -n "$NAV_RENDER_THREADS" ]]; then NAV_COMMAND+=(--render-threads "$NAV_RENDER_THREADS"); fi
+if [[ -n "$NAV_TORCH_THREADS" ]]; then NAV_COMMAND+=(--torch-threads "$NAV_TORCH_THREADS"); fi
 if [[ -n "$NAV_SOURCE" ]]; then NAV_COMMAND+=(--source "$NAV_SOURCE"); fi
 if [[ -n "$NAV_TRAJECTORY" ]]; then NAV_COMMAND+=(--trajectory "$NAV_TRAJECTORY"); fi
 if [[ -n "$NAV_RENDER_PYTHON" && "$NAV_RENDERER" == blender && -z "$NAV_SOURCE" ]]; then

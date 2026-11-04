@@ -436,11 +436,15 @@ if sys.argv[1] == 'new-session': subprocess.run(sys.argv[-2:])
 
 
 @pytest.mark.parametrize("background", [False, True])
-def test_launcher_preserves_argv_and_logs(launcher, background):
+@pytest.mark.parametrize("equals", [False, True])
+def test_launcher_preserves_argv_and_logs(launcher, background, equals):
     root, invoke = launcher
     output = "outputs/quoted ' $(touch OUTPUT_INJECTED) `touch OUTPUT_INJECTED2`\nspace"
     args = ["run" if background else "smoke", "--output", output, "--config=config name.yaml",
             "--device=cpu", "--renderer", "cpu", "--suite", "gimbal", "--seeds-per-cell=2"]
+    concurrency = {"--workers": "2", "--render-threads": "4", "--torch-threads": "2"}
+    for option, value in concurrency.items():
+        args += [f"{option}={value}"] if equals else [option, value]
     if background:
         args += ["--background", "--session", "navigation_test"]
     result = invoke(*args)
@@ -457,6 +461,9 @@ def test_launcher_preserves_argv_and_logs(launcher, background):
     assert launched["render_python"] == "/isolated render/python"
     preflight = json.loads((root / "preflight.json").read_text())
     assert "--output" not in preflight and "--suite" not in preflight
+    for option, value in concurrency.items():
+        assert argv.count(option) == 1 and argv[argv.index(option) + 1] == value
+        assert option not in preflight
     assert ("--with-tmux" in preflight) == background
     assert not any(root.glob("*INJECTED*"))
     logs = list(root.glob("outputs/logs/navigation_tests/*/console.log"))
@@ -466,6 +473,58 @@ def test_launcher_preserves_argv_and_logs(launcher, background):
     if background:
         tmux = json.loads((root / "tmux.json").read_text())
         assert tmux[-2] == "bash" and Path(tmux[-1]).name == "worker.sh"
+
+
+@pytest.mark.parametrize("mode", ["smoke", "run"])
+def test_launcher_leaves_concurrency_defaults_to_main_config(launcher, mode):
+    root, invoke = launcher
+    result = invoke(mode)
+    assert result.returncode == 0, result.stdout + result.stderr
+    argv = json.loads((root / "launched.json").read_text())["args"]
+    preflight = json.loads((root / "preflight.json").read_text())
+    for option in ("--workers", "--render-threads", "--torch-threads"):
+        assert option not in argv and option not in preflight
+
+
+@pytest.mark.parametrize("option", ["--workers", "--render-threads", "--torch-threads"])
+@pytest.mark.parametrize("value", [
+    "", "0", "-1", "1.5", "1e2", "nan", "true", "2 3", "2; touch INJECTED",
+    "$(touch INJECTED)", "`touch INJECTED`",
+])
+def test_launcher_rejects_invalid_concurrency_before_bootstrap(launcher, option, value):
+    root, invoke = launcher
+    result = invoke("smoke", f"{option}={value}")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert option in result.stderr
+    assert ("positive integer" if value else "Empty value") in result.stderr
+    assert not (root / "preflight.json").exists()
+    assert not (root / "launched.json").exists()
+    assert not any(root.glob("*INJECTED*"))
+
+
+@pytest.mark.parametrize("option", ["--workers", "--render-threads", "--torch-threads"])
+def test_launcher_requires_concurrency_value_before_bootstrap(launcher, option):
+    root, invoke = launcher
+    result = invoke("run", option)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"Missing value for {option}" in result.stderr
+    assert not (root / "preflight.json").exists()
+
+
+@pytest.mark.parametrize("option", ["--workers", "--render-threads", "--torch-threads"])
+@pytest.mark.parametrize("action", [[], ["check"], ["--check-only"], ["check", "--check-only"], ["analyze"]])
+def test_launcher_rejects_concurrency_for_check_and_analyze(launcher, option, action):
+    root, invoke = launcher
+    args = list(action)
+    if action == ["analyze"]:
+        existing = root / "existing output"
+        existing.mkdir()
+        args += ["--output", str(existing)]
+    result = invoke(*args, option, "2")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "allowed only for smoke/run" in result.stderr
+    assert not (root / "preflight.json").exists()
+    assert not (root / "launched.json").exists()
 
 
 @pytest.mark.parametrize("failure,code", [("FAIL_CHECK", 17), ("FAIL_RUN", 19)])
@@ -490,9 +549,13 @@ def test_resume_and_analyze_forward_existing_output(launcher):
     root, invoke = launcher
     existing = root / "existing output"
     existing.mkdir()
-    result = invoke("run", "--resume", "--output", str(existing))
+    result = invoke("run", "--resume", "--output", str(existing),
+                    "--workers", "1", "--render-threads", "1", "--torch-threads", "1")
     assert result.returncode == 0, result.stderr
-    assert "--resume" in json.loads((root / "launched.json").read_text())["args"]
+    argv = json.loads((root / "launched.json").read_text())["args"]
+    assert "--resume" in argv
+    for option in ("--workers", "--render-threads", "--torch-threads"):
+        assert argv[argv.index(option) + 1] == "1"
     result = invoke("analyze", "--output", str(existing))
     assert result.returncode == 0, result.stderr
     assert "--analysis-only" in json.loads((root / "preflight.json").read_text())
