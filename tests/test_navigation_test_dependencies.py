@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -143,6 +144,108 @@ def test_opencv_probe_crash_is_failure(monkeypatch):
     report = deploy.inspect_opencv()
     assert report["status"] == "failed" and report["returncode"] == -11
     assert report["stderr"] == "native crash"
+
+
+def test_numpy_quarantine_preserves_owned_and_unrelated_files(tmp_path, monkeypatch):
+    site = tmp_path / "site"
+    root = site / "numpy"
+    core = root / "_core"
+    core.mkdir(parents=True)
+    orphan = core / "_multiarray_umath.cpython-312-test.so"
+    owned = core / "owned.so"
+    shim = core / "_multiarray_umath.py"
+    for file in (orphan, owned, shim):
+        file.write_bytes(b"test bytes")
+    outside = tmp_path / "outside.so"
+    outside.write_bytes(b"outside")
+    (core / "symlink.so").symlink_to(outside)
+    dist = argparse.Namespace(version="1.26.4", files=["numpy/_core/owned.so"],
+                              locate_file=lambda p: site / p)
+    monkeypatch.setattr(deploy.metadata, "distribution", lambda name: dist)
+    monkeypatch.setattr(deploy, "ROOT", tmp_path / "repo")
+    report = dict(numpy=dict(version="1.26.4", path=str(root / "__init__.py")))
+    assert deploy.untracked_numpy_extensions(root) == [orphan]
+    manifest = deploy.quarantine_numpy_extensions(report, tmp_path / "logs")
+    assert len(manifest) == 1 and not orphan.exists()
+    assert Path(manifest[0]["backup"]).read_bytes() == b"test bytes"
+    assert manifest[0]["sha256"] == deploy.sha256(Path(manifest[0]["backup"]))
+    assert owned.exists() and shim.exists() and outside.exists() and (core / "symlink.so").is_symlink()
+    assert json.loads((tmp_path / "logs/numpy-quarantine.json").read_text()) == manifest
+    # Without reliable ownership metadata, and for NumPy 2's legitimate _core,
+    # there is no authorization to classify a binary as an orphan.
+    orphan.write_bytes(b"test bytes")
+    dist.version = "2.0.0"
+    assert deploy.untracked_numpy_extensions(root) == []
+    dist.version, dist.files = "1.26.4", None
+    assert deploy.untracked_numpy_extensions(root) == []
+
+
+def test_numpy_quarantine_rechecks_probe_paths(tmp_path, monkeypatch):
+    site = tmp_path / "site"
+    site.mkdir()
+    fake = tmp_path / "unrelated/numpy/_core"
+    fake.mkdir(parents=True)
+    file = fake / "_multiarray_umath.so"
+    file.touch()
+    dist = argparse.Namespace(version="1.26.4", files=["numpy/__init__.py"],
+                              locate_file=lambda p: site / p)
+    monkeypatch.setattr(deploy.metadata, "distribution", lambda name: dist)
+    assert deploy.quarantine_numpy_extensions(dict(numpy=dict(
+        version="1.26.4", path=str(fake.parent / "__init__.py")))) == []
+    assert file.exists()
+
+
+def test_real_orphan_numpy_extension_reproduces_resize_failure_and_recovers(tmp_path):
+    """Only corrupt a temporary copy; original installed packages stay intact."""
+    import numpy as np
+
+    source = Path(np.__file__).parent
+    isolated = tmp_path / "site"
+    isolated.mkdir()
+    shutil.copytree(source, isolated / "numpy")
+    dist = deploy.metadata.distribution("numpy")
+    metadata_file = next(p for p in dist.files if str(p).endswith(".dist-info/METADATA"))
+    metadata_dir = Path(dist.locate_file(metadata_file)).parent
+    shutil.copytree(metadata_dir, isolated / metadata_dir.name)
+    # Linux wheels keep dependent shared libraries next to the numpy package.
+    libraries = source.parent / "numpy.libs"
+    if libraries.exists():
+        shutil.copytree(libraries, isolated / libraries.name)
+    binary = next((source / "core").glob("_multiarray_umath*.so"))
+    orphan = isolated / "numpy/_core" / binary.name
+    shutil.copy2(binary, orphan)
+    env = {**os.environ, "PYTHONPATH": str(isolated)}
+
+    def execute(code, *args):
+        result = subprocess.run([sys.executable, "-c", code, *map(str, args)], cwd=deploy.ROOT,
+                                env=env, capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        return json.loads(result.stdout.splitlines()[-1])
+
+    probe = "import json; from shell.navigation_test_dependencies import opencv_probe; print(json.dumps(opencv_probe()))"
+    before = execute(probe)
+    assert before["status"] == "failed" and "not a numpy array" in before["error"]
+    assert before["numpy"]["version"] == "1.26.4"
+    assert before["numpy_core"]["untracked_extensions"] == [str(orphan.resolve())]
+    assert before["numpy_core"]["modules"]["numpy._core._multiarray_umath"]["ndarray_matches"] is False
+    # Recovery must use a fresh interpreter after moving an already loaded .so.
+    repair = '''
+import sys, json
+from pathlib import Path
+from shell import navigation_test_dependencies as deploy
+profile = (deploy.ROOT / "requirements-data.txt").read_text()
+deploy.ROOT = Path(sys.argv[1])
+deploy.ROOT.mkdir()
+(deploy.ROOT / "requirements-data.txt").write_text(profile)
+deploy.dependencies.run = lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected pip reinstall"))
+print(json.dumps(deploy.ensure_opencv(False, deploy.ROOT / "logs")))
+'''
+    after = execute(repair, tmp_path / "repo")
+    assert after["status"] == "ready" and after["resize"] == "passed"
+    assert after["numpy_core"]["untracked_extensions"] == []
+    assert not orphan.exists()
+    assert (tmp_path / "repo/logs/numpy-quarantine.json").exists()
+    assert (tmp_path / "repo/logs/opencv-numpy-after-quarantine.json").exists()
 
 
 def test_real_checkpoint_inference_runs_on_cpu():

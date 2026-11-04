@@ -7,6 +7,7 @@ are ready. --check-only permits reports/probes but never installs dependencies.
 import argparse
 import hashlib
 import importlib.metadata as metadata
+from importlib.machinery import PathFinder
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import traceback
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,6 +114,67 @@ def ensure_tmux(check):
     print(f"[navigation] {version}", flush=True)
 
 
+def untracked_numpy_extensions(root):
+    """Find orphan NumPy 2 native files beside NumPy 1.26's Python shims.
+
+    A pip reinstall removes only RECORD-owned files. A leftover _core native
+    extension takes precedence over the 1.26 shim and can expose a different
+    ndarray type to OpenCV. Do not infer ownership from version strings alone.
+    """
+    dist = metadata.distribution("numpy")
+    root = Path(root).resolve()
+    if (dist.version != "1.26.4" or not dist.files
+            or Path(dist.locate_file("numpy")).resolve() != root):
+        return []
+    owned = {Path(dist.locate_file(p)).resolve() for p in dist.files}
+    return sorted(p for p in (root / "_core").glob("*")
+                  if p.suffix in (".so", ".pyd") and p.is_file() and not p.is_symlink()
+                  and p.parent.resolve() == root / "_core" and p.resolve() not in owned)
+
+
+def numpy_core_diagnostics(numpy):
+    root = Path(numpy.__file__).resolve().parent
+    modules = {}
+    for package in ("core", "_core"):
+        name = f"numpy.{package}._multiarray_umath"
+        module = sys.modules.get(name)
+        # PathFinder examines the file that would be loaded without importing a
+        # second native runtime solely for diagnostics.
+        spec = PathFinder.find_spec("_multiarray_umath", [str(root / package)])
+        modules[name] = dict(resolved_path=spec.origin if spec else None,
+                             loaded_path=getattr(module, "__file__", None),
+                             ndarray_matches=(getattr(module, "ndarray", None) is numpy.ndarray
+                                              if module is not None else None))
+    return dict(modules=modules, untracked_extensions=list(map(str, untracked_numpy_extensions(root))))
+
+
+def quarantine_numpy_extensions(report, report_dir=None):
+    """Preserve narrowly identified orphan files; never delete a package tree."""
+    info = report.get("numpy", {})
+    if info.get("version") != "1.26.4" or not info.get("path"):
+        return []
+    # Recheck ownership in the current installation instead of trusting paths
+    # copied from a probe report. No files owned by NumPy's RECORD are moved.
+    candidates = untracked_numpy_extensions(Path(info["path"]).parent)
+    if not candidates:
+        return []
+    folder = ROOT / ".tools/navigation-numpy-backups"
+    folder.mkdir(parents=True, exist_ok=True)
+    backup = Path(tempfile.mkdtemp(prefix="numpy-core-", dir=folder))
+    manifest = []
+    for source in candidates:
+        target = backup / source.name
+        entry = dict(source=str(source), backup=str(target), sha256=sha256(source))
+        shutil.move(str(source), str(target))
+        manifest.append(entry)
+        (backup / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        if report_dir:
+            Path(report_dir).mkdir(parents=True, exist_ok=True)
+            (Path(report_dir) / "numpy-quarantine.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        print(f"[navigation] Preserved untracked NumPy extension: {source} -> {target}", flush=True)
+    return manifest
+
+
 def opencv_probe():
     """Run only in a disposable interpreter: pip can replace native modules.
 
@@ -127,14 +190,16 @@ def opencv_probe():
                                                location=str(dist.locate_file(""))))
         import cv2
         import numpy as np
-        import torch
 
         report.update(numpy=dict(version=np.__version__, path=np.__file__),
-                      cv2=dict(version=cv2.__version__, path=cv2.__file__))
+                      cv2=dict(version=cv2.__version__, path=cv2.__file__),
+                      numpy_core=numpy_core_diagnostics(np))
         source = np.arange(16 * 16 * 3, dtype=np.uint8).reshape(16, 16, 3)
         resized = cv2.resize(source, (8, 8))
         assert resized.shape == (8, 8, 3) and resized.dtype == np.uint8
         # Exercise both image preprocessing and the network's NumPy round trip.
+        import torch
+
         value = resized.astype(np.float32).transpose(2, 0, 1)[None] / 255.0
         restored = torch.from_numpy(value).numpy()
         assert np.array_equal(value, restored), "PyTorch/NumPy round trip failed"
@@ -175,6 +240,8 @@ def ensure_opencv(check, report_dir=None):
         problems = []
         if report["status"] != "ready":
             problems.append(report.get("error", "native probe failed"))
+        if report.get("numpy_core", {}).get("untracked_extensions"):
+            problems.append("Untracked NumPy native files shadow the numpy._core compatibility shims")
         providers = [p for p in report["packages"] if p["name"] in OPENCV_PACKAGES]
         if len(providers) != 1 or providers[0]["name"] != "opencv-python-headless":
             problems.append("cv2 must have exactly one provider: opencv-python-headless; found "
@@ -202,6 +269,12 @@ def ensure_opencv(check, report_dir=None):
         if check:
             raise RuntimeError("OpenCV/NumPy runtime check failed; rerun without --check-only: "
                                + "; ".join(report["problems"]))
+        quarantined = quarantine_numpy_extensions(report, report_dir)
+        if quarantined:
+            report = inspect("after-quarantine")
+            if not report["problems"]:
+                print("[navigation] NumPy orphan extensions isolated; OpenCV/NumPy runtime check: OK", flush=True)
+                return report
         print("[navigation] Repairing shared cv2 files and pinned NumPy/OpenCV wheels", flush=True)
         providers = sorted({p["name"] for p in report["packages"] if p["name"] in OPENCV_PACKAGES})
         if providers:

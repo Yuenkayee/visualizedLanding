@@ -49,12 +49,27 @@ namespace: `opencv-python-headless==4.10.0.84`, with `numpy==1.26.4`.
 Preinstalled `opencv-python`/`opencv-contrib-python` variants can overwrite the
 same files even while the required headless distribution's metadata looks correct.
 If the native probe fails or multiple providers are found, normal `check` removes
-the installed OpenCV wheel variants, reinstalls only the pinned NumPy/headless
-wheels without cache, and probes again. Torch is not reinstalled by this repair.
+confirmed NumPy residue first as described below. If further repair is needed,
+it removes the installed OpenCV wheel variants, reinstalls only the pinned
+NumPy/headless wheels without cache, and probes again. Torch is not reinstalled by this repair.
 `--check-only` reports the conflict without changing packages. Logs include
 `opencv-numpy-before.json` and, after a repair, `opencv-numpy-after.json`, with
 package versions, imported paths and errors. A failed `environment.json` also
 contains the Python path and full traceback.
+
+If reinstalling the correct wheels still gives the same `resize` error, inspect
+the report's `numpy_core` entries. NumPy 1.26.4 forwards `numpy._core` through
+Python compatibility shims to `numpy.core`; an old `_core/*.so` left by another
+installation can take precedence and expose a different `ndarray` type to
+OpenCV. pip's uninstall/reinstall only removes files listed in its RECORD, so
+untracked binaries can survive repeated reinstalls. The checker records both
+resolved/loaded core paths and array-type identity. With normal `check`, it
+first moves confirmed untracked native files under the active NumPy 1.26.4
+`_core` directory to `.tools/navigation-numpy-backups/`, preserving hashes and
+original paths in `numpy-quarantine.json`. It never moves RECORD-owned files,
+symlinks, files from a different NumPy path, or NumPy 2's legitimate core.
+A successful fresh-process probe is recorded in
+`opencv-numpy-after-quarantine.json` and avoids another wheel download.
 
 For `resize: src is not a numpy array` during dependency checks, sync the updated
 checker and rerun `check` without `--check-only`. The inference probe uses a
