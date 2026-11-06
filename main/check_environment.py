@@ -25,6 +25,7 @@ from shell.closed_loop_dependencies import (
     python_matches,
 )
 from shell.render_environment import probe_renderer, renderer_environment
+from shell.navigation_environment import probe_navigation
 from shell.matlab_startup import license_mode, shared_session_name, start_matlab
 
 
@@ -114,9 +115,12 @@ def main():
         ensure_torch(a.check)
     ensure_requirements(sys.executable, ROOT / "requirements-closed-loop.txt", a.check)
     ensure_requirements(sys.executable, ROOT / "requirements-matlab.txt", a.check)
+    navigation_runtime = probe_navigation(
+        sys.executable,
+        Path(a.report).with_name("navigation-environment.json") if a.report else None,
+    )
     import yaml
     import torch
-    import numpy, scipy, cv2, matplotlib  # check native imports, not only metadata
     import matlab.engine
 
     config = yaml.safe_load((ROOT / a.config).read_text())
@@ -188,6 +192,7 @@ def main():
             status="ready",
             os=platform.platform(),
             python=sys.version,
+            navigation_runtime=navigation_runtime,
             matlab=engine.version(),
             matlab_root=str(root),
             matlab_license_mode="existing_session" if shared_session_name() else license_mode(root),

@@ -324,6 +324,7 @@ bash shell/run_landing_closed_loop.sh run \
 - Blender 使用独立 `.venv-render-server` 的 Python 3.11 和 bpy 4.5.3。支持 `RENDER_PYTHON` 或 `--render-python` 指向已有的 Python 3.11 环境。
 - Blender 子进程使用独立的动态库环境：从继承的 `LD_LIBRARY_PATH` / `LD_PRELOAD` 中移除 MATLAB 安装目录，保留 CUDA/NVIDIA 路径及系统 C++ 兼容库。此规则覆盖导入检查、Cycles 设备测试、闭环传感器进程和训练集渲染进程。Ubuntu 依赖包含 `libvulkan1`；导入 Blender 不要求桌面/X server。闭环检查在同次日志目录写入 `renderer-environment.json`，记录渲染解释器、动态库路径和导入结果；失败时附加 USD 库的 `ldd` 信息，供定位 `undefined symbol: vkGetPhysicalDeviceXlibPresentationSupportKHR` 等冲突。MATLAB 主进程的环境保持原有配置。
 - PyTorch 2.8.0+cu128、MATLAB Engine 24.2.2、数值/图像/绘图依赖，实际 CUDA 运算、OPTIX 渲染和工具箱许可证 checkout。
+- 导航依赖在独立进程中按 `main.run` 的实际顺序导入，再验证 SciPy 卡方分位数/插值/旋转、马氏距离门限及 OpenCV/Torch 与 NumPy 的数组互操作；任一步失败就停止，不能仅凭包版本或 `import scipy` 返回 `ready`。同次日志目录的 `navigation-environment.json` 记录失败阶段、包版本、实际模块路径和动态库环境；成功结果也写入 `environment.json`。
 - 加载默认权重，核对其文件存在和模型格式，计算 SHA256 并记录到 `environment.json`。
 
 Python 下载会重试；uv 获取运行时失败时，会自动下载固定版本源码并编译（3.12.12 / 3.11.14），可能需要几分钟。默认使用 GitHub 二进制和 `www.python.org` 源码，镜像模式下二者均切换。已完成的步骤在重跑时复用。源码、构建运行时和 MPM 缓存在 `.tools/closed-loop/`；失败环境保留为 `.venv.backup.*`，均被 Git 忽略。可通过 `LANDING_PYTHON_312` / `LANDING_PYTHON_311` 指定已有解释器。
@@ -359,6 +360,37 @@ bash shell/run_landing_closed_loop.sh check --check --device cuda --render-devic
 ```
 
 `check/run/inspect` 的 shell 默认配置为 `main/navigation_feedback.yaml`；`smoke/configure` 默认保留 `main/closed_loop.yaml`。直接调用 Python 模块不会执行系统/MATLAB 安装，完整部署请使用 shell 入口。
+
+### NumPy / SciPy 导入递归错误
+
+若调用栈从 `measurement_gating.py` 的 `from scipy.stats import chi2` 进入
+`scipy.interpolate._fitpack_impl`，随后反复出现 NumPy 的 `_dtype.py` / `issubdtype`，
+说明错误发生在导航依赖导入阶段，尚未加载内环模型。常见原因是数值包安装混杂或损坏；
+仅凭调用栈不能确定具体冲突。不要通过提高递归上限处理。
+
+旧版检查只导入 SciPy 顶层模块，可能漏掉这个错误；版本审计也无法检测安装文件损坏。
+先在报错所用的解释器中重装项目固定版本，以下对应云镜像 `/root/miniconda3`：
+
+```bash
+cd /root/autodl-tmp/visualizedLanding
+export PYTHON_BIN=/root/miniconda3/bin/python3
+"$PYTHON_BIN" -m pip install --no-cache-dir --force-reinstall --no-deps \
+  --only-binary=:all: --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+  "numpy==1.26.4" "scipy==1.13.1"
+
+# 使用相同解释器、新进程，验证本次报错的完整导入链。
+"$PYTHON_BIN" -c 'import main.run; import numpy, scipy; from scipy.stats import chi2; print(numpy.__version__, numpy.__file__); print(scipy.__version__, scipy.__file__); print(chi2.ppf(0.95, 3))'
+
+# 再通过 shell 入口，在仿真实际使用的 MATLAB 动态库环境下检查。
+bash shell/run_landing_closed_loop.sh check --check \
+  --config main/navigation_feedback.yaml --device cuda --render-device OPTIX
+```
+
+分位数应约为 `7.814727903251179`。`--no-deps` 将重装范围限制为 NumPy 和 SciPy，
+保留已有 Torch/CUDA；它不保证修复所有环境冲突。保持当前共享 MATLAB 会话和
+`MATLAB_ROOT` / `MATLAB_SHARED_SESSION` 设置。通过检查后再执行下方 2 秒试运行。
+若仍失败，对照 `navigation-environment.json` 的版本和路径继续定位，尤其检查
+`PYTHONPATH` 是否指向其他环境；直接 Python 命令通过而 shell 检查失败时，也需比较动态库路径。
 
 ## 默认权重与仿真命令
 

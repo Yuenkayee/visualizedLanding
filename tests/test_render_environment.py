@@ -15,6 +15,10 @@ from shell import render_environment as render
 
 @pytest.fixture
 def matlab_env(tmp_path, monkeypatch):
+    # OpenCV's first import can edit LD_LIBRARY_PATH; finish its bootstrap
+    # before replacing the environment with the paths this fixture tests.
+    import cv2
+
     root = tmp_path / "MATLAB/R2024b"
     (root / "bin/glnxa64").mkdir(parents=True)
     monkeypatch.setattr(render.platform, "system", lambda: "Linux")
