@@ -250,7 +250,7 @@ MATLAB `simulation` 保持一次连续仿真，每个内环周期通过 `step(Nu
 
 ## Ubuntu 22.04 一次部署
 
-当前部署入口和默认权重位于 `single_cam` 分支。新服务器克隆时使用 `git clone --branch single_cam git@github.com:Yuenkayee/visualizedLanding.git`，已有仓库同步该分支后再运行下列命令。
+服务器应同步本次核验的代码、模型及权重。当前工作分支为 `close_loop_test`；该分支推送到远端后，再在服务器切换并拉取。仅切换本地分支不会上传未提交的 SLX 改动。
 
 所有命令在克隆后的仓库根目录执行。统一入口为 `shell/run_landing_closed_loop.sh`，可以由 Ubuntu 自带 Python 3.10 启动部署，无需先手动安装 Python 3.12。`check` 自动安装缺失依赖；`check --check` 只检查并生成报告，不安装、不登录。执行日志从系统安装阶段开始保存在 `outputs/logs/closed_loop/<时间_PID>/console.log`。
 
@@ -260,7 +260,7 @@ Linux 自动部署支持 Ubuntu 22.04 x86_64，安装系统包需要 root 或 su
 
 ```bash
 bash shell/run_landing_closed_loop.sh check --login \
-  --config main/navigation_observer.yaml --device cuda --render-device OPTIX
+  --config main/navigation_feedback.yaml --device cuda --render-device OPTIX
 ```
 
 MATLAB 首次授权需要本人按终端提示输入账号/OTP；成功进入 `>>` 后输入 `exit`，部署会继续。此交互直接连接 `/dev/tty`，不写入 `console.log`，必须在交互式 SSH 或 tmux 内执行。已有许可证文件、网络许可证或已经登录时，省略 `--login`。账号授权设置 `MATLAB_LICENSE_MODE=online`；如许可证使用 MathWorks New Licensing Technology，设置 `MATLAB_LICENSE_MODE=onlinelicensing`。环境检查与实际仿真都向 Engine 传入同一个 `-licmode`，Linux 同时传入 `-nodisplay`。
@@ -272,7 +272,7 @@ MATLAB 首次授权需要本人按终端提示输入账号/OTP；成功进入 `>
 ```bash
 export MATLAB_LICENSE_MODE=online
 bash shell/run_landing_closed_loop.sh check --login \
-  --config main/navigation_observer.yaml --device cuda --render-device OPTIX
+  --config main/navigation_feedback.yaml --device cuda --render-device OPTIX
 ```
 
 本次日志目录的 `matlab-startup.json` 记录实际模式、启动选项和结果。该错误没有具体授权编号时，不能仅凭它判定许可证过期；若直接执行 `"$MATLAB_ROOT/bin/matlab" -licmode online -nodisplay` 也失败，应根据交互终端的具体错误检查账号许可、MathWorks Service Host 和官方授权服务连接。无需因此重装 bpy/CUDA。官方说明：[终端账号授权](https://www.mathworks.com/matlabcentral/answers/547302-is-login-named-user-available-on-machines-without-a-display)、[Login Named User 启动模式](https://www.mathworks.com/matlabcentral/answers/168441-what-is-login-named-user-and-how-can-i-use-it)。
@@ -307,9 +307,9 @@ export MATLAB_ROOT=/root/MATLAB/R2024b
 export PYTHON_BIN=/root/miniconda3/bin/python3
 export MATLAB_SHARED_SESSION=LandingMATLAB
 bash shell/run_landing_closed_loop.sh check \
-  --config main/navigation_observer.yaml --device cuda --render-device OPTIX
+  --config main/navigation_feedback.yaml --device cuda --render-device OPTIX
 bash shell/run_landing_closed_loop.sh run \
-  --config main/navigation_observer.yaml --device cuda --render-device OPTIX
+  --config main/navigation_feedback.yaml --device cuda --render-device OPTIX
 ```
 
 此流程不加 `--login`。环境检查和实际仿真都会按名称连接，检查返回 `ready` 后即可运行；名称不存在或连接失败时直接报错，不自动启动另一会话。报告区分 `connection=shared`、`status=connected`、`license_mode=existing_session`，并验证实际安装为指定目录的 R2024b。环境检查/仿真结束时 `engine.quit()` 对连接来的共享会话仅断开 Python 连接，MATLAB 留在 tmux；仿真仍执行自身模型清理。该会话供一个仿真作业使用，运行期间不要在 MATLAB 终端手动修改工作区。全部完成后可 `tmux attach -t landing_matlab` 并在 MATLAB 输入 `exit`。取消共享连接模式使用 `unset MATLAB_SHARED_SESSION`。
@@ -333,7 +333,7 @@ Python 下载会重试；uv 获取运行时失败时，会自动下载固定版�
 ```bash
 export LANDING_DOWNLOAD_PROFILE=china
 bash shell/run_landing_closed_loop.sh check \
-  --config main/navigation_observer.yaml --device cuda --render-device OPTIX
+  --config main/navigation_feedback.yaml --device cuda --render-device OPTIX
 ```
 
 该配置只作用于启动进程及其子进程；不写全局 pip/uv 配置，不改 `/etc/apt/sources.list`。apt 在需要安装或更新时使用项目 `.tools/closed-loop/apt/sources.list`，仍验证 Ubuntu 官方签名；`--check` 不创建此列表、不执行 apt 安装。Python 包索引与 CPython 解释器下载是两种不同服务，不能都填写同一个 PyPI 地址。
@@ -358,17 +358,21 @@ bash shell/run_landing_closed_loop.sh check --device cuda --render-device OPTIX
 bash shell/run_landing_closed_loop.sh check --check --device cuda --render-device OPTIX
 ```
 
-`check/run/inspect` 的 shell 默认配置为 `main/navigation_observer.yaml`；`smoke/configure` 默认保留 `main/closed_loop.yaml`。直接调用 Python 模块不会执行系统/MATLAB 安装，完整部署请使用 shell 入口。
+`check/run/inspect` 的 shell 默认配置为 `main/navigation_feedback.yaml`；`smoke/configure` 默认保留 `main/closed_loop.yaml`。直接调用 Python 模块不会执行系统/MATLAB 安装，完整部署请使用 shell 入口。
 
 ## 默认权重与仿真命令
 
 `visual_training/checkpoints/four_weather_v1/best.pt` 已作为普通 Git 文件纳入仓库，克隆即有，不需要 Git LFS 或另行 SCP。SHA256 为 `1605b4a258414d931f08c630dc1bd83c3946f1a91bfa595614ee0e54df186ab3`。其他训练权重、训练集、历史结果仍不随 Git 同步。真实航迹仿真现场生成图像/点云，不需要训练集和预生成 `.blend`。
 
-先做模型端口检查及 2 秒实际航迹试运行：
+先做模型端口检查及 2 秒实际航迹试运行。`inspect` 报告中的
+`missing_classes` 应为空，`timing.valid`、`feedback.valid`、
+`root_port_contract_ready`、`native_state_ready` 应为 `true`；
+`feedback.enabled` 也应为 `true`。`inspect` 不执行完整动力学编译，
+因此仍需后面的 `run --duration 2`，不能用接口夹具 `smoke` 代替。
 
 ```bash
-bash shell/run_landing_closed_loop.sh inspect --config main/navigation_observer.yaml
-bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml \
+bash shell/run_landing_closed_loop.sh inspect --config main/navigation_feedback.yaml
+bash shell/run_landing_closed_loop.sh run --config main/navigation_feedback.yaml \
   --duration 2 --device cuda --render-device OPTIX
 ```
 
@@ -376,11 +380,20 @@ bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml
 
 ```bash
 tmux new-session -d -s landing -c "$PWD" \
-  'bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml --duration 60 --device cuda --render-device OPTIX'
+  -e MATLAB_ROOT="${MATLAB_ROOT:-/root/MATLAB/R2024b}" \
+  -e MATLAB_SHARED_SESSION="${MATLAB_SHARED_SESSION:-}" \
+  -e MATLAB_LICENSE_MODE="${MATLAB_LICENSE_MODE:-}" \
+  -e PYTHON_BIN="${PYTHON_BIN:-}" -e RENDER_PYTHON="${RENDER_PYTHON:-}" \
+  -e LANDING_DOWNLOAD_PROFILE="${LANDING_DOWNLOAD_PROFILE:-default}" \
+  'bash shell/run_landing_closed_loop.sh run --config main/navigation_feedback.yaml --duration 60 --device cuda --render-device OPTIX; landing_exit=$?; printf "\nSimulation exit code: %s\n" "$landing_exit"; exec bash'
 tmux attach -t landing
 ```
 
-`Ctrl+B` 后按 `D` 离开会话并保持运行；`Ctrl+C` 请求终止。结束不会关机。`check --login` 应先在交互终端完成，再启动后台运行。当前配置仍然是**自主控制闭环、导航旁路估计**，导航不反馈控制器；本次部署改动没有改变这个评估模式。
+以上命令显式向新 tmux 会话传递 MATLAB 连接设置，避免既有 tmux 服务进程保留旧环境。
+会话在仿真结束或报错后保留终端，便于检查退出码和日志；已有同名会话时另取名称。
+使用共享 MATLAB 时，一个会话同一时间只运行一个仿真；先等待 2 秒测试结束，再启动正式任务。
+
+`Ctrl+B` 后按 `D` 离开会话并保持运行；`Ctrl+C` 请求终止。结束不会关机。`check --login` 应先在交互终端完成，再启动后台运行。当前配置为**导航参与制导控制的真实内环闭环**。`navigation_observer.yaml` 只适用于已断开导航控制输入的旁路模型，不能用于当前已接线模型。
 
 可选接口夹具 smoke（不代表实际飞机着舰）：
 
@@ -396,7 +409,7 @@ bash shell/run_landing_closed_loop.sh smoke --duration 0.2 \
 
 ```bash
 bash shell/run_landing_closed_loop.sh check --check --renderer cpu --device cpu
-bash shell/run_landing_closed_loop.sh run --config main/navigation_observer.yaml --duration 2
+bash shell/run_landing_closed_loop.sh run --config main/navigation_feedback.yaml --duration 2
 # 仅分析已有结果，不启动 MATLAB
 bash shell/run_landing_closed_loop.sh analyze outputs/closed_loop/<运行目录>
 ```
@@ -409,7 +422,7 @@ bash shell/run_landing_closed_loop.sh analyze outputs/closed_loop/<运行目录>
 
 默认参考时间常数 0.6 s、速率上限 0.35 rad/s、加速度上限 0.7 rad/s²、居中死区 40°、相对初始参考的目标修正上限 60°。40° 是光轴角度，在当前 140°×145° 广角下对应约中央六成宽高范围；不是 40° 的机体晃动死区。执行机构仍以原带宽抵消机体晃动。缺少、过期或无效导航时，停止目标更新并平滑减速保持；不使用真实位置重新捕获目标。
 
-每步仍为读取状态→生成观测→导航→写入反馈→推进→读取下一状态。慢速参考命令通过 `NavigationEstimate.gimbal_reference` 独立传递，MATLAB 宿主在下一步将其交给原 `gimbal_step`。命令角速度只作为 ESKF 下一次预测的已知输入，避免云台停止后恒角速度模型仍继续旋转；不会用命令重置姿态或健康状态。PnP、LiDAR、起落架位置转换仍使用实际编码器外参。无需更改 `innerLoop_landing.slx` 的控制/制导端口；导航旁路模式保持不变，步长仍为 0.02 s。
+每步仍为读取状态→生成观测→导航→写入反馈→推进→读取下一状态。慢速参考命令通过 `NavigationEstimate.gimbal_reference` 独立传递，MATLAB 宿主在下一步将其交给原 `gimbal_step`。命令角速度只作为 ESKF 下一次预测的已知输入，避免云台停止后恒角速度模型仍继续旋转；不会用命令重置姿态或健康状态。PnP、LiDAR、起落架位置转换仍使用实际编码器外参。云台跟踪不改变 `innerLoop_landing.slx` 的控制/制导端口；是否反馈控制由评估配置决定，当前正式入口使用 `navigation_feedback.yaml`，步长仍为 0.02 s。
 
 `steps.jsonl` 保存参考命令、角速度、跟踪状态和实际编码器；`run.json` 保存解析后的云台参数。分析新增 `gimbal_tracking.png`，用于检查参考速率、实际姿态相对命令的误差及 H 中心的视场位置；几何入画不等同于无自遮挡或识别成功。固定参考对照可在运行配置添加：
 
