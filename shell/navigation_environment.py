@@ -4,10 +4,24 @@ import json
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = "LANDING_NAVIGATION_PROBE="
+
+
+def numpy_core_diagnostics():
+    """Inspect already-loaded types without importing a second NumPy runtime."""
+    core = sys.modules.get("numpy.core._multiarray_umath")
+    compat = sys.modules.get("numpy._core._multiarray_umath")
+    if core is None or compat is None:
+        return None
+    matches = {name: getattr(core, name, None) is getattr(compat, name, None)
+               for name in ("dtype", "ndarray")}
+    return dict(types_match=all(matches.values()), **matches,
+                core_path=getattr(core, "__file__", None),
+                compat_path=getattr(compat, "__file__", None))
 
 # Import the real entry point first: preloading torch/scipy.stats can hide an
 # import-order failure that occurs in the fresh process launched by the wrapper.
@@ -59,6 +73,18 @@ except Exception as exc:
     report.update(error_type=type(exc).__name__, error=str(exc),
                   traceback=traceback.format_exc(limit=12))
 finally:
+    from shell.navigation_environment import numpy_core_diagnostics
+    report["numpy_core"] = numpy_core_diagnostics()
+    if report["numpy_core"] and not report["numpy_core"]["types_match"]:
+        report["diagnosis"] = (
+            "numpy.core and numpy._core loaded different dtype/ndarray types. "
+            "Check for NumPy 2.x native files left in a NumPy 1.26 installation; "
+            "ordinary pip force-reinstall may leave these untracked files intact. "
+            "See the NumPy/SciPy recovery section in main/README.md."
+        )
+        if report["status"] == "ready":
+            report.update(status="failed", stage="NumPy core consistency",
+                          error=report["diagnosis"])
     # Distribution metadata can look healthy while native imports fail. Record
     # both the installed versions and the actual loaded modules, even on failure.
     report["packages"] = {}
@@ -113,11 +139,15 @@ def probe_navigation(python, report_path=None):
         repair = shlex.join([str(python), "-m", "pip", "install", "--no-cache-dir",
                              "--force-reinstall", "--no-deps", "--only-binary=:all:",
                              "numpy==1.26.4", "scipy==1.13.1"])
+        advice = report.get("diagnosis") or (
+            "For NumPy/SciPy installation failures, reinstall with this interpreter "
+            f"and rerun the shell check: {repair}. If reinstalling does not help, "
+            "check for stale NumPy native files as described in main/README.md."
+        )
         raise RuntimeError(
             f"Navigation runtime check failed at {report.get('stage', 'startup')}: "
             f"{report.get('error', '')}{location}. "
-            f"For NumPy/SciPy installation failures, reinstall with this interpreter "
-            f"and rerun the shell check: {repair}"
+            f"{advice}"
         )
     print("[environment] Navigation imports and numerical operations: OK", flush=True)
     return report

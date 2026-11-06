@@ -3,10 +3,27 @@
 import json
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from shell import navigation_environment as navigation
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_core_diagnostics_detect_different_native_types(mixed, monkeypatch):
+    # A version string of 1.26 is insufficient: NumPy 2 native types can survive
+    # under _core and reach SciPy through a separate C API capsule.
+    dtype, array = object(), object()
+    monkeypatch.setitem(sys.modules, "numpy.core._multiarray_umath",
+                        SimpleNamespace(dtype=dtype, ndarray=array, __file__="numpy/core/native.so"))
+    monkeypatch.setitem(sys.modules, "numpy._core._multiarray_umath",
+                        SimpleNamespace(dtype=object() if mixed else dtype,
+                                        ndarray=object() if mixed else array,
+                                        __file__="numpy/_core/native.so"))
+    report = navigation.numpy_core_diagnostics()
+    assert report["types_match"] is not mixed
+    assert report["core_path"] != report["compat_path"]
 
 
 def test_healthy_runtime_checks_real_operations_without_starting_matlab(tmp_path, monkeypatch):

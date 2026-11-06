@@ -392,6 +392,63 @@ bash shell/run_landing_closed_loop.sh check --check \
 若仍失败，对照 `navigation-environment.json` 的版本和路径继续定位，尤其检查
 `PYTHONPATH` 是否指向其他环境；直接 Python 命令通过而 shell 检查失败时，也需比较动态库路径。
 
+**重装后仍出现相同递归：检查 NumPy 2.x 残留。** 已在临时隔离环境复现：
+NumPy 1.26.4 的 `numpy/core` 与残留的 NumPy 2.x `numpy/_core` 二进制同时加载，
+产生两套 `dtype` / `ndarray` 类型，恰好在上述 `_fitpack_impl.py:103` 进入递归。
+pip 重装只能处理安装记录中已知的文件，无法保证清理未被当前 RECORD 记录的旧文件。
+NumPy 1.26.4 正常的 `_core` 是 Python 兼容转发文件，不能留下另一套 NumPy 2.x 核心扩展。
+仅打印 `numpy.__version__` 无法发现这个问题。
+
+先用报错解释器检查类型身份（`-I` 排除 `PYTHONPATH` 和用户 site-packages 的影响）：
+
+```bash
+"$PYTHON_BIN" -I -c 'import numpy as n; import numpy.core._multiarray_umath as a; import numpy._core._multiarray_umath as b; print(n.__version__, n.__file__); print(a.__file__); print(b.__file__); print("same dtype:", a.dtype is b.dtype, "same ndarray:", a.ndarray is b.ndarray)'
+```
+
+正常情况下两项均为 `True`；若为 `False`，说明已加载两套不同类型。
+新版 `navigation-environment.json` 的 `numpy_core` 也记录这两项及模块路径。
+下面的修复只适用于安装记录为 **1.26.4** 且 `_core` 中存在未被该记录管理的核心二进制；
+不满足条件会停止。它备份整个兼容目录，再由原版本安装恢复兼容文件，不删除备份。
+先停止使用该 Python 环境的 Python 作业；共享 MATLAB 进程可保持运行。
+
+```bash
+(
+set -e
+LANDING_NUMPY_WHEELS="$(mktemp -d /tmp/landing-numpy-wheel.XXXXXX)"
+"$PYTHON_BIN" -m pip download --no-deps --only-binary=:all: \
+  --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+  --dest "$LANDING_NUMPY_WHEELS" "numpy==1.26.4"
+
+"$PYTHON_BIN" -I - <<'PY'
+import importlib.metadata as metadata
+import importlib.util
+from importlib.machinery import EXTENSION_SUFFIXES
+from pathlib import Path
+import uuid
+
+dist = metadata.distribution("numpy")
+root = Path(importlib.util.find_spec("numpy").origin).parent.resolve()
+if dist.version != "1.26.4" or root != Path(dist.locate_file("numpy")).resolve() or not dist.files:
+    raise SystemExit("停止：版本、导入路径或安装记录不符合修复条件，请检查输出。")
+core = root / "_core"
+binaries = [p for p in core.glob("*") if p.is_file() and p.name.endswith(tuple(EXTENSION_SUFFIXES))]
+owned = {Path(dist.locate_file(p)).resolve() for p in dist.files}
+if not any(p.name.startswith("_multiarray_umath.") for p in binaries) or any(p.resolve() in owned for p in binaries):
+    raise SystemExit("停止：未确认未登记的 NumPy 2.x 核心残留，没有修改文件。")
+backup = root.parent / ("numpy-core-backup-" + uuid.uuid4().hex)
+core.rename(backup)
+print("已备份：", backup)
+PY
+
+"$PYTHON_BIN" -m pip install --no-index --find-links "$LANDING_NUMPY_WHEELS" \
+  --force-reinstall --no-deps "numpy==1.26.4"
+)
+```
+
+完成后在新进程重新运行上面的类型检查和 `import main.run` 验证，再执行 shell 检查与
+2 秒试运行。此步骤不重装 Torch/CUDA 或 MATLAB。若安装中途失败，备份路径会留在终端，
+可重新执行本地 wheel 安装；不要继续启动仿真或删除备份。
+
 ## 默认权重与仿真命令
 
 `visual_training/checkpoints/four_weather_v1/best.pt` 已作为普通 Git 文件纳入仓库，克隆即有，不需要 Git LFS 或另行 SCP。SHA256 为 `1605b4a258414d931f08c630dc1bd83c3946f1a91bfa595614ee0e54df186ab3`。其他训练权重、训练集、历史结果仍不随 Git 同步。真实航迹仿真现场生成图像/点云，不需要训练集和预生成 `.blend`。
