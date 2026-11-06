@@ -49,6 +49,9 @@ def python_executable(value):
 class SensorGenerator:
     def __init__(self, config, landing, lidar, directory):
         self.c, self.landing, self.lidar = config, landing, lidar
+        if config.get("batch"):
+            import cv2
+            cv2.setNumThreads(1)
         self.directory = Path(directory)
         self.cal, _ = camera_geometry(landing)
         self.weather = landing["weather"][config["weather"]]
@@ -70,6 +73,11 @@ class SensorGenerator:
             renderer=config["renderer"],
             motion_model="causal previous/current rotation; current translational velocity",
         )
+        if config.get("batch"):
+            self.metadata.update(sea_state_label=config["batch"]["sea_state_label"],
+                physical_wave_height_m=config["batch"]["wave_height_m"],
+                physical_wind_mps=config["batch"]["wind_mps"],
+                visual_wave_field="unchanged procedural sea, not identical to tauAndFDI random field")
         if config["renderer"] == "blender":
             from visual_modeling.blender.cycles_device import configure_cycles
 
@@ -80,11 +88,19 @@ class SensorGenerator:
 
     def observe(self, truth, camera, lidar, index):
         t = truth.timestamp
+        if self.c.get("batch"):
+            # Separate time/channel keys: variable point counts or recovery
+            # branches cannot advance the random stream of later frames.
+            tick = round(t / self.c["dt"])
+            self.rng_camera = np.random.default_rng(np.random.SeedSequence([self.c["seed"], 17, tick]))
+            self.rng_lidar = np.random.default_rng(np.random.SeedSequence([self.c["seed"], 29, tick]))
         pose = truth.T_deck_camera
         mount = truth.T_body_camera
         output = dict(timestamp=np.array(t))
         if self.scene is not None:
             import bpy
+            if self.c.get("batch"):
+                bpy.context.scene.cycles.seed = int(np.random.SeedSequence([self.c["seed"], 31, tick]).generate_state(1)[0] % 2147483647)
             from mathutils import Matrix
             from visual_modeling.blender.apply_poses import apply_poses
             from visual_modeling.blender.landing_environment import update_environment

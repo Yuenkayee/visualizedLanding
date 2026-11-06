@@ -27,6 +27,9 @@ end
 target=fullfile(c.workdir,[copy '.slx']);
 save_system(original,target); close_system(original,0); load_system(target);
 try
+    if isfield(c,'batch')
+        s.batch_info=landing_batch_configure(copy,c);
+    end
     set_param(copy,'SimulationMode','normal','StartTime','0','StopTime','inf', ...
         'SolverType','Fixed-step','FixedStep',num2str(c.plant_step,17), ...
         'BlockReduction','off','SignalLogging','off','SaveOutput','on','SaveTime','on', ...
@@ -105,6 +108,9 @@ try
     initialInput=initialInput.setModelParameter('StopTime','0','SaveOutput','on', ...
         'OutputSaveName','yout','SaveFormat','Dataset','ReturnWorkspaceOutputs','on');
     initialResult=sim(initialInput);
+    if isfield(c,'batch')
+        s.batch_telemetry=landing_batch_read(copy,s.batch_info,initialResult);
+    end
     native=cell(1,2);
     for k=1:2
         index=nativeIndices(k);

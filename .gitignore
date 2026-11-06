@@ -41,3 +41,5 @@ data/landing_robust/
 data/landing_robust_test/
 outputs/replay/
 outputs/closed_loop/
+outputs/batch/
+outputs/batch_dev_*/

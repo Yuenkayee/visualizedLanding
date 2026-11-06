@@ -65,6 +65,13 @@ for k=1:n
             s.timestamp=double(s.live.Time);
         end
         [s.helicopter_state,s.ship_state]=landing_live_read(s);
+        if isfield(s.config,'batch')
+            if s.stopped
+                s.batch_telemetry=landing_batch_read(s.live_model,s.batch_info,s.live.SimulationOutput);
+            else
+                s.batch_telemetry=landing_batch_read(s.live_model,s.batch_info);
+            end
+        end
         if cgControl && ~s.stopped
             s.control_used=landing_control_used(s);
             record.control=s.control_used;
@@ -82,6 +89,9 @@ for k=1:n
 end
 end
 function write_record(s,record)
+if isfield(s.config,'batch') && isempty(record.error) && ~record.stopped
+    return; % Batch series already retains clock/control evidence at every step.
+end
 file=fullfile(s.config.workdir,'plant_steps.jsonl');
 fid=fopen(file,'a');
 assert(fid~=-1,'landing:Log','Cannot open plant timing log: %s',file);

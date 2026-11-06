@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import time
 import uuid
+import gzip
 import numpy as np
 import yaml
 from main.config import ROOT, load, path, validate
@@ -39,13 +40,23 @@ def output_directory(value=None, kind="run"):
 
 
 class LivePlant(MatlabExternalModel):
+    def __init__(self, config=None, session=None):
+        super().__init__(config)
+        if session is not None:
+            self.session = session
+
     def read_status(self):
         return self.session.call("read_landing_live_status")
 
     def __enter__(self):
         self.session.__enter__()
         try:
+            if self.config.get("batch"):
+                self.session.engine.maxNumCompThreads(float(self.config["batch"]["matlab_threads"]), nargout=0)
+            cache = Path(self.config["workdir"]) / "cache" if self.config.get("batch") else None
             self.session.engine.eval(
+                ("Simulink.fileGenControl('set','CacheFolder','" + str(cache).replace("'", "''") +
+                 "','CodeGenFolder','" + str(cache / "codegen").replace("'", "''") + "','createDir',true);") if cache else
                 "Simulink.fileGenControl('set','CacheFolder',fullfile(tempdir,'landing_live_cache'),'CodeGenFolder',fullfile(tempdir,'landing_live_cache','codegen'),'createDir',true);",
                 nargout=0,
             )
@@ -62,7 +73,7 @@ class LivePlant(MatlabExternalModel):
         return self
 
 
-def run(c, landing, cal, geometry, output, smoke=False):
+def run(c, landing, cal, geometry, output, smoke=False, matlab_session=None):
     validate(c)
     checkpoint = c.get("checkpoint")
     if checkpoint:
@@ -92,6 +103,9 @@ def run(c, landing, cal, geometry, output, smoke=False):
     import torch
 
     torch.set_num_threads(int(c.get("torch_threads", 4)))
+    if c.get("batch"):
+        import cv2
+        cv2.setNumThreads(1)
     init = ESKFState(
         position=np.asarray(nav["initial_position"]),
         velocity=np.asarray(nav.get("initial_velocity", [0.0, 0.0, 0.0])),
@@ -126,6 +140,8 @@ def run(c, landing, cal, geometry, output, smoke=False):
         control_interface=c.get("control_interface", ""),
         control_invalid_policy=c.get("control_invalid_policy", ""),
     )
+    if c.get("batch"):
+        plant_config["batch"] = c["batch"]
     checkpoint_hash = None
     if checkpoint:
         with checkpoint.open("rb") as stream:
@@ -162,12 +178,21 @@ def run(c, landing, cal, geometry, output, smoke=False):
     )
     write_json(output / "run.json", metadata)
     start = time.perf_counter()
+    batch = c.get("batch")
+    if batch:
+        from main.batch.recording import compact_row, RunawayMonitor
+        runaway = RunawayMonitor(batch["runaway"])
+        metadata["batch"] = batch
+        if batch["method"] == "C0":
+            metadata["truth_policy"] = "C0 oracle: true CG relative position drives control; estimator runs in shadow without truth injection."
     try:
         with (
-            LivePlant(plant_config) as plant,
+            LivePlant(plant_config, session=matlab_session) as plant,
             Sensors(c, landing, lidar, output) as sensors,
-            (output / "steps.jsonl").open("w", buffering=1) as log,
-            (output / "events.jsonl").open("w", buffering=1) as events,
+            (gzip.open(output / "series.jsonl.gz", "wt", compresslevel=5) if batch else
+             (output / "steps.jsonl").open("w", buffering=1)) as log,
+            (gzip.open(output / "events.jsonl.gz", "wt", compresslevel=5) if batch else
+             (output / "events.jsonl").open("w", buffering=1)) as events,
         ):
             metadata["sensors"] = sensors.metadata
             metadata["matlab"] = plant.session.engine.version()
@@ -182,6 +207,7 @@ def run(c, landing, cal, geometry, output, smoke=False):
             n = round(c["duration"] / c["dt"])
             camera_period = round(1 / (c["dt"] * c["camera_hz"]))
             lidar_period = round(1 / (c["dt"] * c["lidar_hz"]))
+            previous_status = plant.read_status() if batch else None
             for i in range(n):
                 wall = time.perf_counter()
                 truth = plant.read_sensor_truth()
@@ -196,7 +222,7 @@ def run(c, landing, cal, geometry, output, smoke=False):
                 pipe.process_gimbal(encoder, t)
                 if has_camera:
                     pipe.process_camera(CameraFrame(t, observed["image"], encoder))
-                if has_lidar:
+                if has_lidar and not (batch and batch["method"] == "C1"):
                     pipe.process_lidar(LidarFrame(t, observed["points"], encoder))
                 estimate = pipe.estimate()
                 event("solve_navigation", i, t)
@@ -240,7 +266,14 @@ def run(c, landing, cal, geometry, output, smoke=False):
                     advanced_s=following.timestamp-t,
                     wall_s=time.perf_counter() - wall,
                 )
-                log.write(json.dumps(row, allow_nan=False) + "\n")
+                if batch:
+                    row["native"] = {k: previous_status[k] for k in ("helicopter_state", "ship_state")}
+                    row["next_native"] = {k: plant_status[k] for k in ("helicopter_state", "ship_state")}
+                    row["batch_telemetry"] = previous_status["batch_telemetry"]
+                    row["next_batch_telemetry"] = plant_status["batch_telemetry"]
+                    row = compact_row(row, geometry)
+                    previous_status = plant_status
+                log.write(json.dumps(row, allow_nan=False, separators=(",", ":")) + "\n")
                 if stopped:
                     metadata.update(termination_reason="model_stop",
                                     stop_reason=plant_status["stop_reason"],
@@ -249,6 +282,12 @@ def run(c, landing, cal, geometry, output, smoke=False):
                         **plant_status, truth=following.to_dict()))
                     event("model_stop", i, following.timestamp)
                     print(json.dumps(dict(event="model_stop", **plant_status)), flush=True)
+                    break
+                if batch and runaway.update(following.timestamp, following.gear_position_deck):
+                    metadata.update(termination_reason="runaway", final_timestamp=following.timestamp,
+                                    runaway_evidence=runaway.evidence)
+                    write_json(output / "terminal_state.json", dict(**plant_status, truth=following.to_dict()))
+                    event("runaway", i, following.timestamp)
                     break
                 if i % max(1, round(1 / c["dt"])) == 0 or i == n - 1:
                     print(
@@ -273,7 +312,7 @@ def run(c, landing, cal, geometry, output, smoke=False):
     finally:
         metadata["elapsed_s"] = time.perf_counter() - start
         write_json(output / "run.json", metadata)
-        if (output / "steps.jsonl").exists() and (
+        if not batch and (output / "steps.jsonl").exists() and (
             output / "steps.jsonl"
         ).stat().st_size:
             try:

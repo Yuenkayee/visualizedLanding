@@ -31,5 +31,18 @@ s.feedback=struct('timestamp',s.timestamp, ...
     'cg_relative_estimate_50hz_ned',cg_position, ...
     'cg_relative_velocity_50hz_ned_mps',cg_velocity, ...
     'cg_signal_valid',logical(cg_valid),'cg_signal_age_s',cg_age);
+if isfield(s.config,'batch')
+    % The same shadow shaper and validity policy run in C1/C2/C3. C2 changes
+    % only the position consumed by guidance, never its validity rule.
+    s.feedback.cg_shadow_position_ned=cg_position;
+    s.feedback.cg_shadow_valid=logical(cg_valid);
+    method=char(s.config.batch.method);
+    if strcmp(method,'C0')
+        s.feedback.cg_relative_estimate_50hz_ned=o.cg_relative_truth_ned;
+        s.feedback.cg_signal_valid=true;
+    elseif strcmp(method,'C2')
+        s.feedback.cg_relative_estimate_50hz_ned=o.cg_relative_estimate_ned;
+    end
+end
 s.phase='feedback';
 end

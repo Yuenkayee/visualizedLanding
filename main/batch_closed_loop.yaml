@@ -1,0 +1,33 @@
+# Experiment policy, not algorithm/controller tuning. Frozen in each manifest.
+base_config: main/navigation_feedback.yaml
+weather: [clear, fog, night, night_fog]
+methods: [C0, C1, C2, C3]
+seas:
+  5: {wave_height_m: 3.25, wind_mps: 12.0}
+  6: {wave_height_m: 5.00, wind_mps: 19.0}
+seeds_per_weather: 10
+master_seed: 5232026
+representative_slot: 0
+duration_s: 60.0
+bootstrap_samples: 10000
+bootstrap_seed: 52310
+max_replacements: 5
+# Whole weather/slot (8 paired runs) is excluded if ANY method flies away.
+# Evidence and all attempted runs remain available for sensitivity analysis.
+runaway:
+  minimum_time_s: 10.0
+  minimum_range_m: 200.0
+  increase_over_initial_m: 150.0
+  window_s: 10.0
+  minimum_net_outward_m: 30.0
+  outward_fraction: 0.9
+  return_tolerance_m: 2.0
+# Full STOP is the user-authorized proxy; no invented speed/contact thresholds.
+touchdown_policy: existing_model_stop_proxy
+initial_conditions: unchanged_model_nominal
+command_cost_weights: [1.0, 1.0, 1.0]
+near_bound_fraction: 0.95
+torch_threads: 1
+render_threads: 2
+matlab_threads: 1
+wall_timeout_s: 14400

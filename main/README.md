@@ -424,6 +424,7 @@ import importlib.metadata as metadata
 import importlib.util
 from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
+import shutil
 import uuid
 
 dist = metadata.distribution("numpy")
@@ -436,7 +437,10 @@ owned = {Path(dist.locate_file(p)).resolve() for p in dist.files}
 if not any(p.name.startswith("_multiarray_umath.") for p in binaries) or any(p.resolve() in owned for p in binaries):
     raise SystemExit("停止：未确认未登记的 NumPy 2.x 核心残留，没有修改文件。")
 backup = root.parent / ("numpy-core-backup-" + uuid.uuid4().hex)
-core.rename(backup)
+print("备份目标：", backup, flush=True)
+# OverlayFS may reject directory rename with EXDEV even under the same parent.
+# shutil.move falls back to copying the tree before removing the source.
+shutil.move(str(core), str(backup))
 print("已备份：", backup)
 PY
 
@@ -448,6 +452,10 @@ PY
 完成后在新进程重新运行上面的类型检查和 `import main.run` 验证，再执行 shell 检查与
 2 秒试运行。此步骤不重装 Torch/CUDA 或 MATLAB。若安装中途失败，备份路径会留在终端，
 可重新执行本地 wheel 安装；不要继续启动仿真或删除备份。
+若旧版命令在 `core.rename(backup)` 报 `OSError: [Errno 18] Invalid cross-device link`，
+说明备份未完成，`set -e` 已阻止后续安装，原导入错误仍会存在。容器 OverlayFS
+可能拒绝对镜像层目录直接重命名，即使两个路径都在 `site-packages` 中。
+使用上面包含 `shutil.move` 的新版命令重跑；它支持跨文件系统复制后移除源目录。
 
 ## 默认权重与仿真命令
 
