@@ -108,6 +108,39 @@ bash shell/run_landing_batch.sh analyze --output outputs/batch/formal_523
 `plan --output ...`可先冻结矩阵，随后用 `run --resume --output ...`执行。
 正式模式不接受命令行缩短时长、减少天气/种子或CPU近似渲染；这些覆盖只用于`--pilot`。
 
+### 图5-16报错：`'yerr' must not contain negative values`
+
+这是成功率置信区间的浮点边界问题。例如10/10架次满足STOP代理判据时，旧版
+Wilson区间上界可能算成`0.9999999999999999`，绘图所需的`上界−成功率`
+变成`−1.11e−16`，Matplotlib会拒绝这个负误差长度。此时仿真已进入事后分析，
+不表示动力学或导航算法发生错误，也不需要重跑已完成的架次。
+
+修复位于`statistics.py`和`figures.py`：零满足数的下界明确为0，全满足数的上界
+明确为1；绘图仅将浮点精度范围内的微小负长度归零，明显不一致的区间仍报错。
+触舰判据、样本数、满足率、算法参数和权重均不改变。
+
+将修复代码同步至服务器后，针对**原批次目录**单独分析；路径以原`--output`为准：
+
+```bash
+export PYTHON_BIN=/root/miniconda3/bin/python3
+bash shell/run_landing_batch.sh analyze --output outputs/batch/formal_523
+```
+
+该命令读取已有`groups/`下的指标与压缩序列，重建`analysis/`内的统计和图片；
+不启动MATLAB、不需要共享会话或worker参数，不修改仿真记录及原manifest。
+纯分析修复可以用此命令处理原批次；不要为此使用`run --resume`，也不要修改
+manifest中的源码哈希绕过续跑检查。原`source_verification.json`保留运行结束时的核验结果。
+
+报错前表5-15至5-17和部分图片可能已写出，但`analysis/status.json`和`report.md`
+在全部绘图完成后才生成；文件缺失不能单独作为仿真未完成的证据。分析完成后检查
+`status.json`中的`complete`、`included`、`expected`和`pairing_passed`；默认正式矩阵
+应为320/320架次。`complete`表示记录齐全，不等于320架次全部满足触舰代理判据。
+
+进度中的`finalized groups`只在本轮全部worker结束后，由协调器检查并写入
+`groups/<组名>/result.json`时更新，因此最后一条30秒周期进度仍为319/320、0/40，
+随后直接开始绘图，是可能的正常顺序。可检查40个组的`result.json`及其引用的
+8个`metrics.json`确认实际完成情况。
+
 飞离规则在 `main/batch_closed_loop.yaml` 预先冻结：至少运行10s；连续10s的
 三维起落架/H距离均大于200m且大于初始距离+150m；净向外运动至少30m；
 90%以上相邻步向外；窗口内从峰值回落不超过2m。

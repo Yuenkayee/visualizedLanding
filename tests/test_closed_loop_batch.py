@@ -130,6 +130,72 @@ def test_wilson_and_equal_weather_description():
     assert balanced_description(data,"x",["clear","fog"])["mean"]==5
 
 
+@pytest.mark.parametrize("n",[1,2,3,10,40,320])
+def test_wilson_boundaries_contain_observed_rate(n):
+    assert wilson(0,n)[0]==0.0
+    assert wilson(n,n)[1]==1.0
+    for k in range(n+1):
+        low,high=wilson(k,n)
+        assert 0.0<=low<=k/n<=high<=1.0
+    assert wilson(0,0)==[None,None]
+    assert wilson(5,10)==pytest.approx([.236593090512564,.763406909487436])
+
+
+def rate_plot_table(policy):
+    rows=[]
+    for weather in [*policy["weather"],"equal_weather"]:
+        n=10*len(policy["weather"]) if weather=="equal_weather" else 10
+        for sea in (5,6):
+            for method,k in zip(("C0","C1","C2","C3"),(n,0,n//2,None)):
+                low,high=wilson(k,n) if k is not None else (None,None)
+                rows.append(dict(weather=weather,sea=sea,method=method,total=n if k is not None else 0,
+                    candidates=k or 0,rate=k/n if k is not None else None,wilson_low=low,wilson_high=high))
+    return rows
+
+
+def test_rate_plot_accepts_boundary_roundoff_and_preserves_intervals(tmp_path,monkeypatch):
+    from matplotlib.axes import Axes
+    from main.batch.figures import comparison_plot
+    policy=dict(weather=["clear","fog","night","night_fog"])
+    table=rate_plot_table(policy)
+    # Reproduce old 10/10 upper endpoints and cancellation at zero independently
+    # of the corrected statistics function; tolerate only numerical roundoff.
+    for row in table:
+        if row["rate"]==1:row["wilson_high"]=np.nextafter(1.,0.)
+        if row["rate"]==0:row["wilson_low"]=np.finfo(float).eps/2
+    original=copy.deepcopy(table)
+    plotted=[]
+    real_errorbar=Axes.errorbar
+    def errorbar(self,x,y,*args,**kwargs):
+        err=kwargs.get("yerr")
+        if err is not None:
+            assert np.all(err>=0)
+            plotted.append((y,err.copy()))
+        return real_errorbar(self,x,y,*args,**kwargs)
+    monkeypatch.setattr(Axes,"errorbar",errorbar)
+    comparison_plot(tmp_path,policy,table,[])
+    expected=[r for r in table if r["rate"] is not None]
+    assert len(plotted)==len(expected)
+    for (rate,err),row in zip(plotted,expected):
+        assert rate==row["rate"]
+        assert rate-err[0,0]==pytest.approx(row["wilson_low"],abs=1e-15)
+        assert rate+err[1,0]==pytest.approx(row["wilson_high"],abs=1e-15)
+    assert table==original
+    assert (tmp_path/"figure_5_16_rates.png").stat().st_size>0
+    assert len(list(tmp_path.glob("figure_5_16_*_paired.png")))==5
+
+
+def test_rate_plot_rejects_interval_errors_larger_than_roundoff(tmp_path,policy):
+    from main.batch.figures import comparison_plot,plt
+    table=rate_plot_table(policy)
+    table[0]["wilson_high"]=.99  # A substantive error must not be silently clipped.
+    try:
+        with pytest.raises(ValueError,match="Wilson interval excludes rate"):
+            comparison_plot(tmp_path,policy,table,[])
+    finally:
+        plt.close("all")
+
+
 def test_session_lease_only_finalizes():
     class Engine:
         def finalize_external_model(self,**kw):self.finalized=True

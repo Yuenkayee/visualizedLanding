@@ -253,6 +253,13 @@ def comparison_plot(plots,policy,table,comparisons):
                 if r["rate"] is None:continue
                 lo,hi=r["wilson_low"],r["wilson_high"]
                 err=None if lo is None else np.array([[r["rate"]-lo],[hi-r["rate"]]])
+                if err is not None:
+                    # Accept only floating-point roundoff, never hide a truly
+                    # inconsistent interval by taking abs() or clipping it.
+                    if np.any(err < -8*np.finfo(float).eps):
+                        raise ValueError(f"Wilson interval excludes rate: {w}, sea{sea}, {method}: "
+                                         f"rate={r['rate']}, interval=({lo}, {hi})")
+                    err=np.maximum(err,0.0)
                 ax.errorbar(j+offset,r["rate"],yerr=err,fmt="o" if sea==5 else "s",capsize=3,color=COLORS[method])
                 ax.annotate(f"{r['candidates']}/{r['total']}",(j+offset,r["rate"]),xytext=(0,7 if sea==5 else -14),textcoords="offset points",fontsize=6,ha="center")
         ax.set(xticks=range(4),xticklabels=METHODS,ylim=(-.08,1.15),title=w,ylabel="STOP candidate rate");ax.grid(alpha=.2)

@@ -7,7 +7,11 @@ def wilson(k, n):
     z = 1.959963984540054; p = k/n; d = 1+z*z/n
     mid = (p+z*z/(2*n))/d
     half = z*np.sqrt(p*(1-p)/n+z*z/(4*n*n))/d
-    return [float(mid-half), float(mid+half)]
+    # These endpoints are exact mathematically. Subtracting/adding the rounded
+    # center and half-width can otherwise exclude p by a few ulps at 0 or 1.
+    low = 0.0 if k == 0 else max(0.0, float(mid-half))
+    high = 1.0 if k == n else min(1.0, float(mid+half))
+    return [low, high]
 
 
 def describe(values):
