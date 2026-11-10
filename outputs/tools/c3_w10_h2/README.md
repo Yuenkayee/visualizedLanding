@@ -1,6 +1,8 @@
 # 晴天 C3：平均风速 10 m/s、有效波高 2.0 m
 
-这是独立实验启动器，适用于仓库提交 `ff91248e5275ffd6649b6826e809971d84e7da84`。
+这是独立实验启动器，沿用 `ff91248` 的算法方案，按基线记录的 SHA256 核验算法、
+权重、模型、MATLAB 配置与 worker 等运行文件，而不要求当前 HEAD 恰好为 `ff91248`。
+提交启动器或修改文档后也可以运行；manifest 记录实际 HEAD 和算法参考提交。
 不修改算法、权重、源 SLX 或仓库原有批量入口。原入口固定 C0–C3 × 两海况；
 本启动器直接复用其 supervisor、worker、记录、指标与清理逻辑，仅生成自定义任务清单。
 不要用原 `shell/run_landing_batch.sh run/analyze` 处理本目录的自定义批次。
@@ -14,8 +16,13 @@
 - 超时/原远离判据均保留，不换种子；基础设施异常停止，resume 重试同一测例。
 - 不保存图像/点云，保留压缩 50 Hz 序列、配置、模型参数审计、阶段与终止指标。
 
-将本文件夹上传到服务器仓库的 `outputs/tools/c3_w10_h2/`。
-它没有提交到 Git，`git pull` 不会自动传输这些文件。
+本文件夹已纳入 Git，可提交、推送后在服务器通过 `git pull --ff-only` 同步。
+也可将同版本压缩包解压到服务器仓库根目录；不要用旧压缩包覆盖已经更新的脚本。
+
+旧启动器的 `This launcher requires the rolled-back ff91248 commit` 来自对 HEAD 的
+精确匹配：提交启动器本身就会使 HEAD 改变。更新后不需要再次 reset，也不需要放宽
+算法或模型文件检查。该报错发生在创建批次 manifest 和启动 worker 之前，可重新执行
+原试运行命令（不加 `--resume`）。已有其他批次仍按其冻结的脚本和源码执行，不修改旧 manifest。
 
 ```bash
 cd /root/autodl-tmp/visualizedLanding

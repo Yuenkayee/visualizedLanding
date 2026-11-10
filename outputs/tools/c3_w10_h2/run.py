@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone C3 experiment for ff91248; reuse the repository's workers unchanged."""
+"""Standalone C3 experiment using baseline source hashes, independent of tooling commits."""
 import argparse
 import copy
 import csv
@@ -19,7 +19,7 @@ from main.batch.common import fingerprints, output_path, read_json, seeds, sha, 
 from main.batch.__main__ import supervise
 
 CONDITION = "custom_w10_h2"
-EXPECTED_COMMIT = "ff91248e5275ffd6649b6826e809971d84e7da84"
+REFERENCE_COMMIT = "ff91248e5275ffd6649b6826e809971d84e7da84"
 SEED_KEYS = ("wind_seed", "wave_seed", "sensor_seed")
 
 
@@ -33,8 +33,9 @@ def script_hashes():
 
 
 def make_plan(a):
-    require(subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() == EXPECTED_COMMIT,
-            "This launcher requires the rolled-back ff91248 commit.")
+    # Committing this launcher advances HEAD without changing the algorithms.
+    # Check actual runtime files against the baseline below; record the real HEAD.
+    git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     baseline = output_path(a.baseline)
     out = output_path(a.output)
     require(out != baseline and out not in baseline.parents and baseline not in out.parents,
@@ -77,11 +78,13 @@ def make_plan(a):
             baseline_hashes[str(p)] = sha(baseline / p)
     # Algorithms, weights, stochastic generators and physical source model remain the baseline version.
     exact = {common[k] for k in ("model", "checkpoint", "landing_config", "navigation_config", "lidar_config")}
-    prefixes = ("navigation/", "configs/", "external/", "simulation/bridge/", "simulation/matlab/",
+    runtime = {"main/run.py", "main/sensors.py", "main/config.py", "main/batch/__main__.py",
+               "main/batch/worker.py", "main/batch/common.py", "main/batch/metrics.py", "main/batch/recording.py"}
+    prefixes = ("navigation/", "configs/", "external/", "main/matlab/", "simulation/bridge/", "simulation/matlab/",
                 "visual_modeling/", "visual_training/")
     protected = {p: h for p, h in old["source_sha256"].items()
-                 if p in exact or p in ("main/run.py", "main/sensors.py", "main/config.py") or p.startswith(prefixes)}
-    require(exact <= protected.keys(), "Baseline lacks required source hashes.")
+                 if p in exact or p in runtime or p.startswith(prefixes)}
+    require((exact | runtime) <= protected.keys(), "Baseline lacks required source hashes.")
     changed = [p for p, h in protected.items() if not (ROOT / p).is_file() or sha(ROOT / p) != h]
     require(not changed, f"Baseline algorithm/model/weights/sensors changed: {changed}")
     common.update(weather="clear", duration=a.duration, save_sensors=False,
@@ -95,7 +98,8 @@ def make_plan(a):
                   seeds_per_weather=a.limit, duration_s=a.duration, max_replacements=0)
     manifest = dict(schema=1, experiment="c3_clear_w10_h2", pilot=a.duration < 60 or a.limit < 10,
                     condition=dict(wind_mps=10., wave_height_m=2., label="custom wind/wave condition; not sea state 5"),
-                    git_commit=EXPECTED_COMMIT, baseline=str(baseline.relative_to(ROOT)),
+                    git_commit=git_commit, reference_git_commit=REFERENCE_COMMIT,
+                    baseline=str(baseline.relative_to(ROOT)),
                     baseline_sha256=baseline_hashes, launcher_sha256=script_hashes(),
                     policy=policy, base_config=common, groups=groups, source_sha256=fingerprints(common),
                     interpretation="Original clear/C3 seeds; all STOP/timeout/runaway outcomes retained; no seed replacement.")
