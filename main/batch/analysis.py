@@ -7,6 +7,7 @@ import yaml
 from .common import read_json, write_json, METHODS
 from .metrics import TERMINALS, read_series, arrays, motion, allowed_region
 from .statistics import describe, wilson, paired
+from .report_policy import conditions, methods
 
 
 def csv_file(path, rows, fields=None):
@@ -40,8 +41,8 @@ def balanced_description(rows,key,weathers):
 def tables(rows,policy,data):
     t15,t16,t17=[],[],[]
     for weather in ["equal_weather",*policy["weather"]]:
-        for sea in (5,6):
-            for method in METHODS:
+        for sea in conditions(policy):
+            for method in methods(policy):
                 group=selection(rows,weather,sea,method); n=len(group); k=sum(r["candidate"] for r in group)
                 strata=policy["weather"] if weather=="equal_weather" else [weather]
                 counts=[sum(r["weather"]==w for r in group) for w in strata]
