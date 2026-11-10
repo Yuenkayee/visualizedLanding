@@ -1,8 +1,13 @@
 # C3 四天气完整闭环试验：风速 10 m/s、有效波高 2 m
 
 入口是 `shell/run_landing_c3.sh`（Python 模块 `main.batch.c3`）。默认晴天、雾天、夜间、夜雾
-各 10 架次，共 **40 架次**，单架次最多 60 s。原晴天 10 架次的启动器及结果保留。
+各 10 架次，共 **40 架次**，单架次最多 **80 s**。原晴天 10 架次的启动器及结果保留。
 本次重新运行四种天气的 40 架次，不把原晴天结果直接混入新批次。
+80 s 是仿真时间上限，原 STOP 和持续飞离判据仍会提前终止。分析图的时间范围与存储估计从本批次 manifest 读取。
+
+**从旧 60 s 批次迁移：** 先停止旧批次再同步代码，使用新的 `*_t80_01` 输出目录启动。
+不要对旧 60 s 目录使用 `--resume --duration 80`：续跑读取冻结计划，不能将已完成或中断的旧测例延长到 80 s。
+旧结果可保留作比较，新批次仍沿用对应随机种子。下面的续跑命令只用于新建的 80 s 批次。
 
 - CETI Mean wind speed = **10 m/s**；Ship_motion 和 PredictModel 两处 tauAndFDI 的
   SignificantWaveHeight 均为 **2 m**。两处波浪块的 RandomSeed 和其他参数由原配置函数核验一致。
@@ -71,32 +76,32 @@ NumPy 核心残留、账户授权失败属于环境修复问题；普通安装�
 bash shell/run_landing_c3.sh run \
   --pilot --seeds-per-weather 2 --duration 2 \
   --workers 6 --matlab-sessions "$LANDING_C3_SESSIONS" \
-  --output outputs/batch/c3_four_weather_w10_h2_smoke_01
+  --output outputs/batch/c3_four_weather_w10_h2_t80_smoke_01
 ```
 
-若需检查长期负载，可在另一新目录把 `--duration 2` 改为 `--duration 60`；仍保留 `--pilot`。
+若需检查长期负载，可在另一新目录把 `--duration 2` 改为 `--duration 80`；仍保留 `--pilot`。
 短试运行完全结束后再使用同一组会话进行正式测试。
 
 ## 3. 后台正式运行
 
 ```bash
 mkdir -p outputs/logs/c3_batch
-nohup bash shell/run_landing_c3.sh run \
+nohup bash shell/run_landing_c3.sh run --duration 80 \
   --workers 6 --matlab-sessions "$LANDING_C3_SESSIONS" \
-  --output outputs/batch/c3_four_weather_w10_h2_01 \
-  > outputs/logs/c3_batch/formal_01.log 2>&1 < /dev/null &
-echo $! > outputs/logs/c3_batch/formal_01.pid
+  --output outputs/batch/c3_four_weather_w10_h2_t80_01 \
+  > outputs/logs/c3_batch/formal_t80_01.log 2>&1 < /dev/null &
+echo $! > outputs/logs/c3_batch/formal_t80_01.pid
 ```
 
-不要加 `--pilot`。默认 40 架次，不是原 C0–C3 × 两海况的 320 架次。
+不要加 `--pilot`。默认每架次上限 80 s、40 架次，不是原 C0–C3 × 两海况的 320 架次。
 若先单独用 `plan --output ...` 创建计划，首次运行也要加 `--resume`。
 
 ```bash
 # 当前完成架次、各天气进度及 worker 当前测例
-bash shell/run_landing_c3.sh status --output outputs/batch/c3_four_weather_w10_h2_01
+bash shell/run_landing_c3.sh status --output outputs/batch/c3_four_weather_w10_h2_t80_01
 
 # Ctrl+C 只退出日志查看，不终止后台仿真。
-tail -f outputs/logs/c3_batch/formal_01.log
+tail -f outputs/logs/c3_batch/formal_t80_01.log
 ```
 
 原 supervisor 的 `Completed current-round runs X/40` 表示已完成架次；`finalized groups`
@@ -108,14 +113,14 @@ tail -f outputs/logs/c3_batch/formal_01.log
 ```bash
 nohup bash shell/run_landing_c3.sh run --resume \
   --workers 6 --matlab-sessions "$LANDING_C3_SESSIONS" \
-  --output outputs/batch/c3_four_weather_w10_h2_01 \
-  >> outputs/logs/c3_batch/formal_01.log 2>&1 < /dev/null &
-echo $! > outputs/logs/c3_batch/formal_01.pid
+  --output outputs/batch/c3_four_weather_w10_h2_t80_01 \
+  >> outputs/logs/c3_batch/formal_t80_01.log 2>&1 < /dev/null &
+echo $! > outputs/logs/c3_batch/formal_t80_01.pid
 ```
 
 ## 4. 分析、图表及存储
 
-完成后自动分析，全部输出在 `outputs/batch/c3_four_weather_w10_h2_01/analysis/`：
+完成后自动分析，全部输出在 `outputs/batch/c3_four_weather_w10_h2_t80_01/analysis/`：
 
 | 文件 | 内容 |
 |---|---|
@@ -144,7 +149,7 @@ Jctrl/指令变化率虚高。本入口仅在分析时使用时间真实推进�
 只重建图表无需 MATLAB 或 GPU，也不需要重新运行仿真：
 
 ```bash
-bash shell/run_landing_c3.sh analyze --output outputs/batch/c3_four_weather_w10_h2_01
+bash shell/run_landing_c3.sh analyze --output outputs/batch/c3_four_weather_w10_h2_t80_01
 
 # 给原晴天10架次补全正式图表，另存目录，保留原 analysis。
 bash shell/run_landing_c3.sh analyze \
@@ -154,6 +159,6 @@ bash shell/run_landing_c3.sh analyze \
 
 不要用原 `run_landing_batch.sh analyze` 分析此自定义矩阵。
 默认输出不保存 RGB/点云，完成后清理临时模型/缓存并压缩日志。现有晴天10架次约 32.5 MiB，
-其中数值序列约 19.9 MiB；新生成完整分析约 2.7 MiB。预计40架次最终占用 **0.2–0.5 GB**，
+其中数值序列约 19.9 MiB；新生成完整分析约 2.7 MiB。按80 s上限估计40架次最终占用 **0.2–0.7 GB**，
 六并发临时模型/渲染缓存建议预留 **5–10 GB**；频繁中断留下的证据会额外占用空间。
 该估计不含已有 MATLAB、Python、模型权重和历史结果。离线验证已完成；实际六并发需在服务器试跑确认。

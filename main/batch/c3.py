@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Forty C3 sorties: four weathers, frozen original seeds, wind 10 m/s and Hs 2 m."""
+"""Forty C3 sorties, up to 80 s each: four weathers, original seeds, wind 10 m/s, Hs 2 m."""
 import argparse
 import copy
 import fcntl
@@ -18,6 +18,7 @@ from main.batch.common import WEATHERS, fingerprints, output_path, read_json, se
 from main.batch.__main__ import supervise
 
 CONDITION = "custom_w10_h2"
+FORMAL_DURATION_S = 80.
 REFERENCE_COMMIT = "ff91248e5275ffd6649b6826e809971d84e7da84"
 SEED_KEYS = ("wind_seed", "wave_seed", "sensor_seed")
 
@@ -41,9 +42,10 @@ def make_plan(a):
             "Use a separate output directory outside the baseline.")
     old = read_json(baseline / "manifest.json")
     require(not old.get("pilot") and not old.get("experiment"), "Use the original formal baseline.")
-    require(1 <= a.seeds_per_weather <= 10 and 0 < a.duration <= 60, "seeds-per-weather must be 1..10; duration must be in (0,60].")
-    require(a.pilot or (a.seeds_per_weather == 10 and a.duration == 60),
-            "Short/reduced runs require --pilot; formal C3 is four weathers x ten slots x 60 s.")
+    require(1 <= a.seeds_per_weather <= 10 and 0 < a.duration <= FORMAL_DURATION_S,
+            f"seeds-per-weather must be 1..10; duration must be in (0,{FORMAL_DURATION_S:g}].")
+    require(a.pilot or (a.seeds_per_weather == 10 and a.duration == FORMAL_DURATION_S),
+            f"Short/reduced runs require --pilot; formal C3 is four weathers x ten slots x {FORMAL_DURATION_S:g} s.")
     selected=[]
     for weather in WEATHERS:
         subset=sorted((g for g in old["groups"] if g["weather"] == weather), key=lambda g: g["slot"])
@@ -190,7 +192,8 @@ def main():
     p.add_argument("--seeds-per-weather", type=int, default=10)
     p.add_argument("--pilot", action="store_true")
     p.add_argument("--analysis-output", help="Write offline reports to a separate outputs/ subdirectory")
-    p.add_argument("--duration", type=float, default=60.)
+    p.add_argument("--duration", type=float, default=FORMAL_DURATION_S,
+                   help="Maximum simulated seconds per sortie (default: 80); shorter runs require --pilot")
     p.add_argument("--resume", action="store_true")
     a = p.parse_args()
     require(a.workers > 0, "workers must be positive.")

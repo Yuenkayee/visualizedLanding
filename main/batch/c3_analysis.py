@@ -103,7 +103,9 @@ def analyze(out, destination=None):
         all_sortie_phases(out, rows, policy, data)
     peak, gpu = resource_peaks(out)
     size = sum(p.stat().st_size for p in out.rglob('*') if p.is_file())
-    per60 = [((out/r['path']/'series.jsonl.gz').stat().st_size / max(r['duration_s'], .02)*60) for r in rows]
+    planned_duration = policy['duration_s']
+    per_sortie = [((out/r['path']/'series.jsonl.gz').stat().st_size /
+                  max(r['duration_s'], .02)*planned_duration) for r in rows]
     status = dict(complete=not missing, analysis_complete=True, pilot=manifest['pilot'], expected=len(tasks), included=len(rows),
         candidate_count=sum(r['candidate'] for r in rows), timeout=sum(r['termination']=='timeout' for r in rows),
         runaway=sum(r['termination']=='runaway' for r in rows), missing=missing, seed_replacements=0,
@@ -111,11 +113,13 @@ def analyze(out, destination=None):
         phases_completed=[sum(r['phases'][j]['completed'] for r in rows) for j in range(3)],
         peak_worker_process_tree_rss_gib=peak, peak_total_gpu_memory_gib=gpu,
         memory_note='Externally shared MATLAB processes are not worker descendants; RSS excludes those MATLAB sessions.',
-        stored_bytes=size, estimated_40x60s_series_gib=float(np.median(per60)*40/1024**3) if per60 else None,
+        stored_bytes=size, planned_duration_s=planned_duration,
+        estimated_planned_series_gib=float(np.median(per_sortie)*len(tasks)/1024**3) if per_sortie else None,
         command_omitted_nonadvancing_intervals=sum(a['omitted_nonadvancing_intervals'] for a in audits))
     write_json(data/'status.json', status)
     lines = ['# C3 闭环结果：平均风速 10 m/s，有效波高 2 m', '',
         f"完成 {len(rows)}/{len(tasks)} 架次；STOP 代理 {status['candidate_count']}，超时 {status['timeout']}，持续飞离 {status['runaway']}。试运行：{manifest['pilot']}。",
+        f"单架次仿真时间上限 {planned_duration:g} s；达到原 STOP 或持续飞离判据时仍提前终止。",
         '所有已完成架次均进入分母，超时和飞离不换种子；基础设施错误单列。代表轨迹预先固定为每种天气的 slot 0，不按成功与否挑选。',
         '统计、表5-15～5-17和图5-11～5-16复用正式分析流程。图5-11使用C3实际任务时段的载荷；图5-16仅给出C3各天气及等权汇总的STOP率和Wilson区间，方法差值、两海况差值不适用。',
         'STOP沿用原模型判据，不代表经过额外速度、位置或稳定接触门限检验。没有STOP的终端帧不作为落点。阶段未完成时的停留不混入完成时长，未进入不记为零。',
@@ -124,7 +128,7 @@ def analyze(out, destination=None):
         'Jctrl按原三轴atan渐近幅值归一化，W=I；95%近边界不等于执行机构硬饱和。与旧报告对比前应采用同一离线处理口径。',
         '天气等权汇总要求各层有条件样本；某天气无候选点时，条件分布汇总留空。没有按天气强行配对不同种子。',
         '图中的甲板允许区仅作几何参考；视觉海面不是动力学同一随机波面。导航拒绝和控制异常的先后关系不证明因果。',
-        f"当前批次目录 {size/1024**3:.3f} GiB；40架次各60s的压缩序列估计 {status['estimated_40x60s_series_gib']} GiB。共享MATLAB内存未计入worker进程树RSS。", '', '## 天气统计', '']
+        f"当前批次目录 {size/1024**3:.3f} GiB；{len(tasks)}架次各{planned_duration:g}s的压缩序列估计 {status['estimated_planned_series_gib']} GiB。共享MATLAB内存未计入worker进程树RSS。", '', '## 天气统计', '']
     for r in t15:
         lines.append(f"- {r['weather']}：STOP {r['candidates']}/{r['total']}；Wilson95% [{r['wilson_low']}, {r['wilson_high']}]；径向误差中位数 {r['all_candidates_radial_error_m']['median']} m。")
     lines += ['', '数据：sorties.csv/json、表5-15～5-17、figure_5_14_all_sorties.csv、各图同名数据及groups下series.jsonl.gz。完整性以status.json为准，报告不改变试验原始记录。']

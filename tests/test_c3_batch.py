@@ -52,7 +52,7 @@ def full_baseline(experiment, monkeypatch):
             manifest["groups"].append(group)
     common.write_json(baseline / "manifest.json", manifest)
     args = SimpleNamespace(baseline=str(baseline), output=str(root / "outputs/batch/full"),
-                           seeds_per_weather=10, duration=60., pilot=False)
+                           seeds_per_weather=10, duration=80., pilot=False)
     return args, head, root
 
 
@@ -62,6 +62,7 @@ def test_full_plan_keeps_weather_seeds_attempts_and_actual_head(full_baseline):
     tasks = common.read_json(Path(args.output) / "tasks.json")
     assert manifest["git_commit"] == head
     assert not manifest["pilot"] and len(tasks) == 40
+    assert manifest["policy"]["duration_s"] == manifest["base_config"]["duration"] == 80.
     assert [t["group"]["weather"] for t in tasks[:4]] == list(common.WEATHERS)
     assert all(sum(t["group"]["weather"] == w for t in tasks) == 10 for w in common.WEATHERS)
     assert {t["method"] for t in tasks} == {"C3"}
@@ -75,15 +76,16 @@ def test_full_plan_keeps_weather_seeds_attempts_and_actual_head(full_baseline):
         c3.verify(Path(args.output), manifest)
 
 
-def test_short_plans_require_explicit_pilot(full_baseline):
+@pytest.mark.parametrize("count,duration", [(2, 2.), (10, 60.)])
+def test_short_plans_require_explicit_pilot(full_baseline, count, duration):
     args, _, _ = full_baseline
-    args.seeds_per_weather, args.duration = 2, 2.
+    args.seeds_per_weather, args.duration = count, duration
     with pytest.raises(RuntimeError, match="require --pilot"):
         c3.make_plan(args)
     assert not Path(args.output).exists()
     args.pilot = True
     manifest = c3.make_plan(args)
-    assert manifest["pilot"] and len(manifest["groups"]) == 8
+    assert manifest["pilot"] and len(manifest["groups"]) == 4*count
 
 
 def test_changed_algorithm_is_rejected_before_planning(full_baseline):
@@ -160,6 +162,10 @@ def test_reports_preserve_raw_data_and_censored_denominators(report_batch, tmp_p
     status = common.read_json(dest / "status.json")
     assert status["complete"] and status["included"] == 8 and status["candidate_count"] == 4
     assert status["physical_conditions_and_seeds_passed"]
+    assert status["planned_duration_s"] == manifest["policy"]["duration_s"]
+    sizes = [(p.stat().st_size / .12)*manifest["policy"]["duration_s"]
+             for p in out.rglob("series.jsonl.gz")]
+    assert status["estimated_planned_series_gib"] == pytest.approx(np.median(sizes)*8/1024**3)
     t15 = common.read_json(dest / "table_5_15.json")
     assert len(t15) == 5 and t15[0]["total"] == 8 and t15[0]["rate"] == .5
     final = [r for r in common.read_json(dest / "table_5_17.json") if r["stage"] == 2]
