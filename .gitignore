@@ -24,6 +24,8 @@ data/landing_server_test/
 outputs/figures/*
 outputs/logs/*
 outputs/metrics/*
+outputs/tools
+docs/referencePapers
 outputs/navigation_tests/
 visual_training/checkpoints/*
 # Ship the validated inference checkpoint with every clone.
