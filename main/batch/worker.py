@@ -53,7 +53,8 @@ def run_case(out, task, manifest, worker, session):
     c.update(weather=group["weather"], seed=seed["sensor_seed"])
     c["batch"] = dict(method=method, sea=sea, slot=group["slot"], group=group["id"],
         replacement=attempt, **seed, **p["seas"][str(sea)], runaway=p["runaway"],
-        sea_state_label=f"sea{sea}", matlab_threads=p["matlab_threads"])
+        sea_state_label=f"sea{sea}", matlab_threads=p["matlab_threads"],
+        analysis_profile=p.get("analysis_profile", "legacy"))
     write_json(case/"requested.json", c)
     write_json(out/f"worker_{worker}_current.json", dict(case=str(case), started=time.time()))
     print(f"{group['id']} attempt={attempt} sea={sea} {method}", flush=True)
@@ -83,6 +84,8 @@ def main():
     else:
         os.environ.pop("MATLAB_SHARED_SESSION", None)
     with MatlabSession() as owner:
+        write_json(out/f"worker_{worker}_matlab.json",dict(
+            pid=int(owner.engine.feature('getpid',nargout=1)),session=session,started=time.time()))
         for task in read_json(out/"tasks.json"):
             case = out/task["case"]
             if (case/"metrics.json").exists(): continue

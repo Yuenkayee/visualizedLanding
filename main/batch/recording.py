@@ -37,6 +37,9 @@ def compact_row(row, geometry):
     return dict(t=row["timestamp"], t1=row["next_timestamp"], wall_s=row["wall_s"],
                 s=state(row["truth"], row["native"], geometry),
                 s1=state(row["next_truth"], row["next_native"], geometry),
+                # Initial actual ship kinematics and latch values are needed
+                # for t=0 plots and phase dwell; u remains evaluated at t1.
+                u0=row["batch_telemetry"] if row["timestamp"] == 0 else None,
                 stage=int(np.asarray(row["batch_telemetry"]["stage"]).item()),
                 u=row["next_batch_telemetry"],
                 cg_true=f["cg_relative_truth_ned"], cg_raw=f["cg_relative_estimate_ned"],

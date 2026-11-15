@@ -14,11 +14,12 @@ from .common import ROOT, METHODS, WEATHERS, output_path, fingerprints, write_js
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("command", choices=["plan", "run", "analyze"])
+    p.add_argument("command", choices=["plan", "run", "analyze", "status"])
     p.add_argument("--output", required=True)
     p.add_argument("--config", default="main/batch_closed_loop.yaml")
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--pilot", action="store_true", help="Mark outputs as development; never pool with formal results")
+    p.add_argument("--c3-only", action="store_true", help="C3 preflight: both seas, four weathers, original paired seeds (80 sorties)")
     p.add_argument("--seeds-per-weather", type=int)
     p.add_argument("--weather", nargs="+", choices=WEATHERS)
     p.add_argument("--duration", type=float)
@@ -43,6 +44,10 @@ def create(a):
         raise ValueError("Invalid seed count/representative slot")
     if c["methods"] != list(METHODS) or set(c["seas"]) != {5, 6}:
         raise ValueError("C0-C3 and paired seas 5/6 are required")
+    if a.c3_only: c["methods"] = ["C3"]
+    if c.get("analysis_profile") == "thesis_523_15":
+        from .energy import validate_policy
+        validate_policy(c)
     if c["touchdown_policy"] != "existing_model_stop_proxy" or c["initial_conditions"] != "unchanged_model_nominal":
         raise ValueError("Unsupported evaluation policy")
     base.update(duration=c["duration_s"], device=a.device, render_device=a.render_device,
@@ -51,7 +56,9 @@ def create(a):
     if a.render_python: base["render_python"] = a.render_python
     from main.config import validate
     validate(base)
-    return dict(schema=1, pilot=a.pilot, policy=c, base_config=base,
+    return dict(schema=2, experiment="c3_preflight" if a.c3_only else "full_closed_loop",
+                pilot=a.pilot, policy=c, base_config=base,
+                landing_snapshot=yaml.safe_load((ROOT/base["landing_config"]).read_text()),
                 git_commit=subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip(),
                 runtime=dict(python=sys.version, executable=sys.executable, platform=sys.platform),
                 source_sha256=fingerprints(base),
@@ -60,15 +67,21 @@ def create(a):
                 interpretation=dict(touchdown="existing model STOP proxy, no stable-contact claim",
                     sea_comparison="combined wave-height and user-specified wind-speed change",
                     initial_conditions="fixed nominal model state; no invented perturbation distribution",
-                    pairing="same physical-time/channel seeds across all eight sea/method runs",
-                    exclusions="any runaway supersedes entire eight-run pair group; ledger and attempted-run sensitivity retained",
+                    pairing="same physical-time/channel seeds across all selected sea/method runs",
+                    exclusions="any runaway supersedes entire matched group; ledger and attempted-run sensitivity retained",
                     command_cost="sum squared command increments normalized by existing atan bounds, W=I, divided by dt"))
 
 
 def supervise(out, manifest, a):
-    sessions = a.matlab_sessions.split(",") if a.matlab_sessions else [""]*a.workers
-    if len(sessions) != a.workers or (a.matlab_sessions and (len(set(sessions)) != len(sessions) or not all(sessions))):
+    named = a.matlab_sessions is not None
+    sessions = [s.strip() for s in a.matlab_sessions.split(",")] if named else [""]*a.workers
+    if len(sessions) != a.workers or (named and (len(set(sessions)) != len(sessions) or not all(sessions))):
         raise ValueError("Provide exactly one distinct dedicated MATLAB session per worker")
+    if named:
+        import matlab.engine
+        available=list(matlab.engine.find_matlab())
+        if not set(sessions)<=set(available):
+            raise RuntimeError(f"Shared sessions missing; requested {sessions}; available {available}")
     env = os.environ.copy()
     env.pop("MATLAB_SHARED_SESSION", None)  # Never inherit the single-run session into all workers.
     env.update(OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", PYTHONUNBUFFERED="1")
@@ -76,6 +89,7 @@ def supervise(out, manifest, a):
     owned_descendants = {}
     try:
         for i, session in enumerate(sessions):
+            (out/f"worker_{i}_matlab.json").unlink(missing_ok=True)
             write_json(out/f"worker_{i}_current.json", dict(case="MATLAB startup", started=time.time()))
             log = (out / f"worker_{i}.log").open("a", buffering=1); handles.append(log)
             child_env = {**env, "LANDING_BATCH_MATLAB_SESSION": session}
@@ -105,6 +119,8 @@ def supervise(out, manifest, a):
                     done = sum((out/"groups"/g["id"]/"result.json").exists() for g in manifest["groups"])
                     record = dict(time=now, elapsed_s=now-started, groups_done=done,
                                   workers=[p.pid for p in processes if p.poll() is None],
+                                  matlab_pids=[read_json(out/f'worker_{i}_matlab.json')['pid']
+                                      for i,p in enumerate(processes) if p.poll() is None and (out/f'worker_{i}_matlab.json').exists()],
                                   load=os.getloadavg())
                     try:
                         record["process_rss_kib"] = subprocess.check_output(["ps", "-eo", "pid,ppid,rss,comm"], text=True)
@@ -155,7 +171,7 @@ def round_tasks(out, manifest):
             if (folder/"attempt.json").exists() and read_json(folder/"attempt.json")["status"]=="excluded_runaway": continue
             cases=[]; pending=[]
             for sea in (5,6):
-                for method in METHODS:
+                for method in policy["methods"]:
                     case=folder/f"sea{sea}_{method}"; case.mkdir(exist_ok=True)
                     cases.append(str(case.relative_to(out)))
                     if not (case/"metrics.json").exists():
@@ -178,9 +194,15 @@ def round_tasks(out, manifest):
 
 def main():
     a = parser().parse_args(); out = output_path(a.output)
+    if a.command == "status":
+        print(__import__("json").dumps(status(out), ensure_ascii=False, indent=2)); return
     if a.command == "analyze":
         from .analysis import analyze
-        analyze(out); return
+        import fcntl
+        with (out/"coordinator.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            analyze(out)
+        return
     if a.workers < 1: raise ValueError("workers must be positive")
     if a.resume:
         manifest = read_json(out/"manifest.json")
@@ -190,13 +212,18 @@ def main():
         manifest = create(a)
         out.mkdir(parents=True, exist_ok=False)
         write_json(out/"manifest.json", manifest)
-    print(f"{'PILOT' if manifest['pilot'] else 'FORMAL'}: {len(manifest['groups'])*8} runs, {a.workers} workers, {out}")
+    expected=len(manifest['groups'])*2*len(manifest['policy']['methods'])
+    print(f"{'PILOT' if manifest['pilot'] else manifest.get('experiment','FORMAL')}: {expected} runs, {a.workers} workers, {out}")
     if a.command == "plan": return
     # flock is released by the OS after interruption; resume cleans stale claims
     # only while holding this exclusive coordinator lock.
     import fcntl
     with (out/"coordinator.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        def interrupted(signum, frame):
+            raise KeyboardInterrupt(f"coordinator received signal {signum}; resume with the same manifest")
+        signal.signal(signal.SIGTERM, interrupted)
+        (out/"coordinator.pid").write_text(str(os.getpid())+"\n")
         for claim in (out/"groups").rglob("claim"): claim.rmdir()
         while round_tasks(out,manifest):
             supervise(out, manifest, a)
@@ -207,6 +234,18 @@ def main():
             raise RuntimeError("Formal batch source/model/weights changed while running; see source_verification.json")
         from .analysis import analyze
         analyze(out)
+
+
+def status(out):
+    manifest=read_json(out/"manifest.json")
+    tasks=read_json(out/"tasks.json") if (out/"tasks.json").exists() else []
+    return dict(expected_sorties=len(manifest["groups"])*2*len(manifest["policy"]["methods"]),
+        finalized_groups=sum((out/"groups"/g["id"]/"result.json").exists() for g in manifest["groups"]),
+        planned_groups=len(manifest["groups"]), current_round_tasks=len(tasks),
+        current_round_completed=sum((out/t["case"]/"metrics.json").exists() for t in tasks),
+        completed_attempts=len(list((out/"groups").glob("*/attempt_*/sea*/metrics.json"))),
+        active_workers=[read_json(p) for p in sorted(out.glob("worker_*_current.json"))],
+        analysis=read_json(out/"analysis/status.json") if (out/"analysis/status.json").exists() else None)
 
 
 if __name__ == "__main__": main()

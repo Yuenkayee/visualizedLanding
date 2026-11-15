@@ -85,6 +85,22 @@ sources={[cmd '/target_pos/Chart'],[model '/LandingControlCG'], ...
     [model '/LandingControlValid'],[cmd '/Plus'],[cmd '/Plus'], ...
     [cmd '/NavigationValidityGate'],[cmd '/Plus1'],[cmd '/Plus1'],wavePaths{1}};
 ports=[2,1,1,2,1,1,1,2,4]; inputs=[false,false,false,true,false,false,false,true,true];
+if isfield(b,'analysis_profile') && strcmp(b.analysis_profile,'thesis_523_15')
+    % Observe the actual (not predicted) six-DOF ship state in SI units.
+    % Offline rigid-body transport to fixed H gives its exact acceleration,
+    % without differentiating a noisy position or changing the existing EI.
+    motion=find_system(waveParents{1},'SearchDepth',1,'BlockType','MATLABSystem', ...
+        'System','ship_motion_model_2');
+    assert(numel(motion)==1,'landing:Batch','Expected actual ship dynamics');
+    stopBlock=[cmd '/SCOPE_/Stop Simulation'];
+    assert(strcmp(get_param(stopBlock,'BlockType'),'Stop'),'landing:Batch','Missing original touchdown STOP');
+    fields=[fields {'ship_eta','ship_nu','ship_eta_dot','ship_nu_dot','touchdown_stop'}];
+    sources=[sources {motion{1},motion{1},motion{1},motion{1},stopBlock}];
+    ports=[ports 1 2 1 2 1]; inputs=[inputs true true false false true];
+    info.evaluation=struct('profile',b.analysis_profile,'ship_dynamics',motion{1}, ...
+        'stop_block',stopBlock,'state_units','m, rad, m/s, rad/s; derivatives in SI', ...
+        'reference','fixed H; evaluation EI independent of original guidance EI');
+end
 % Latches are created later by landing_prepare_control; use the source plant
 % inputs for the structural probe and read the latch itself at runtime.
 sources{2}=[base '/cg_relative_estimate']; sources{3}=[base '/cg_navigation_valid'];

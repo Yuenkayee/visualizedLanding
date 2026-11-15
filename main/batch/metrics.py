@@ -64,12 +64,22 @@ def summarize(case, policy):
     if not rows: raise ValueError("No samples: cannot classify an empty run as a completed task")
     a = arrays(rows); b = metadata["config"]["batch"]; dt = a["dt"]
     candidate = metadata.get("termination_reason") == "model_stop"
+    modern = policy.get("analysis_profile") == "thesis_523_15"
+    if modern:
+        # A model can contain other Stop blocks (e.g. ROA diagnostics).
+        # Only the original landing STOP signal is a touchdown event.
+        candidate = candidate and bool(np.asarray(rows[-1]["u"].get("touchdown_stop", 0)).item())
     terminal = "candidate_stop_proxy" if candidate else "runaway" if metadata.get("termination_reason") == "runaway" else "timeout"
     last = rows[-1]["s1"]; target = nominal_point(last, model, metadata["geometry"])
     error = np.asarray(last["p"])-target
     limit = np.asarray(model["command_limit_mps"]).ravel()
-    derivative = np.diff(a["command"],axis=0)/np.maximum(np.diff(a["t1"]),1e-12)[:,None]
-    cost = np.sum((np.diff(a["command"],axis=0)/limit)**2*np.asarray(policy["command_cost_weights"])/np.maximum(np.diff(a["t1"]),1e-12)[:,None])
+    if modern:
+        from .command_analysis import increments
+        _, derivative, command_audit = increments(rows, model, policy["command_cost_weights"])
+        cost = command_audit["Jctrl"]
+    else:
+        derivative = np.diff(a["command"],axis=0)/np.maximum(np.diff(a["t1"]),1e-12)[:,None]
+        cost = np.sum((np.diff(a["command"],axis=0)/limit)**2*np.asarray(policy["command_cost_weights"])/np.maximum(np.diff(a["t1"]),1e-12)[:,None])
     phases = []
     nxt = np.array([int(np.asarray(r["u"]["stage"]).item()) for r in rows])
     # Entry at the terminal endpoint is an entered, zero-dwell stage; do not
@@ -108,7 +118,7 @@ def summarize(case, policy):
             cg_tracking_rmse_m=float(np.sqrt(np.mean(np.sum(error_guidance[selection]**2,axis=1)))) if selection.any() else None,
             horizontal_speed_median_mps=float(np.median(np.linalg.norm(a["v"][selection,:2],axis=1))) if selection.any() else None,
             normal_speed_median_mps=float(np.median(a["v"][selection,2])) if selection.any() else None))
-    return dict(case_id=str(case.name), group=b["group"], slot=b["slot"], replacement=b["replacement"],
+    result = dict(case_id=str(case.name), group=b["group"], slot=b["slot"], replacement=b["replacement"],
         weather=metadata["config"]["weather"], sea=b["sea"], method=b["method"],
         wave_seed=b["wave_seed"], wind_seed=b["wind_seed"], sensor_seed=metadata["config"]["seed"],
         termination=terminal, candidate=candidate, qualified=candidate,
@@ -133,3 +143,7 @@ def summarize(case, policy):
         wave_speed_mps=np.asarray(rows[0]["u"]["wave_command"]).ravel().tolist(),
         feedforward_residual_max_mps=float(np.max(abs(a["command"]-a["relative"]-a["feedforward"]))),
         elapsed_wall_s=metadata["elapsed_s"], samples=len(rows), runaway_evidence=metadata.get("runaway_evidence"))
+    if modern:
+        from .thesis_metrics import augment
+        augment(result, rows, model, metadata, policy)
+    return result

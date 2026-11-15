@@ -115,6 +115,9 @@ def pairing_audit(out,rows):
 
 def analyze(out):
     out=Path(out); manifest=read_json(out/"manifest.json"); policy=manifest["policy"]
+    if policy.get("analysis_profile") == "thesis_523_15":
+        from .thesis_analysis import analyze as thesis_analyze
+        return thesis_analyze(out)
     data=out/"analysis"; data.mkdir(exist_ok=True)
     rows,attempted,ledger=[],[],[]
     for group in manifest["groups"]:

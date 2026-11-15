@@ -1,28 +1,41 @@
-# 论文 5.2.3 闭环批量试验
+# 论文5.2.3：新版闭环批量试验（15张图）
 
-本入口仅实现导航参与控制的闭环试验。保留已验证的
-`external/innerloop/simu/innerLoop_landing.slx`、控制器、导航参数、四天气权重与名义初值。
-不修改 `docs/论文.docx`，不包含 N0—N3 的固定输入导航评测。
+入口为 `shell/run_landing_batch.sh` / `python -m main.batch`。新计划采用
+`analysis_profile: thesis_523_15`。旧 manifest 仍走旧报告流程，不能通过改写
+旧 manifest 将缺少实际EI状态量的旧结果冒充新试验。
 
-正式矩阵为 4 天气 × 2 海况 × 10 种子 × 4 方法 = **320 架次**。
-默认最长仿真时间 60 s，模型原有自动 STOP 提前结束。
+保留导航算法、控制器、训练权重、名义初值及源模型；仅在每架次独立的模型副本中
+设置本次风浪与种子，并分支记录观测信号。没有改动 `docs/论文.docx`。
+仓库实际模型为已验证的 `external/innerloop/simu/innerLoop_landing.slx`；
+用户提及的 `external/innerloop/simu/closeLoop_landing.slx` 不存在。
+不使用另一目录下名称相近的模型。
+
+| 试验海况标签 | CETI平均风速 | 两处tauAndFDI有效波高 |
+|---|---:|---:|
+| 5 | 10 m/s | 2 m |
+| 6 | 12 m/s | 2.5 m |
+
+这是用户指定的本次试验参数，不是对海况分级的通用定义，也不沿用旧批次的
+12/19 m/s、3.25/5 m。两海况同时改变风浪，差异解释为联合效应。
+两处海浪块的所有参数写后核验一致，Hs和RandomSeed同步设置；Tp=11.2 s、浪向150°、
+64分量、频率0.2–2 rad/s保持原值。CETI仅改Uinf和原噪声模块seed，噪声功率不改。
+
+正式矩阵：四天气×十种子×两海况×C0—C3 = **320架次**，40个配对组，每组8架次。
+`--c3-only`：同样四天气、两海况、十种子，共 **80架次**，40组，每组2架次。
+均最长 **80 s**；种子由原master_seed=5232026、天气、slot、replacement生成，
+同组跨方法、跨海况一致。新批次从attempt 0开始；若旧批次有替换组，比较时须按实际种子核对，
+不能仅凭相同slot声称配对。代表曲线预先固定slot 0及其整组替换，不挑成功案例。
 
 | 方法 | 控制端位置 | 有效性 |
 |---|---|---|
-| C0 | 真实直升机质心减舰船质心的 NED 位置 | 真值参照；导航仅旁路运行 |
-| C1 | 学习前端、纯视觉 ESKF、原有信号整形 | 仅跳过雷达融合更新；其他健康策略保持 |
-| C2 | 完整融合的原始 50 Hz 位置 | 同时运行原整形器，只采用其有效位 |
-| C3 | 完整融合与原有有界因果整形 | 原有有效位 |
+| C0 | 真值CG相对位置 | 真值参照；导航旁路运行 |
+| C1 | 纯视觉ESKF与原整形器 | 仅跳过雷达融合，其余策略保留 |
+| C2 | 完整融合的原始50 Hz位置 | 同时运行原整形器，采用其有效位 |
+| C3 | 完整融合与原有界因果整形 | 原有有效位 |
 
-两种海况分别使用 Hs=3.25/5.00 m、CETI 平均风速12/19 m/s。
-两处 `tauAndFDI` 的全部属性必须一致；仅设置 Hs 和 RandomSeed，核验现有
-Tp=11.2 s、浪向150°、64分量、0.2–2 rad/s；CETI 仅设置 Uinf 与白噪声 seed。
-修改只发生在每架次的工作副本，原始 SLX 文件不保存修改。
-因此海况差值代表**风浪共同变化**，不能解释成只改变 Hs 的因果效应。
+## Ubuntu 22.04准备及依赖检查
 
-## Ubuntu 22.04 依赖与安装
-
-在仓库根目录执行；以下沿用已验证的 Python 和 MATLAB 安装，不创建一个不同的导航环境。
+先停止使用这些共享MATLAB会话的旧任务，在仓库根目录执行。
 
 ```bash
 cd /root/autodl-tmp/visualizedLanding
@@ -31,186 +44,172 @@ export MATLAB_ROOT=/root/MATLAB/R2024b
 export RENDER_PYTHON="$PWD/.venv-render-server/bin/python"
 export MATLAB_LICENSE_MODE=online
 export LANDING_DOWNLOAD_PROFILE=china
-
-# 检查并安装缺失依赖；同原单次闭环部署脚本。
-bash shell/run_landing_batch.sh check --device cuda --render-device OPTIX
-
-# 可选：只检查，不安装。
-bash shell/run_landing_batch.sh check --check --device cuda --render-device OPTIX
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 ```
 
-检查范围：Ubuntu动态库、NumPy/SciPy真实导入、Torch/CUDA、检查点、独立
-Python3.11的bpy渲染环境、MATLAB R2024b Engine、Simulink/Control/Robust工具箱和授权。
-批量运行前额外在新进程执行 `from scipy.stats import chi2`，防止先前混装NumPy问题复现。
-不在并发worker中运行pip，不在批量过程中重新安装依赖。
-
-## 并发压力测试
-
-每个worker有独立Python、MATLAB、Blender进程和Simulink缓存。自动启动的MATLAB
-在该worker内复用；各架次重新初始化动态状态和随机流。
-MATLAB/BLAS/OpenCV/Torch默认各1线程，Cycles2线程；不改变图像分辨率或采样质量。
-推荐在22vCPU、110GB内存、96GB显存服务器上先试4个worker，再依据实测决定是否增大。
+对于此前已经准备好的六个**专用、空闲**共享会话，先获取实际名称，避免把
+`MATLAB_1226`误写为`LandingBatch1`。下面只有恰好六个会话时才自动选择：
 
 ```bash
-# 8架次，每架次2秒，仅验证接口、并发授权与资源占用。
-# 默认不会继承单次运行的 MATLAB_SHARED_SESSION 到所有worker。
+LANDING_SESSIONS="$("$PYTHON_BIN" - <<'PY'
+import matlab.engine
+names=sorted(matlab.engine.find_matlab())
+if len(names)!=6:
+    raise SystemExit(f'需要6个专用空闲会话；当前发现：{names}')
+print(','.join(names))
+PY
+)"
+export LANDING_SESSIONS
+```
+
+若还有其他共享会话，手动把六个目标会话的实际名称填入
+`export LANDING_SESSIONS=名称1,名称2,名称3,名称4,名称5,名称6`。
+不自动判断已有会话是否正被其他工作占用。不存在会话时，可按已有授权方式启动：
+
+```bash
+mkdir -p outputs/logs/matlab
+for i in 1 2 3 4 5 6; do
+  tmux new-session -d -s "landing_batch_$i" \
+    "$MATLAB_ROOT/bin/matlab -licmode online -nodisplay -nosplash -r \"matlab.engine.shareEngine('LandingBatch$i')\"" \
+    >"outputs/logs/matlab/start_$i.log" 2>&1
+done
+```
+
+若授权需要交互，进入对应tmux完成登录；账户必须允许实际使用的并发数。
+启动后重新执行发现名称的命令，不以固定等待秒数代替成功检查。
+脚本不会自动打开网页或提交凭据。自动拥有的Engine会话授权正常时，可省略所有
+`--matlab-sessions`，worker自行启动独立MATLAB。
+
+```bash
+# 安装缺少的依赖，然后检查。不要在仿真正在运行时重装。
+bash shell/run_landing_batch.sh check \
+  --device cuda --render-device OPTIX --matlab-sessions "$LANDING_SESSIONS"
+
+# 只检查，不安装。
+bash shell/run_landing_batch.sh check --check \
+  --device cuda --render-device OPTIX --matlab-sessions "$LANDING_SESSIONS"
+```
+
+检查Ubuntu动态库、Python3.12、NumPy/SciPy真实导入与dtype一致性、Torch/CUDA、四天气权重、
+独立Python3.11/bpy与OPTIX、MATLAB R2024b/Engine、Simulink/Control/Robust授权、中文字体。
+新增对两个海况模型工作副本的**零时长编译检查**，核验实际舰船状态/导数和原STOP观测点，
+源SLX哈希必须不变。原模型控制器初始化可能耗时数分钟；报告保存在
+`outputs/logs/closed_loop/<时间>/environment.json`。六会话逐个启动与并发资源能力由压力测试验证。
+若NumPy仍报告core/_core类型不一致，先按 `main/README.md` 的环境恢复段处理；普通force-reinstall不能保证清除未登记残留。
+
+## 六并发压力测试
+
+```bash
+# 8架次、每架次2秒：接口、编译、6个独立worker与输出链路。
 bash shell/run_landing_batch.sh run --pilot \
-  --weather clear --seeds-per-weather 1 --duration 2 --workers 4 \
-  --output outputs/batch/pressure_2s
+  --weather clear --seeds-per-weather 1 --duration 2 \
+  --workers 6 --matlab-sessions "$LANDING_SESSIONS" \
+  --output outputs/batch/pressure_523_15_2s_01
 
-# 相同小矩阵的8架次完整闭环；核验终止数据与全部图表。
+# 32架次、每架次10秒：覆盖四天气，观察持续GPU/内存压力。
 bash shell/run_landing_batch.sh run --pilot \
-  --weather clear --seeds-per-weather 1 --workers 4 \
-  --output outputs/batch/pilot_full
+  --seeds-per-weather 1 --duration 10 \
+  --workers 6 --matlab-sessions "$LANDING_SESSIONS" \
+  --output outputs/batch/pressure_523_15_10s_01
 ```
 
-查看 `analysis/status.json` 的 `complete`、`pairing_passed`、
-`peak_batch_process_tree_rss_gib`、`peak_total_gpu_memory_gib`；显存为整卡占用，
-若还有其他GPU进程应一并考虑。`resources.jsonl` 每30秒记录进程树RSS和GPU利用率。
-短测的超时是预期结果，不构成触舰成功率证据。每架次初次编译和原有控制器计算
-也可能耗时数分钟，2秒是物理仿真时长，不是壁钟运行时间。
+输出目录必须为新目录；重跑换后缀，恢复已有计划使用`--resume`。压力测试中的超时是预期，
+不作为80 s正式闭环的成功率证据。12 vCPU、62 GB RAM、32 GB显存先沿用六worker；
+每worker MATLAB/BLAS/Torch/OpenCV各1线程，Cycles2线程，保持渲染质量。
+`resources.jsonl`每30 s记录内存与GPU；`analysis/status.json`给出峰值，RSS包括独立共享MATLAB，
+但共享内存页可能重复计入，显存为整卡总量。检查没有OOM及进程异常后再执行完整时长。
 
-若服务器只能连接手动登录后的MATLAB，先在四个独立tmux会话中分别启动：
+## 两海况C3前置测试：80架次
 
 ```bash
-tmux new-session -s landing_batch1
-/root/MATLAB/R2024b/bin/matlab -licmode online -nodisplay -nosplash \
-  -r "matlab.engine.shareEngine('LandingBatch1')"
+mkdir -p outputs/logs/batch
+nohup bash shell/run_landing_batch.sh run --c3-only \
+  --workers 6 --matlab-sessions "$LANDING_SESSIONS" \
+  --output outputs/batch/c3_523_15_t80_01 \
+  > outputs/logs/batch/c3_523_15_t80_01.log 2>&1 < /dev/null &
 ```
 
-用 `Ctrl+B D` 分离，重复创建 `landing_batch2/3/4` 和 `LandingBatch2/3/4`。
-必须是同一系统用户且授权允许同时运行的四个会话。在运行命令后附加：
+不需要旧`formal_523_w6`结果作输入，不使用旧`main.batch.c3`的基线commit约束。
+C3单方法也生成相同15张图及全部表格；C3-C1/C2差值标为不适用，不能解释成零差异。
+压力测试、C3检查和正式批次应顺序运行，不能共用同一批MATLAB会话同时运行。
+
+## 完整正式批次：320架次
 
 ```bash
---matlab-sessions LandingBatch1,LandingBatch2,LandingBatch3,LandingBatch4
+nohup bash shell/run_landing_batch.sh run \
+  --workers 6 --matlab-sessions "$LANDING_SESSIONS" \
+  --output outputs/batch/formal_523_15_t80_01 \
+  > outputs/logs/batch/formal_523_15_t80_01.log 2>&1 < /dev/null &
 ```
 
-同一共享会话不能提供给两个worker或同时用于单次仿真。脚本拒绝重复会话名；
-一次批次内独占会话，各批次的共享会话还需由使用者隔离。
-
-## 正式批量与恢复
+`--pilot`不得用于正式结果。可先用`plan`冻结计划，随后以`run --resume`启动。
+记录git版本、源码/模型/权重/配置/论文哈希及landing几何快照；恢复时不允许源内容漂移。
+批量过程中不要git pull或修改源文件。
 
 ```bash
-bash shell/run_landing_batch.sh run --workers 4 \
-  --output outputs/batch/formal_523
+# 查看完成数、当前任务和分析状态（不依赖MATLAB）。
+bash shell/run_landing_batch.sh status --output outputs/batch/formal_523_15_t80_01
+# 实时日志；Ctrl-C只退出查看。
+tail -f outputs/logs/batch/formal_523_15_t80_01.log
 
-# Ctrl+C、进程错误或机器中断后：已完成架次不重复运行。
-bash shell/run_landing_batch.sh run --resume --workers 4 \
-  --output outputs/batch/formal_523
+# 中断后恢复同一份计划、种子与输出目录；已经完成的架次不会重跑。
+nohup bash shell/run_landing_batch.sh run --resume \
+  --workers 6 --matlab-sessions "$LANDING_SESSIONS" \
+  --output outputs/batch/formal_523_15_t80_01 \
+  >> outputs/logs/batch/formal_523_15_t80_01.log 2>&1 < /dev/null &
 
-# 仅重算统计/重绘，不启动MATLAB或渲染器。
-bash shell/run_landing_batch.sh analyze --output outputs/batch/formal_523
+# 仿真已完成但绘图失败时，只重新分析，不重跑仿真。
+bash shell/run_landing_batch.sh analyze --output outputs/batch/formal_523_15_t80_01
 ```
 
-新批次要求输出目录不存在；`--resume`读取原manifest的场景、设备和策略，
-只允许调整worker数量/专用会话安排。源码、模型、权重、配置或论文内容的哈希
-改变时拒绝续跑，避免混入两个实验定义。修复实现后应使用新批次目录。
-`plan --output ...`可先冻结矩阵，随后用 `run --resume --output ...`执行。
-正式模式不接受命令行缩短时长、减少天气/种子或CPU近似渲染；这些覆盖只用于`--pilot`。
+停止运行时，先用`ps -p "$(cat 输出目录/coordinator.pid)" -o pid,args`核对仍是该批次
+`main.batch run`进程，再对这个PID发送`kill -TERM PID`。协调器清理worker及自己拥有的子进程，
+不关闭独立共享MATLAB。`coordinator.pid`启动后才创建，不要向未知PID或全部python进程发信号。
+`finalized_groups`是整组配对的提交数；例如320架次=40组×8，不是320×40。
 
-### 图5-16报错：`'yerr' must not contain negative values`
+## 终止、统计与输出
 
-这是成功率置信区间的浮点边界问题。例如10/10架次满足STOP代理判据时，旧版
-Wilson区间上界可能算成`0.9999999999999999`，绘图所需的`上界−成功率`
-变成`−1.11e−16`，Matplotlib会拒绝这个负误差长度。此时仿真已进入事后分析，
-不表示动力学或导航算法发生错误，也不需要重跑已完成的架次。
+原`innerLoop/LAND_CMD/SCOPE_/Stop Simulation`输入触发并停止即为触舰，不新增接触门槛。
+另按论文计算固定H中心的实际EI，EI<1是安全触舰，EI≥1是非安全，缺测为未知。
+直接记录实际`Ship_motion`动力学的eta/nu/eta_dot/nu_dot（SI），用刚体运动学换算H的速度、
+加速度；角速度项取Euler角导数，不以机体p/q替代。权重按论文状态顺序
+[25,.25,400,25,100,.25,277.78,44.44]。
+**模型内部制导EI的实现顺序和权重与论文评价式不同，保留原实现，离线评价单列，二者不能混用。**
 
-修复位于`statistics.py`和`figures.py`：零满足数的下界明确为0，全满足数的上界
-明确为1；绘图仅将浮点精度范围内的微小负长度归零，明显不一致的区间仍报错。
-触舰判据、样本数、满足率、算法参数和权重均不改变。
+安全率分母包含全部纳入架次；另报触舰发生率与EI完整的已触舰架次中的条件安全比例。
+实际触舰点才参与落点分布，不使用超时末帧补点。未完成阶段为删失，未进入为缺失。
+条件统计按天气等权；任一所需天气层无样本时不悄悄改权重；配对bootstrap保留缺失原因与数量。
+95% Wilson端点处理浮点舍入，避免旧版负yerr报错。Jctrl只使用真实推进的时间区间。
 
-将修复代码同步至服务器后，针对**原批次目录**单独分析；路径以原`--output`为准：
+持续飞离规则保留原设置：至少10 s，10 s窗口内距离始终超过max(200 m,初始距离+150 m)，
+净远离≥30 m、向外步占比≥0.9、最大回返≤2 m；触发后整个配对组换种子，最多5次替换。
+普通超时、导航失效、非安全触舰不换种子。剔除证据和全部尝试保留，主结果必须同时报告选择偏差。
+依赖、接口或数值异常暂停批次，恢复同种子，不把基础设施错误转换成“坏随机种子”。
 
-```bash
-export PYTHON_BIN=/root/miniconda3/bin/python3
-bash shell/run_landing_batch.sh analyze --output outputs/batch/formal_523
-```
+完成后在`输出目录/analysis/`读取：
 
-该命令读取已有`groups/`下的指标与压缩序列，重建`analysis/`内的统计和图片；
-不启动MATLAB、不需要共享会话或worker参数，不修改仿真记录及原manifest。
-纯分析修复可以用此命令处理原批次；不要为此使用`run --resume`，也不要修改
-manifest中的源码哈希绕过续跑检查。原`source_verification.json`保留运行结束时的核验结果。
+- `report.md`、`status.json`：结果分析、完整性、样本计数、资源/空间估计。
+- `table_5_15/16/17.csv/json`：表现统计、终止分类、阶段完成/删失等。
+- `sorties.csv/json`、`table_5_16_case_evidence.csv`：逐架次指标、异常时序、EI各状态项及贡献。
+- `attempt_ledger.*`、`all_attempts_sensitivity.csv`：替换/中断及全部尝试的敏感性描述。
+- `pairing_audit.json`、`physical_conditions_audit.json`：种子、海浪相位、实际舰船与前馈一致性。
+- `figures/`：恰好15张中文PNG；`figure_index.json`映射到原始数值来源。
+- `plot_sources/*.npz`：代表曲线全采样精度源数据；全部原始50Hz记录仍在`groups/.../series.jsonl.gz`。
 
-报错前表5-15至5-17和部分图片可能已写出，但`analysis/status.json`和`report.md`
-在全部绘图完成后才生成；文件缺失不能单独作为仿真未完成的证据。分析完成后检查
-`status.json`中的`complete`、`included`、`expected`和`pairing_passed`；默认正式矩阵
-应为320/320架次。`complete`表示记录齐全，不等于320架次全部满足触舰代理判据。
+| 图号 | 文件数 | 内容 |
+|---|---:|---|
+| 5-11 | 1 | 两海况风浪、横纵摇、H运动和实际EI |
+| 5-12 | 2 | 每海况晴天/夜雾的轨迹、法向高度/速度 |
+| 5-13 | 2 | 每海况四天气的全部触舰点与EI分类 |
+| 5-14 | 2 | 每海况阶段完成时长及已触舰总时长 |
+| 5-15 | 2 | 每海况夜雾的导航/消费误差、制导、指令与有效性 |
+| 5-16 | 2 | 安全率及成对比较 |
+| 5-17 | 4 | 每天气两海况的触舰EI箱线/散点与ECDF |
 
-进度中的`finalized groups`只在本轮全部worker结束后，由协调器检查并写入
-`groups/<组名>/result.json`时更新，因此最后一条30秒周期进度仍为319/320、0/40，
-随后直接开始绘图，是可能的正常顺序。可检查40个组的`result.json`及其引用的
-8个`metrics.json`确认实际完成情况。
-
-飞离规则在 `main/batch_closed_loop.yaml` 预先冻结：至少运行10s；连续10s的
-三维起落架/H距离均大于200m且大于初始距离+150m；净向外运动至少30m；
-90%以上相邻步向外；窗口内从峰值回落不超过2m。
-这是试验异常筛选规则，不是制导算法参数。任一方法触发时，将同天气/种子编号的
-两海况、四方法共8架次整体排除，用下一个确定性种子重做8架次，最多替换5次。
-临时向外运动、导航无效、普通超时均不自动换种子。
-
-接口、授权、依赖、进程异常会停止批次，不以新种子掩盖错误。
-`--resume`归档中断架次并使用相同种子补跑。所有尝试、排除原因、
-触发时刻和距离证据都保留；额外提供全部尝试的描述性统计，显示筛选的选择偏差。
-
-## 图表、数据与统计口径
-
-所有结果在批次目录下，论文文件不被写入。
-
-| 论文项 | `analysis/`输出 |
-|---|---|
-| 表5-15 | `table_5_15.csv/json`：满足数/总数、Wilson区间、条件落点/速度、Jctrl、任务时长 |
-| 表5-16 | `table_5_16.csv/json`、`table_5_16_case_evidence.csv`、`attempt_ledger.csv/json` |
-| 表5-17 | `table_5_17.csv/json`：阶段完成时长、进入/完成/删失、等待、回退、任务时长 |
-| 图5-11 | `figures/figure_5_11_*`、`figure_5_11_motion_series.csv`、`figure_5_11_motion_metrics.csv` |
-| 图5-12 | `figures/figure_5_12_*`，原始50Hz相对航迹/速度和阶段见对应series |
-| 图5-13 | `figures/figure_5_13_*`、`figure_5_13_touchdowns.csv`，包括每点允许区、名义点和误差 |
-| 图5-14 | `figures/figure_5_14_*`、`figure_5_14_phases.csv`与代表架次阶段条带 |
-| 图5-15 | `figures/figure_5_15_*`，每天气/海况/方法的全程、末段、首次恢复及最大观测校正放大图 |
-| 图5-16 | `figures/figure_5_16_*`、`figure_5_16_paired.csv/json`，每项有效配对数及缺失原因 |
-| 核验与分析 | `pairing_audit.json`、`representative_cases.csv`、`sorties.csv/json`、`report.md`、`status.json` |
-
-`groups/<weather_slot>/attempt_XX/seaN_CM/series.jsonl.gz`保留每个控制步的
-物理时间、当前/下一状态、真实起落架位置速度、甲板/机体旋转、原生12维状态、
-CG真值/原始/影子整形、控制实际消费量、制导误差、速度指令/舰船前馈、
-阶段、健康/整形/消费有效位及传感器采样和拒绝诊断。
-`simulink/batch_model.json`保存实际块路径、写后读取参数、完整波浪分量及原控制幅值。
-保存float64，不为节省空间丢弃末段或无效帧。
-
-当前触舰政策完全采用用户指定的原模型STOP代理，候选点和合格子集相同。
-不另设未知的速度、倾斜、接触高度或保持时间门限，不宣称稳定着舰。
-“接触但不合格”“导航主动中止”“STOP与几何不一致”等额外分类标为未启用，
-接口异常在尝试台账独立列示，不静默进入成功分母。
-
-甲板坐标原点为H，x向舰艏、y向左舷、z向上；名义CG目标按真实姿态和杆臂
-转换为名义起落架点。绘图甲板24×14m来自现有程序化几何；允许区基于仓库
-暂定轮胎椭球投影侵蚀，仅作几何参考，不是已认证着舰包络或新STOP门限。
-
-不将失败末帧当作触舰点，不将未进入阶段置零，不把未完成阶段的停留时间混入
-完成时长。按架次统计；按天气分层和种子配对bootstrap（10000次）。
-等权汇总遇到某天气无条件样本时留空并列原因；不偷偷改变天气权重。
-成功率取当前STOP代理，径向误差与成功任务时长的差值要求双方均有候选点。
-同时输出全部架次任务时长，避免早停失败看起来更快。
-
-原制导为atan渐近限幅；图中的95%边界是“接近制导渐近幅值”，并非执行机构硬饱和。
-Jctrl采用原三轴渐近幅值归一化、W=I。舰船前馈和相同海况下的舰船状态必须
-在共同时间段一致，否则分析报错并留下核验记录。
-波浪RMS/峰值以C0实际任务时段计算、注明时长，重复方法的相同输入不当成独立样本。
-当前视觉海面仅有一致海况标签，仍为现有程序化海面，不能复现动力学的同一随机波场。
-
-## 磁盘空间
-
-保留压缩50Hz序列、参数、标量指标和PNG，不保留逐帧RGB、掩膜、点云或重复模型。
-每架次结束清理私有Simulink缓存与模型副本，console/worker日志压缩。
-正式320架次预计结果约 **2–5GB**，建议为已有依赖的服务器预留 **20GB**
-输出空间以覆盖活动缓存、排除替换架次和绘图；高替换率会增加用量。
-短测的`status.json`提供按实际压缩字节数外推的60s×320序列空间。
-MATLAB、Torch/CUDA、bpy及安装下载缓存不含在20GB中；全新安装建议另外预留50–80GB。
-
-## 开发验证
-
-```bash
-python -m pytest -q tests/test_closed_loop_batch.py tests/test_main_closed_loop.py \
-  tests/test_cg_signal.py tests/test_navigation_connection.py
-```
-
-单元测试与合成图表只验证实现和统计口径，不能替代服务器完整闭环预试验或正式结果。
+不存图像帧、点云或视频，不重复保存全量CSV时间序列，不降低原始日志采样率。
+每架次结束删除工作SLX和缓存、压缩日志，保留模型参数审计及失败证据。
+现有本地80 s结果折算320×80 s压缩序列约0.9 GiB；新记录增加实际EI所需24个数值，
+预计正式320架次结果约**2–4 GiB**，C3的80架次约**0.5–1 GiB**。
+建议数据盘正式运行前保留**10 GiB以上**，C3保留**5 GiB以上**，供六worker活动缓存和替换组使用。
+大量替换时空间随尝试次数增加；极端所有组均替换5次为1920架次，建议至少30 GiB余量。
+安装MATLAB/渲染环境的空间另算。压力测试结束后的status外推值更适合该服务器。

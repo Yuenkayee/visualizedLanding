@@ -5,12 +5,14 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 LANDING_BATCH_MODE="${1:-help}"
 if [[ $# -gt 0 ]]; then shift; fi
 if [[ "$LANDING_BATCH_MODE" == check ]]; then
-  exec bash shell/run_landing_closed_loop.sh check "$@"
+  exec bash shell/run_landing_closed_loop.sh check --batch-policy main/batch_closed_loop.yaml "$@"
 fi
 if [[ "$LANDING_BATCH_MODE" == help || "$LANDING_BATCH_MODE" == --help ]]; then
   printf '%s\n' \
-    'check [--check] [--device cuda] [--render-device OPTIX]: install/check existing validated dependencies.' \
-    'plan/run/analyze: main.batch CLI; run --help for all flags.' \
+    'check [--check] [--matlab-sessions NAME,...]: dependencies, Chinese fonts and two disposable model probes.' \
+    'plan/run/analyze/status: main.batch CLI; run --help for all flags.' \
+    'run --c3-only: 80 C3 sorties, four weathers and both specified sea conditions, at most 80 s each.' \
+    'Default full matrix: 320 sorties; revised thesis analysis generates exactly 15 PNGs.' \
     'run --pilot --weather clear --seeds-per-weather 1 --duration 2 --workers 4 --output outputs/batch/smoke' \
     'run --workers 4 --output outputs/batch/formal' \
     'run --resume --workers 4 --output outputs/batch/formal' \
@@ -18,14 +20,14 @@ if [[ "$LANDING_BATCH_MODE" == help || "$LANDING_BATCH_MODE" == --help ]]; then
     'Without --matlab-sessions, independent worker-owned MATLAB sessions start automatically.'
   exit 0
 fi
-case "$LANDING_BATCH_MODE" in plan|run|analyze) ;; *) printf 'Unknown mode: %s\n' "$LANDING_BATCH_MODE" >&2; exit 2;; esac
+case "$LANDING_BATCH_MODE" in plan|run|analyze|status) ;; *) printf 'Unknown mode: %s\n' "$LANDING_BATCH_MODE" >&2; exit 2;; esac
 source shell/download_mirrors.sh
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONUNBUFFERED=1
 LANDING_BATCH_PYTHON="${PYTHON_BIN:-}"
 if [[ -z "$LANDING_BATCH_PYTHON" ]]; then
   if [[ -x .venv/bin/python ]]; then LANDING_BATCH_PYTHON="$PWD/.venv/bin/python"; else LANDING_BATCH_PYTHON=python3; fi
 fi
-if [[ "$LANDING_BATCH_MODE" == plan || "$LANDING_BATCH_MODE" == analyze ]]; then
+if [[ "$LANDING_BATCH_MODE" == plan || "$LANDING_BATCH_MODE" == analyze || "$LANDING_BATCH_MODE" == status ]]; then
   exec "$LANDING_BATCH_PYTHON" -m main.batch "$LANDING_BATCH_MODE" "$@"
 fi
 LANDING_BATCH_REPORT="outputs/logs/batch/$(date +%Y%m%d_%H%M%S)_$$"

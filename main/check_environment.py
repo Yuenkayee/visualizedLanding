@@ -92,6 +92,8 @@ def main():
     p.add_argument("--device", choices=["cpu", "cuda", "mps"])
     p.add_argument("--render-device", choices=["CPU", "CUDA", "OPTIX"])
     p.add_argument("--checkpoint")
+    p.add_argument("--batch-policy", help="Also compile disposable batch model copies and check evaluation telemetry")
+    p.add_argument("--matlab-sessions", help="Check distinct shared names; use the first idle dedicated session for the model probe")
     a = p.parse_args()
     if platform.system() not in ("Darwin", "Linux"):
         raise RuntimeError("Supported hosts: macOS and Ubuntu 22.04")
@@ -122,6 +124,16 @@ def main():
     import yaml
     import torch
     import matlab.engine
+
+    if a.matlab_sessions is not None:
+        names=[s.strip() for s in a.matlab_sessions.split(',')]
+        available=list(matlab.engine.find_matlab())
+        if not all(names) or len(set(names))!=len(names) or not set(names)<=set(available):
+            raise RuntimeError(f'Expected distinct available shared sessions {names}; available: {available}')
+        os.environ['MATLAB_SHARED_SESSION']=names[0]
+    if a.batch_policy:
+        from main.batch.thesis_figures import configure_font
+        configure_font()
 
     config = yaml.safe_load((ROOT / a.config).read_text())
     selected = a.renderer or config["renderer"]
@@ -188,6 +200,11 @@ def main():
                 raise RuntimeError(
                     f"{feature} is licensed but not installed; install it with MATLAB products"
                 )
+        batch_probe = None
+        if a.batch_policy:
+            from main.batch.preflight import check_model
+            print('[environment] Compiling temporary batch copies for both sea conditions', flush=True)
+            batch_probe=check_model(engine,a.batch_policy,Path(a.report).parent if a.report else ROOT/'outputs/logs/batch-check')
         report = dict(
             status="ready",
             os=platform.platform(),
@@ -207,6 +224,7 @@ def main():
             render_python=render_python,
             render_device=render_device,
             checkpoint=checkpoint_info,
+            batch_probe=batch_probe,
             note="Environment check does not certify the supplied aircraft model or its toolbox dependencies.",
         )
     finally:

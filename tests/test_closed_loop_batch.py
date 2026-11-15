@@ -46,7 +46,9 @@ def fake_case(path,policy,weather="clear",sea=5,method="C3",slot=0,candidate=Tru
     write_json(path/"simulink/batch_model.json",model)
     with gzip.open(path/"series.jsonl.gz","wt") as f:
         for row in rows:f.write(json.dumps(row)+"\n")
-    result=summarize(path,policy);write_json(path/"metrics.json",result)
+    # This fixture models archived schema-1 records, without the new EI/STOP taps.
+    legacy_policy={k:v for k,v in policy.items() if k!='analysis_profile'}
+    result=summarize(path,legacy_policy);write_json(path/"metrics.json",result)
     return result,rows,model
 
 
