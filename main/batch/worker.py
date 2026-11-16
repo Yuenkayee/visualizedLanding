@@ -9,6 +9,7 @@ import signal
 import time
 import traceback
 from .common import ROOT, read_json, write_json, seeds
+from .recovery import renderer_failure
 
 
 def prune(case):
@@ -66,7 +67,7 @@ def run_case(out, task, manifest, worker, session):
         write_json(case/"metrics.json", metrics)
     except BaseException as exc:
         write_json(case/"worker_error.json", dict(error=str(exc), traceback=traceback.format_exc()))
-        # Fail fast: infrastructure errors never cause random-seed replacement.
+        # Coordinator may retry known renderer failures; never replace seeds here.
         raise
     finally:
         prune(case)
@@ -83,17 +84,39 @@ def main():
         os.environ["MATLAB_SHARED_SESSION"] = session
     else:
         os.environ.pop("MATLAB_SHARED_SESSION", None)
-    with MatlabSession() as owner:
-        write_json(out/f"worker_{worker}_matlab.json",dict(
-            pid=int(owner.engine.feature('getpid',nargout=1)),session=session,started=time.time()))
-        for task in read_json(out/"tasks.json"):
-            case = out/task["case"]
-            if (case/"metrics.json").exists(): continue
-            try: (case/"claim").mkdir()
-            except FileExistsError: continue
-            try: run_case(out, task, manifest, worker, owner)
-            finally: (case/"claim").rmdir()
-        (out/f"worker_{worker}_current.json").unlink(missing_ok=True)
+    tasks = read_json(out/"tasks.json")
+    retry_case = os.environ.get("LANDING_BATCH_RETRY_CASE")
+    if retry_case and retry_case not in {t["case"] for t in tasks}:
+        raise ValueError("Recovery task is not in the frozen current round")
+    tasks.sort(key=lambda t: t["case"] != retry_case)
+    active = None
+    try:
+        with MatlabSession() as owner:
+            write_json(out/f"worker_{worker}_matlab.json",dict(
+                pid=int(owner.engine.feature('getpid',nargout=1)),session=session,started=time.time()))
+            for task in tasks:
+                case = out/task["case"]
+                if (case/"metrics.json").exists(): continue
+                # Only a coordinator-launched replacement inherits a dead worker's
+                # reservation. Other workers continue to skip that case.
+                if task["case"] != retry_case:
+                    try: (case/"claim").mkdir()
+                    except FileExistsError: continue
+                elif not (case/"claim").is_dir():
+                    raise RuntimeError("Recovery task lost its exclusive reservation")
+                active = task
+                run_case(out, task, manifest, worker, owner)
+                (case/"claim").rmdir()
+                active = None
+            (out/f"worker_{worker}_current.json").unlink(missing_ok=True)
+    except Exception as exc:
+        # This runs AFTER MATLAB/session cleanup. A cleanup error is not retried.
+        # Keep the claim until the coordinator restarts this worker or drains the round.
+        write_json(out/f"worker_{worker}_failure.json", dict(pid=os.getpid(), worker=worker,
+            case=active["case"] if active else None, error=str(exc),
+            category=renderer_failure(exc) if active else None,
+            traceback=traceback.format_exc()))
+        raise
 
 
 if __name__ == "__main__": main()

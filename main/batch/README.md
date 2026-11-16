@@ -143,7 +143,7 @@ nohup bash shell/run_landing_batch.sh run \
 ```
 
 `--pilot`不得用于正式结果。可先用`plan`冻结计划，随后以`run --resume`启动。
-记录git版本、源码/模型/权重/配置/论文哈希及landing几何快照；恢复时不允许源内容漂移。
+记录git版本、源码/模型/权重/配置/论文哈希及landing几何快照；普通恢复不允许源内容漂移。
 批量过程中不要git pull或修改源文件。
 
 ```bash
@@ -167,6 +167,42 @@ bash shell/run_landing_batch.sh analyze --output outputs/batch/formal_523_15_t80
 不关闭独立共享MATLAB。`coordinator.pid`启动后才创建，不要向未知PID或全部python进程发信号。
 `finalized_groups`是整组配对的提交数；例如320架次=40组×8，不是320×40。
 
+### 渲染故障的有限重试
+
+默认`--max-infra-retries 2 --retry-delay-s 10`：每个架次额外重试最多2次，依次等待10、20秒；
+增加次数时等待最多60秒。识别范围是传感器渲染RPC抛出的CUDA非法地址、CUDA显存不足和
+明确的Renderer timed out错误。仅凭CUDA字样不能证明没有代码缺陷，自动恢复不等于根因已经解决。
+其他错误（包括未知渲染退出、算法/配置异常、MATLAB清理异常）不自动重试。
+
+失败worker完成渲染进程和模型清理、退出后，协调器重新启动该worker并优先重跑同一架次。
+它重新连接自己的专用共享MATLAB；共享会话不会被退出。其他worker继续工作。
+参数、风浪/传感器随机种子、替换序号不变，从该架次0秒重新执行；已完成的`metrics.json`不会重跑。
+失败文件保存在同级`sea5_C3_interrupted_*`等目录，始终不计为触舰失败、超时或新样本。
+
+重试预算按架次写入`infrastructure_retries.json`，跨`--resume`保留。
+设置`--max-infra-retries 0`可关闭自动重试。达到上限或遇到未识别异常时，先让健康worker
+跑完它们能领取的任务，保留完整配对组，然后以非零状态退出，写`batch_failure.json`；
+不会把基础设施失败当成随机种子不适用，也不会用不足样本冒充完整结果。
+人工停止协调器或每架次14400秒的墙钟看门狗仍终止当前批次，不会被自动重试抵消。
+恢复记录同时可用`status`查看；运行参数保存在`execution/*.json`。
+
+对于升级前已经中断的批次（例如`c3_523_15_t80_01`），确认旧任务已经退出，更新代码后：
+
+```bash
+nohup bash shell/run_landing_batch.sh run --resume --c3-only \
+  --allow-retry-upgrade --max-infra-retries 2 --retry-delay-s 10 \
+  --workers 3 --matlab-sessions "$LANDING_RESUME_SESSIONS" \
+  --output outputs/batch/c3_523_15_t80_01 \
+  >> outputs/logs/batch/c3_523_15_t80_01_resume.log 2>&1 < /dev/null &
+```
+
+`LANDING_RESUME_SESSIONS`应为3个不同、专用且空闲的共享MATLAB会话名，逗号分隔。
+`--allow-retry-upgrade`仅允许`main/batch/__main__.py`、`worker.py`、新增`recovery.py`及其
+`tests/test_batch_recovery.py`变化；删除文件、模型/权重/算法/配置/论文变更仍拒绝。
+它保留原`manifest.json`及仿真记录，在`retry_source_upgrade.json`保存新旧源码哈希；后续恢复
+锁定升级后的源码，最终`source_verification.json`同时区分原始差异与运行期间差异。
+新批次不需要此选项。不要手工改清单哈希或在旧批次上更换渲染设备来绕过校验。
+
 ## 终止、统计与输出
 
 原`innerLoop/LAND_CMD/SCOPE_/Stop Simulation`输入触发并停止即为触舰，不新增接触门槛。
@@ -184,7 +220,8 @@ bash shell/run_landing_batch.sh analyze --output outputs/batch/formal_523_15_t80
 持续飞离规则保留原设置：至少10 s，10 s窗口内距离始终超过max(200 m,初始距离+150 m)，
 净远离≥30 m、向外步占比≥0.9、最大回返≤2 m；触发后整个配对组换种子，最多5次替换。
 普通超时、导航失效、非安全触舰不换种子。剔除证据和全部尝试保留，主结果必须同时报告选择偏差。
-依赖、接口或数值异常暂停批次，恢复同种子，不把基础设施错误转换成“坏随机种子”。
+已识别的渲染基础设施错误按上述规则有限重试；依赖、接口或数值异常保留失败记录，
+让健康worker完成后暂停批次，恢复同种子，不把基础设施错误转换成“坏随机种子”。
 
 完成后在`输出目录/analysis/`读取：
 

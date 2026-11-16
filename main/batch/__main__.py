@@ -8,8 +8,10 @@ import sys
 import time
 import gzip
 import shutil
+import math
 import yaml
 from .common import ROOT, METHODS, WEATHERS, output_path, fingerprints, write_json, read_json, seeds
+from .recovery import BatchWorkersFailed, RetryLedger, changed_sources, resume_sources
 
 
 def parser():
@@ -29,6 +31,11 @@ def parser():
     p.add_argument("--renderer", choices=["cpu", "blender"], default="blender")
     p.add_argument("--matlab-sessions", help="Comma-separated dedicated shared names, one per worker; otherwise start owned sessions")
     p.add_argument("--resume", action="store_true")
+    p.add_argument("--max-infra-retries", type=int, default=2,
+                   help="Extra worker restarts per case for recognized renderer faults; 0 disables; budget persists on resume")
+    p.add_argument("--retry-delay-s", type=float, default=10., help="Initial restart delay; doubles on each retry, capped at 60 s")
+    p.add_argument("--allow-retry-upgrade", action="store_true",
+                   help="With --resume only: audit an upgrade limited to batch recovery code; keep manifest and scientific inputs unchanged")
     return p
 
 
@@ -73,6 +80,8 @@ def create(a):
 
 
 def supervise(out, manifest, a):
+    if a.max_infra_retries < 0 or not math.isfinite(a.retry_delay_s) or a.retry_delay_s < 0:
+        raise ValueError("Retry count and finite retry delay must be nonnegative")
     named = a.matlab_sessions is not None
     sessions = [s.strip() for s in a.matlab_sessions.split(",")] if named else [""]*a.workers
     if len(sessions) != a.workers or (named and (len(set(sessions)) != len(sessions) or not all(sessions))):
@@ -84,21 +93,37 @@ def supervise(out, manifest, a):
             raise RuntimeError(f"Shared sessions missing; requested {sessions}; available {available}")
     env = os.environ.copy()
     env.pop("MATLAB_SHARED_SESSION", None)  # Never inherit the single-run session into all workers.
+    env.pop("LANDING_BATCH_RETRY_CASE", None)
     env.update(OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", PYTHONUNBUFFERED="1")
     processes, handles = [], []
     owned_descendants = {}
+    pending, handled, failures = {}, set(), []
+    ledger = RetryLedger(out)
+    task_cases = {t["case"] for t in read_json(out/"tasks.json")}
+
+    def launch(i, retry_case=None):
+        (out/f"worker_{i}_matlab.json").unlink(missing_ok=True)
+        (out/f"worker_{i}_failure.json").unlink(missing_ok=True)
+        write_json(out/f"worker_{i}_current.json", dict(case=retry_case or "MATLAB startup", started=time.time()))
+        child_env = {**env, "LANDING_BATCH_MATLAB_SESSION": sessions[i]}
+        if retry_case:
+            child_env["LANDING_BATCH_RETRY_CASE"] = retry_case
+        return subprocess.Popen([sys.executable, "-m", "main.batch.worker", str(out), str(i)],
+            cwd=ROOT, env=child_env, stdout=handles[i], stderr=subprocess.STDOUT, start_new_session=True)
+
     try:
-        for i, session in enumerate(sessions):
-            (out/f"worker_{i}_matlab.json").unlink(missing_ok=True)
-            write_json(out/f"worker_{i}_current.json", dict(case="MATLAB startup", started=time.time()))
+        for i in range(a.workers):
             log = (out / f"worker_{i}.log").open("a", buffering=1); handles.append(log)
-            child_env = {**env, "LANDING_BATCH_MATLAB_SESSION": session}
-            processes.append(subprocess.Popen([sys.executable, "-m", "main.batch.worker", str(out), str(i)],
-                cwd=ROOT, env=child_env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
+            processes.append(launch(i))
         started, last_message = time.time(), 0
         with (out / "resources.jsonl").open("a", buffering=1) as resource:
-            while any(p.poll() is None for p in processes):
+            while True:
                 now = time.time()
+                for i in list(pending):
+                    case, deadline = pending[i]
+                    if now >= deadline:
+                        processes[i] = launch(i, case)
+                        del pending[i]
                 # Remember only descendants of worker processes; never signal
                 # independently launched shared MATLAB or unrelated jobs.
                 raw=subprocess.check_output(["ps","-eo","pid,ppid,lstart,comm"],text=True)
@@ -108,8 +133,29 @@ def supervise(out, manifest, a):
                 for _ in range(12): descendants.update(pid for pid,parent in parents.items() if parent in descendants)
                 owned_descendants.update({int(v[0]):" ".join(v[2:]) for v in records if len(v)==8 and int(v[0]) in descendants-{p.pid for p in processes}})
                 for i, p in enumerate(processes):
-                    if p.poll() not in (None, 0):
-                        raise RuntimeError(f"Worker {i} exited {p.returncode}; inspect worker_{i}.log, then --resume")
+                    code = p.poll()
+                    if code not in (None, 0) and p.pid not in handled:
+                        handled.add(p.pid)
+                        path = out/f"worker_{i}_failure.json"
+                        failure = read_json(path) if path.exists() else {}
+                        if failure.get("pid") != p.pid:
+                            failure = {}
+                        case = failure.get("case")
+                        category = failure.get("category")
+                        error = failure.get("error", f"worker exited {code} without a classified failure")
+                        retry, number = False, 0
+                        if case in task_cases and not (out/case/"metrics.json").exists():
+                            # The dead process must have retained its exclusive task claim.
+                            if not (out/case/"claim").is_dir(): category = None
+                            retry, number = ledger.failure(case, i, p.pid, error, category, a.max_infra_retries)
+                        if retry:
+                            delay = min(60., a.retry_delay_s * 2 ** min(number-1, 10))
+                            pending[i] = (case, now+delay)
+                            print(f"[retry] worker {i}: {case}; {category}; retry {number}/{a.max_infra_retries} "
+                                  f"in {delay:g}s with identical seeds; other workers continue", flush=True)
+                        else:
+                            failures.append(dict(worker=i, case=case, error=error, exitcode=code))
+                            print(f"[failed] worker {i}: {case}; {error}; no automatic retry; draining other workers", flush=True)
                     current = out / f"worker_{i}_current.json"
                     if p.poll() is None and current.exists():
                         task = read_json(current)
@@ -131,25 +177,32 @@ def supervise(out, manifest, a):
                     completed=sum(1 for task in read_json(out/"tasks.json") if (out/task["case"]/"metrics.json").exists())
                     print(f"Completed current-round runs {completed}/{len(read_json(out/'tasks.json'))}; finalized groups {done}/{len(manifest['groups'])}; elapsed {now-started:.0f}s", flush=True)
                     last_message = now
+                ledger.refresh()
+                if not pending and all(p.poll() is not None and (p.returncode == 0 or p.pid in handled) for p in processes):
+                    break
                 time.sleep(1)
-        if any(p.returncode != 0 for p in processes): raise RuntimeError("Worker failed; inspect logs")
+        ledger.refresh()  # A metrics file may arrive between the last refresh and poll.
+        if failures:
+            write_json(out/"batch_failure.json", dict(time=time.time(), failures=failures,
+                reason="Other workers drained; missing cases are infrastructure failures, not scientific outcomes"))
+            raise BatchWorkersFailed(f"{len(failures)} worker(s) failed after bounded recovery; "
+                                     "other workers finished. Inspect batch_failure.json and infrastructure_retries.json, then --resume")
+        (out/"batch_failure.json").unlink(missing_ok=True)
     finally:
-        interrupted=any(p.poll() is None for p in processes)
         for p in processes:
             if p.poll() is None: os.killpg(p.pid, signal.SIGTERM)
         for p in processes:
             try: p.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 os.killpg(p.pid, signal.SIGKILL); p.wait()
-        if interrupted:
-            # A detached Engine child can survive a killed Python worker.
-            # Verify its command before terminating that previously observed
-            # owned process (PID reuse must not target an unrelated command).
-            for pid,identity in owned_descendants.items():
-                probe=subprocess.run(["ps","-p",str(pid),"-o","lstart=","-o","comm="],capture_output=True,text=True)
-                if " ".join(probe.stdout.split())==" ".join(identity.split()) and any(x in probe.stdout.lower() for x in ("matlab","python","blender")):
-                    try: os.kill(pid,signal.SIGTERM)
-                    except ProcessLookupError: pass
+        # All workers are now reaped. A detached Engine/renderer child can survive
+        # a native crash as well as an explicit stop. Never target shared sessions
+        # or unrelated processes; verify the recorded start time and command.
+        for pid,identity in owned_descendants.items():
+            probe=subprocess.run(["ps","-p",str(pid),"-o","lstart=","-o","comm="],capture_output=True,text=True)
+            if " ".join(probe.stdout.split())==" ".join(identity.split()) and any(x in probe.stdout.lower() for x in ("matlab","python","blender")):
+                try: os.kill(pid,signal.SIGTERM)
+                except ProcessLookupError: pass
         for log in handles: log.close()
         for i in range(len(handles)):
             source=out/f"worker_{i}.log"
@@ -204,10 +257,12 @@ def main():
             analyze(out)
         return
     if a.workers < 1: raise ValueError("workers must be positive")
+    if a.max_infra_retries < 0 or not math.isfinite(a.retry_delay_s) or a.retry_delay_s < 0:
+        raise ValueError("Retry count and finite retry delay must be nonnegative")
+    if a.allow_retry_upgrade and (not a.resume or a.command != "run"):
+        raise ValueError("--allow-retry-upgrade requires run --resume")
     if a.resume:
         manifest = read_json(out/"manifest.json")
-        if manifest["source_sha256"] != fingerprints(manifest["base_config"]):
-            raise RuntimeError("Source/model/weights/config changed since manifest; use a new output directory")
     else:
         manifest = create(a)
         out.mkdir(parents=True, exist_ok=False)
@@ -220,16 +275,31 @@ def main():
     import fcntl
     with (out/"coordinator.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        expected_sources = (resume_sources(out, manifest, fingerprints(manifest["base_config"]), a.allow_retry_upgrade)
+                            if a.resume else manifest["source_sha256"])
+        (out/"execution").mkdir(exist_ok=True)
+        write_json(out/"execution"/f"{time.time_ns()}.json", dict(time=time.time(),
+            workers=a.workers, max_infra_retries=a.max_infra_retries, retry_delay_s=a.retry_delay_s,
+            resume=a.resume, retry_upgrade=(out/"retry_source_upgrade.json").exists()))
         def interrupted(signum, frame):
             raise KeyboardInterrupt(f"coordinator received signal {signum}; resume with the same manifest")
         signal.signal(signal.SIGTERM, interrupted)
         (out/"coordinator.pid").write_text(str(os.getpid())+"\n")
         for claim in (out/"groups").rglob("claim"): claim.rmdir()
         while round_tasks(out,manifest):
-            supervise(out, manifest, a)
+            try:
+                supervise(out, manifest, a)
+            except BatchWorkersFailed:
+                # Commit complete paired groups even when a different case failed.
+                # Missing infrastructure cases never acquire a metrics.json or an outcome.
+                round_tasks(out, manifest)
+                raise
         current=fingerprints(manifest["base_config"])
-        changed=[p for p,h in manifest["source_sha256"].items() if current.get(p)!=h]
-        write_json(out/"source_verification.json",dict(unchanged=not changed,changed_paths=changed))
+        changed=changed_sources(expected_sources,current)
+        original_changes=changed_sources(manifest["source_sha256"],current)
+        write_json(out/"source_verification.json",dict(unchanged=not original_changes,
+            changed_paths=original_changes,execution_unchanged=not changed,execution_changed_paths=changed,
+            retry_upgrade="retry_source_upgrade.json" if (out/"retry_source_upgrade.json").exists() else None))
         if changed and not manifest["pilot"]:
             raise RuntimeError("Formal batch source/model/weights changed while running; see source_verification.json")
         from .analysis import analyze
@@ -245,6 +315,8 @@ def status(out):
         current_round_completed=sum((out/t["case"]/"metrics.json").exists() for t in tasks),
         completed_attempts=len(list((out/"groups").glob("*/attempt_*/sea*/metrics.json"))),
         active_workers=[read_json(p) for p in sorted(out.glob("worker_*_current.json"))],
+        infrastructure_retries=read_json(out/"infrastructure_retries.json") if (out/"infrastructure_retries.json").exists() else None,
+        batch_failure=read_json(out/"batch_failure.json") if (out/"batch_failure.json").exists() else None,
         analysis=read_json(out/"analysis/status.json") if (out/"analysis/status.json").exists() else None)
 
 
