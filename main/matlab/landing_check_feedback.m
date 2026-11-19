@@ -37,10 +37,10 @@ assert_edge([plant '/cg_navigation_valid'],1,cmd,3);
 assert_edge([cmd '/target_pos'],1,[cmd '/Plus'],2);
 signForm=landing_guidance_error_contract(cmd);
 assert_edge([cmd '/cg_relative_estimate'],1,[cmd '/target_pos'],2);
-assert_edge([cmd '/target_pos/current_pos'],1,[cmd '/target_pos/Selector'],1);
-assert_edge([cmd '/target_pos/current_pos'],1,[cmd '/target_pos/Selector1'],1);
-assert_edge([cmd '/target_pos/Selector'],1,[cmd '/target_pos/Chart'],2);
-assert_edge([cmd '/target_pos/Selector1'],1,[cmd '/target_pos/Chart'],3);
+phase=[cmd '/target_pos'];
+assert_edge([phase '/current_pos'],1,[phase '/Demux'],1);
+assert_edge([phase '/PredictModel'],1,[phase '/Chart'],1);
+for j=1:3, assert_edge([phase '/Demux'],j,[phase '/Chart'],j+1); end
 assert_edge([cmd '/Plus'],1,[cmd '/MATLAB System'],1);
 assert(strcmp(get_param([cmd '/MATLAB System'],'System'),'uvw_Gen'),'landing:Feedback','Unexpected guidance law');
 gate=[cmd '/NavigationValidityGate'];
@@ -49,12 +49,17 @@ assert(strcmp(get_param(gate,'BlockType'),'Switch') && strcmp(get_param(gate,'Cr
 assert_edge([cmd '/MATLAB System'],1,gate,1);
 assert_edge([cmd '/cg_navigation_valid'],1,gate,2);
 assert_edge([cmd '/cg_navigation_valid'],1,[cmd '/target_pos'],3);
-assert_edge([cmd '/target_pos/nav_valid'],1,[cmd '/target_pos/Chart'],4);
+assert_edge([cmd '/target_pos/nav_valid'],1,[cmd '/target_pos/Chart'],5);
 assert_edge([cmd '/ZeroRelativeVelocity'],1,gate,3);
 assert(all(slResolve(get_param([cmd '/ZeroRelativeVelocity'],'Value'),cmd)==0),'landing:Feedback','Invalid velocity fallback');
 assert_edge(gate,1,[cmd '/Plus1'],1);
 chart=sfroot; chart=chart.find('-isa','Stateflow.Chart','Path',[cmd '/target_pos/Chart']);
 assert(numel(chart)==1,'landing:Feedback','Target phase chart missing');
+names={'EI','x','y','z','nav_valid'};
+for j=1:5
+    sig=chart.find('-isa','Stateflow.Data','Scope','Input','Name',names{j});
+    assert(numel(sig)==1 && sig.Port==j,'landing:Feedback','Unexpected input port for %s',names{j});
+end
 transitions=chart.find('-isa','Stateflow.Transition');
 for k=1:numel(transitions)
     assert(~contains(transitions(k).LabelString,'ship_pos_x'),'landing:Feedback','Absolute ship coordinate in relative phase guard');

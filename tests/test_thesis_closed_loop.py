@@ -100,7 +100,7 @@ def test_new_plans_and_c3_paired_replacement(tmp_path):
     c3=create(parser().parse_args(['plan','--c3-only','--output','outputs/batch/unused']))
     assert len(full['groups'])*len(full['policy']['methods'])*2==320
     assert c3['base_config']['duration']==80 and len(c3['groups'])*2==80
-    assert c3['policy']['seas']=={5:dict(wind_mps=10.,wave_height_m=2.),6:dict(wind_mps=12.,wave_height_m=2.5)}
+    assert c3['policy']['seas']=={5:dict(wind_mps=12.,wave_height_m=2.),6:dict(wind_mps=15.,wave_height_m=3.)}
     c3['groups']=c3['groups'][:1];tasks=round_tasks(tmp_path,c3)
     assert len(tasks)==2 and {t['method'] for t in tasks}=={'C3'}
     for i,t in enumerate(tasks):write_json(tmp_path/t['case']/'metrics.json',dict(termination='runaway' if i==0 else 'timeout'))
@@ -136,8 +136,9 @@ def test_denominators_and_conditional_missing_pairs(tmp_path,policy):
     assert p['pairs']==8 and p['mean']==0
 
 
-@pytest.mark.parametrize('methods',[['C0','C1','C2','C3'],['C3']])
-def test_complete_report_has_exactly_15_images_and_preserves_evidence(tmp_path,policy,methods):
+@pytest.mark.parametrize('methods,clear_only',[(['C0','C1','C2','C3'],False),(['C3'],False),(['C3'],True)])
+def test_report_renders_scheduled_conditions_and_preserves_evidence(tmp_path,policy,methods,clear_only):
+    if clear_only:policy['weather']=['clear']
     policy['methods']=methods;policy['seeds_per_weather']=1;policy['duration_s']=.12
     groups=[];out=tmp_path/'batch';out.mkdir();hashes={}
     for w in policy['weather']:
@@ -156,6 +157,6 @@ def test_complete_report_has_exactly_15_images_and_preserves_evidence(tmp_path,p
     status=analyze(out)
     assert status['analysis_complete'] and status['complete']
     assert status['pairing_passed'] and status['physical_conditions_passed']
-    assert status['image_count']==15 and len(list((out/'analysis/figures').glob('*.png')))==15
+    assert status['image_count']==len(list((out/'analysis/figures').glob('*.png')))==11+len(policy['weather'])
     assert all(sha(out/p/'series.jsonl.gz')==h for p,h in hashes.items())
-    assert status['safe']==4*len(methods) and status['unsafe']==4*len(methods)
+    assert status['safe']==len(policy['weather'])*len(methods) and status['unsafe']==len(policy['weather'])*len(methods)

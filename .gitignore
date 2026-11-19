@@ -25,6 +25,7 @@ outputs/figures/*
 outputs/logs/*
 outputs/metrics/*
 outputs/tools
+outputs/documents
 docs/referencePapers
 outputs/navigation_tests/
 visual_training/checkpoints/*

@@ -1,7 +1,7 @@
 """Paper EI at fixed H, from actual ship dynamics; no control-path changes."""
 import numpy as np
 
-WEIGHTS = np.array([25., .25, 400., 25., 100., .25, 277.78, 44.44])
+WEIGHTS = np.square(1. / np.array([.2, .1, 2., 2., .06, .05, .15, .2]))
 TERMS = ('H_east_velocity_mps', 'H_east_acceleration_mps2',
          'H_down_velocity_mps', 'H_down_acceleration_mps2',
          'roll_rad', 'roll_rate_radps', 'pitch_rad', 'pitch_rate_radps')
@@ -13,7 +13,7 @@ def validate_policy(policy):
         raise ValueError('Evaluation EI weights must match thesis equation (5-72) in its stated order')
     if policy['duration_s'] <= 0 or policy['bootstrap_samples'] < 1:
         raise ValueError('Positive duration and bootstrap sample count required')
-    for sea, wind, wave in [(5, 10., 2.), (6, 12., 2.5)]:
+    for sea, wind, wave in [(5, 12., 2.), (6, 15., 3.)]:
         condition=policy['seas'].get(sea, policy['seas'].get(str(sea)))
         if condition != dict(wind_mps=wind, wave_height_m=wave):
             raise ValueError(f'New experiment sea {sea} must use wind={wind}, Hs={wave}')

@@ -108,7 +108,7 @@ def figures(rows,policy,data,t15,comparisons,landing,geometry):
     # A new-profile directory must not silently mix with legacy dozens-of-files plots.
     expected={'figure_5_11.png','figure_5_16_rates.png','figure_5_16_paired.png'}
     expected|={f'figure_5_{n}_sea{s}.png' for n in (12,13,14,15) for s in (5,6)}
-    expected|={f'figure_5_17_{w}.png' for w in WEATHER}
+    expected|={f'figure_5_17_{w}.png' for w in policy['weather']}
     extra={p.name for p in plots.glob('*.png')}-expected
     if extra:raise ValueError(f'Unexpected legacy PNGs in new-profile output: {sorted(extra)}; use a new output directory')
     region=allowed_region(np.diag([1,-1,-1]),landing,geometry)
@@ -127,7 +127,7 @@ def figures(rows,policy,data,t15,comparisons,landing,geometry):
         control(plots,traces,policy,sea)
     rates(plots,t15,policy)
     paired_plot(plots,comparisons,policy)
-    for weather in WEATHER:energy_distribution(plots,rows,policy,weather)
+    for weather in policy['weather']:energy_distribution(plots,rows,policy,weather)
     found={p.name for p in plots.glob('*.png')}
     if found!=expected:raise AssertionError(f'Figure set mismatch: {found ^ expected}')
     index=dict(count=len(found),files=sorted(found),
@@ -254,9 +254,10 @@ def phases(plots,rows,policy,sea):
 
 def control(plots,traces,policy,sea):
     fig,axes=plt.subplots(3,2,figsize=(13.2,10.4));axes=axes.ravel();recoveries=[]
+    weather='night_fog' if 'night_fog' in policy['weather'] else policy['weather'][0]
     outcomes=[]
     for i,method in enumerate(policy['methods']):
-        item=traces.get(('night_fog',sea,method))
+        item=traces.get((weather,sea,method))
         if not item:continue
         m,z=item;c=COLORS[method];raw=z['raw_error'];used=z['used_error'];t=z['t'];t1=z['t1']
         outcomes.append(f"{method}：EI={m['ei']:.3g}" if m['ei'] is not None else f"{method}：{OUTCOME[m['touchdown_outcome']]}")
@@ -289,17 +290,17 @@ def control(plots,traces,policy,sea):
         # Zoom remains inside the same PNG; deterministic first recovery.
         center=min(recoveries);inset=axes[2].inset_axes([.57,.45,.40,.38]);lo=max(0,center-1);hi=center+2
         for method in policy['methods']:
-            item=traces.get(('night_fog',sea,method))
+            item=traces.get((weather,sea,method))
             if not item:continue
             z=item[1];mask=(z['t1']>=lo)&(z['t1']<=hi)
             inset.plot(z['t1'][mask],z['guidance_error'][mask,2],color=COLORS[method],lw=.8)
         inset.set_title('首次有效性恢复附近',fontsize=7);inset.tick_params(labelsize=6)
-    elif not any(k[0]=='night_fog' and k[1]==sea for k in traces):
-        for ax in axes:empty(ax,'未安排夜雾或测例未完成')
+    elif not any(k[0]==weather and k[1]==sea for k in traces):
+        for ax in axes:empty(ax,'该天气代表测例未完成')
     rate_max=max([float(np.max(np.linalg.norm(z['rate'],axis=1))) for (w,s,_),(m,z) in traces.items()
-                  if w=='night_fog' and s==sea and len(z['rate'])]+[.001])
+                  if w==weather and s==sea and len(z['rate'])]+[.001])
     axes[4].set_ylim(0,rate_max*1.1)
-    save(fig,plots,f'figure_5_15_sea{sea}.png',f'图5-15 夜雾导航与控制响应 · {label(sea,policy)}',
+    save(fig,plots,f'figure_5_15_sea{sea}.png',f'图5-15 {WEATHER[weather]}导航与控制响应 · {label(sea,policy)}',
          '；'.join(outcomes)+'\n同图5-12固定种子；C0消费真值参考。点线：阶段推进；点划线：回退；下沿色带：无效等待；虚线竖线：终止。完整三轴数据保留。')
 
 

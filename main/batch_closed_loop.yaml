@@ -3,8 +3,8 @@ base_config: main/navigation_feedback.yaml
 weather: [clear, fog, night, night_fog]
 methods: [C0, C1, C2, C3]
 seas:
-  5: {wave_height_m: 2.0, wind_mps: 10.0}
-  6: {wave_height_m: 2.5, wind_mps: 12.0}
+  5: {wave_height_m: 2.0, wind_mps: 12.0}
+  6: {wave_height_m: 3.0, wind_mps: 15.0}
 seeds_per_weather: 10
 master_seed: 5232026
 representative_slot: 0
@@ -12,7 +12,7 @@ duration_s: 80.0
 analysis_profile: thesis_523_15
 # Evaluation only: order [H east velocity/acceleration, H down velocity/
 # acceleration, roll/roll rate, pitch/pitch rate]. Does not tune the controller.
-ei_weights: [25.0, 0.25, 400.0, 25.0, 100.0, 0.25, 277.78, 44.44]
+ei_weights: [25.0, 100.0, 0.25, 0.25, 277.7777777777778, 400.0, 44.44444444444445, 25.0]
 bootstrap_samples: 10000
 bootstrap_seed: 52310
 max_replacements: 5

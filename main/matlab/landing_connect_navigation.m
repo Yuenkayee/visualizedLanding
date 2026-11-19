@@ -71,7 +71,9 @@ for k=1:numel(transitions)
 end
 add_input([cmd '/target_pos'],'nav_valid','3',[35 450 65 464]);
 connect(cmd,[cmd '/cg_navigation_valid/1'],[cmd '/target_pos/3']);
-connect([cmd '/target_pos'],[cmd '/target_pos/nav_valid/1'],[cmd '/target_pos/Chart/4']);
+validData=chart.find('-isa','Stateflow.Data','Name','nav_valid');
+assert(numel(validData)==1,'landing:Feedback','Missing nav_valid data');
+connect([cmd '/target_pos'],[cmd '/target_pos/nav_valid/1'],sprintf('%s/target_pos/Chart/%d',cmd,validData.Port));
 % Remove the now-unused absolute target adder; retain Ship_trace/Ship_motion.
 if getSimulinkBlockHandle([cmd '/Sum'])>0, disconnect([cmd '/Sum']); delete_block([cmd '/Sum']); end
 gate=[cmd '/NavigationValidityGate']; zero=[cmd '/ZeroRelativeVelocity'];
