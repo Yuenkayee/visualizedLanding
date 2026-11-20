@@ -18,6 +18,10 @@ def validate_policy(policy):
                 policy["seas"] != {"custom_w10_h2": dict(wind_mps=10., wave_height_m=2.)}):
             raise ValueError("Invalid custom clear C3 condition")
         return
+    if policy.get('condition_preset') == 'user_json':
+        from .user_config import condition
+        for v in policy['seas'].values(): condition(v)
+        return
     for sea, wind, wave in [(5, 12., 2.), (6, 15., 3.)]:
         condition=policy['seas'].get(sea, policy['seas'].get(str(sea)))
         if condition != dict(wind_mps=wind, wave_height_m=wave):

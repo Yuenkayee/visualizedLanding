@@ -1,0 +1,10 @@
+{
+  "duration_s": 100,
+  "conditions": {
+    "5": {"wind_mps": 10, "wave_height_m": 2.0, "prediction_window_s": [4.0, 6.0]},
+    "6": {"wind_mps": 12, "wave_height_m": 2.5, "prediction_window_s": [4.0, 6.0]}
+  },
+  "sea_levels": [5],
+  "weather": ["clear"],
+  "methods": ["C3"]
+}

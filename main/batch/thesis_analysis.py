@@ -164,6 +164,8 @@ def physical_audit(m,model,policy):
         waves=model.get('wave_parameters',{}).get('SignificantWaveHeight')==condition['wave_height_m'],
         wave_seed=model.get('wave_parameters',{}).get('RandomSeed')==m['wave_seed'],
         actual_taps=model.get('evaluation',{}).get('profile')=='thesis_523_15')
+    if 'prediction_window_s' in condition:
+        checks['prediction_window']=model.get('prediction_window',{}).get('lead_interval_s')==condition['prediction_window_s']
     return dict(case=m['path'],checks=checks,passed=all(checks.values()))
 
 
@@ -222,7 +224,7 @@ def analyze(out):
                     note='descriptive only: all completed attempts including excluded groups; not IID'))
     csv_file(data/'all_attempts_sensitivity.csv',sensitivity)
     t15,t16,t17=tables(rows,policy,data)
-    contrasts=[((s,'C3'),(s,m)) for s in conditions(policy) for m in ('C1','C2') if m in policy['methods']]
+    contrasts=[((s,'C3'),(s,m)) for s in conditions(policy) for m in ('C1','C2') if m in policy['methods'] and 'C3' in policy['methods']]
     contrasts += [((6,m),(5,m)) for m in policy['methods'] if {5,6} <= set(conditions(policy))]
     comparisons=[paired(rows,l,r,metric,w,policy) for w in ['equal_weather',*policy['weather']] for l,r in contrasts
         for metric in ('safe','candidate','ei','radial_error_m','duration_s','touchdown_duration_s','safe_duration_s','Jctrl')]
@@ -313,7 +315,7 @@ def analyze(out):
     lines+=['## 激励覆盖核查','以下按每组一个参考方法取样，不重复计入四种方法；各实际任务时段不同，不能直接把RMS差异解释为稳态谱强度差异。']
     for r in forcing_summary:
         if r['statistic']=='peak':lines.append(f"- 条件{r['sea']}，{r['quantity']}峰值范围 [{r['minimum']}, {r['maximum']}]，代表值 {r['representative_value']}，经验分位 {r['representative_percentile']}，独立组数 {r['n']}。")
-    lines+=['', '时间先后不等于因果，异常证据见table_5_16_case_evidence。C3预检查不包含C0—C2，不能据此得出方法间优劣。全部尝试、缺失配对数和不可判定样本均保留，未将它们绘制成零值。']
+    lines+=['', '时间先后不等于因果，异常证据见table_5_16_case_evidence。方法比较仅限本批次实际安排的配对。全部尝试、缺失配对数和不可判定样本均保留，未将它们绘制成零值。']
     (data/'report.md').write_text('\n\n'.join(lines)+'\n')
     print(json.dumps(report,ensure_ascii=False,indent=2),flush=True)
     if rows and not(report['pairing_passed'] and report['physical_conditions_passed']):

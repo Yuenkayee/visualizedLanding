@@ -68,6 +68,11 @@ info=struct('wave_parameters',values,'wave_component',components, ...
     'command_limit_mps',scales*pi/2*(1852/3600), ...
     'saturation_definition','abs(relative command) >= 0.95 * atan asymptotic bound; not hard actuator saturation', ...
     'render_limitation','Visual ocean is procedural; same sea-state label, not the same stochastic wave field');
+if isfield(b,'prediction_window_s')
+    info.prediction_window=landing_configure_ei_window([cmd '/target_pos'],b.wind_mps,b.wave_height_m,c.plant_step,b.prediction_window_s);
+else
+    info.prediction_window=landing_configure_ei_window([cmd '/target_pos'],b.wind_mps,b.wave_height_m,c.plant_step);
+end
 chart=sfroot; chart=chart.find('-isa','Stateflow.Chart','Path',[cmd '/target_pos/Chart']);
 assert(numel(chart)==1,'landing:Batch','Missing guidance stage chart');
 state=chart.find('-isa','Stateflow.State','Name','touchDown');
@@ -94,9 +99,9 @@ if isfield(b,'analysis_profile') && strcmp(b.analysis_profile,'thesis_523_15')
     assert(numel(motion)==1,'landing:Batch','Expected actual ship dynamics');
     stopBlock=[cmd '/SCOPE_/Stop Simulation'];
     assert(strcmp(get_param(stopBlock,'BlockType'),'Stop'),'landing:Batch','Missing original touchdown STOP');
-    fields=[fields {'ship_eta','ship_nu','ship_eta_dot','ship_nu_dot','touchdown_stop'}];
-    sources=[sources {motion{1},motion{1},motion{1},motion{1},stopBlock}];
-    ports=[ports 1 2 1 2 1]; inputs=[inputs true true false false true];
+    fields=[fields {'ship_eta','ship_nu','ship_eta_dot','ship_nu_dot','touchdown_stop','predicted_H_ei','prediction_window_max'}];
+    sources=[sources {motion{1},motion{1},motion{1},motion{1},stopBlock,[waveParents{2} '/MATLAB Function'],[waveParents{2} '/Deck EI window maximum']}];
+    ports=[ports 1 2 1 2 1 1 1]; inputs=[inputs true true false false true false false];
     info.evaluation=struct('profile',b.analysis_profile,'ship_dynamics',motion{1}, ...
         'stop_block',stopBlock,'state_units','m, rad, m/s, rad/s; derivatives in SI', ...
         'reference','fixed H; evaluation EI independent of original guidance EI');

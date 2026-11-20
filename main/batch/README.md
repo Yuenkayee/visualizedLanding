@@ -250,3 +250,17 @@ nohup bash shell/run_landing_batch.sh run --resume --c3-only \
 建议数据盘正式运行前保留**10 GiB以上**，C3保留**5 GiB以上**，供六worker活动缓存和替换组使用。
 大量替换时空间随尝试次数增加；极端所有组均替换5次为1920架次，建议至少30 GiB余量。
 安装MATLAB/渲染环境的空间另算。压力测试结束后的status外推值更适合该服务器。
+
+### 悬停转入最终下降的预测窗口
+
+晴天 C3、10 m/s、有效波高 2 m 的基准批次 `c3_clear_eiH_w10h20_t80_n10_w6_20261120_145019_8NVnqF` 中，7 架次在最终下降阶段触发 STOP，按时长排序为 3.68、3.96、4.16、4.70、4.80、5.40、5.56 s。另 2 架次超时、1 架次在进入最终下降前触舰，不作为完整下降时长。向两端取整至 0.5 s，首轮选用相对当前决策时刻的 **[3.5, 6.0] s**，并非所有海况下的统计保证。
+
+沿用预测与实际船模共享风浪种子、恒定航速命令的设定：实际船模的波浪时钟在 5 s 后为 `t-5`，预测波浪时钟为 `t+1`，故波浪激励的名义提前量为 6 s。每个 0.02 s 控制节拍，`DeckEIWindow` 取最近 126 个预测 H 点 EI 的最大值；最旧样本对应当前的 +3.5 s，最新样本对应 +6 s。样本不足、非有限值或负值阻止窗口开启；全部样本 ≤1 且导航有效时，原状态图从悬停转入最终下降。该判据检查离散预测值，不能排除采样间峰值或船体状态预测误差。实际触舰安全评分仍用 STOP 时实际 H 点 EI 严格小于 1。
+
+五、六级海况 C3 全天气复测：服务器同步后运行 `bash shell/run_sea56_c3.sh`。在每个仿真副本根据实际风浪选择预测区间：12 m/s、Hs=2 m 为 [4.5,5.5] s；15 m/s、Hs=3 m 为 [4,5.5] s。晴天旧批次六级的 8.94 和 10.54 s 两例仍计入下降时长分布；该窗口不覆盖这两个长下降。窗口描述的是未来相对于当前决策时刻的区间，并非允许悬停的最长时间。逐架次 `simulink/batch_model.json` 记录区间、采样数及波浪时钟偏置；`series.jsonl.gz` 中 `u.predicted_H_ei` 是区间右端的预测 EI，`u.prediction_window_max` 是窗口内预测 EI 最大值，窗口未填满时取 realmax。查看旧晴天批次 `prediction_window_selection/comparison.csv` 可核对按种子重放的窗口可用性。
+
+### 按 JSON 自定义批次（推荐）
+
+编辑 `configs/closed_loop_batch.json`。`conditions` 同时保存 5、6 级各自的 `wind_mps`（m/s）、`wave_height_m`（有效波高，m）和 `prediction_window_s`（下限、上限，s，0.02 s 网格）。`sea_levels`、`weather`、`methods` 可以省略或写 `[]`，分别表示该维度全测。例如只测两海况晴天、雾天的 C3，设置 `weather: ["clear", "fog"]`、`methods: ["C3"]`，保留 `sea_levels: []`。四种天气代码为 `clear`、`fog`、`night`、`night_fog`。每组合仍为 10 个样本；`duration_s` 是每架次最长仿真时间（秒），省略时默认 80，可设置为 0.02 秒的正整数倍；六路并发需要 6 个空闲的共享 MATLAB 会话。
+
+服务器仓库根目录执行 `bash shell/run_configured_batch.sh` 后台启动；`bash shell/run_configured_batch.sh logs` 实时查看最近启动的配置批次，Ctrl+C 退出日志查看。启动输出会打印独立的 `outputs/batch/batch_<时间>_<风浪及窗口>_<天气>_<方法>_t<时长>s_<唯一后缀>/`；其中 `batch_config.json` 为启动时的原始配置，`manifest.json` 为实际计划，`batch.log` 为主日志，`dependencies/` 为依赖检查记录，`groups/` 为逐架次结果，`analysis/` 为分析报告与图表。

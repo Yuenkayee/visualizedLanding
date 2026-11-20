@@ -10,7 +10,9 @@ def main_clear():
     names = sorted(matlab.engine.find_matlab())
     usual = [f'LandingBatch{i}' for i in range(1, 7)]
     sessions = os.getenv('LANDING_C3_SESSIONS') or ','.join(usual if set(usual) <= set(names) else names)
-    a = parser().parse_args(['run', '--clear-c3-w10-h2', '--workers', '6', '--output', sys.argv[1],
+    mode = {'clear-c3': ['--clear-c3-w10-h2'], 'sea56-c3': ['--c3-only'],
+            'configured': ['--batch-json', os.path.join(sys.argv[1], 'batch_config.json')]}[sys.argv[2]]
+    a = parser().parse_args(['run', *mode, '--workers', '6', '--output', sys.argv[1],
                              '--matlab-sessions', sessions])
     print('MATLAB sessions:', sessions, flush=True)
     main(a, log_directory=True)

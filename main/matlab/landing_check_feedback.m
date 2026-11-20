@@ -40,6 +40,17 @@ assert_edge([cmd '/cg_relative_estimate'],1,[cmd '/target_pos'],2);
 phase=[cmd '/target_pos'];
 assert_edge([phase '/current_pos'],1,[phase '/Demux'],1);
 assert_edge([phase '/PredictModel'],1,[phase '/Chart'],1);
+pred=[phase '/PredictModel']; window=[pred '/Deck EI window maximum'];
+assert(strcmp(get_param(window,'System'),'DeckEIWindow'),'landing:Feedback','Missing forecast interval gate');
+assert_edge([pred '/MATLAB Function'],1,window,1);
+assert_edge(window,1,[pred '/EI'],1);
+% Wave clocks have unit slope: for t >= 5 the lead must be (t+1)-(t-5).
+ramps={[pred '/Ramp'],[phase '/Ship_motion/Ramp']}; starts=[0,5]; offsets=[1,0];
+for k=1:2
+    b=ramps{k};
+    assert(slResolve(get_param(b,'slope'),b)==1 && slResolve(get_param(b,'start'),b)==starts(k) && ...
+        slResolve(get_param(b,'InitialOutput'),b)==offsets(k),'landing:Feedback','Unexpected wave clock: %s',b);
+end
 for j=1:3, assert_edge([phase '/Demux'],j,[phase '/Chart'],j+1); end
 assert_edge([cmd '/Plus'],1,[cmd '/MATLAB System'],1);
 assert(strcmp(get_param([cmd '/MATLAB System'],'System'),'uvw_Gen'),'landing:Feedback','Unexpected guidance law');

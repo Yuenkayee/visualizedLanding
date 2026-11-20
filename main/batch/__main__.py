@@ -38,6 +38,7 @@ def parser():
     p.add_argument("--allow-retry-upgrade", action="store_true",
                    help="With --resume only: audit an upgrade limited to batch recovery code; keep manifest and scientific inputs unchanged")
     p.add_argument("--clear-c3-w10-h2", action="store_true", help="Clear C3, 10 m/s wind, 2 m Hs, 10 slots, 80 s")
+    p.add_argument("--batch-json", help="User-defined sea, weather and method matrix")
     return p
 
 
@@ -53,6 +54,11 @@ def create(a):
         raise ValueError("Invalid seed count/representative slot")
     if c["methods"] != list(METHODS) or set(c["seas"]) != {5, 6}:
         raise ValueError("C0-C3 and paired seas 5/6 are required")
+    if a.batch_json:
+        if a.c3_only or a.clear_c3_w10_h2 or a.pilot:
+            raise ValueError('JSON matrix cannot be combined with preset or pilot flags')
+        from .user_config import resolve
+        c.update(resolve(read_json(Path(a.batch_json))))
     if a.c3_only: c["methods"] = ["C3"]
     if a.clear_c3_w10_h2:
         if a.pilot or c.get('analysis_profile') != 'thesis_523_15':
@@ -70,7 +76,7 @@ def create(a):
     if a.render_python: base["render_python"] = a.render_python
     from main.config import validate
     validate(base)
-    return dict(schema=2, experiment="clear_c3_w10_h2" if a.clear_c3_w10_h2 else "c3_preflight" if a.c3_only else "full_closed_loop",
+    return dict(schema=2, experiment="configured_batch" if a.batch_json else "clear_c3_w10_h2" if a.clear_c3_w10_h2 else "c3_preflight" if a.c3_only else "full_closed_loop",
                 pilot=a.pilot, policy=c, base_config=base,
                 landing_snapshot=yaml.safe_load((ROOT/base["landing_config"]).read_text()),
                 git_commit=subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip(),
@@ -273,7 +279,8 @@ def main(a=None, *, log_directory=False):
     else:
         manifest = create(a)
         if log_directory:
-            if {p.name for p in out.iterdir()} != {'batch.log'}:
+            allowed = {'batch.log','batch_config.json','dependencies'} if a.batch_json else {'batch.log'}
+            if {p.name for p in out.iterdir()} != allowed:
                 raise FileExistsError(f'Expected a fresh batch log directory: {out}')
         else:
             out.mkdir(parents=True, exist_ok=False)

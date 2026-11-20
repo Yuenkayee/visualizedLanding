@@ -178,11 +178,12 @@ def forcing(plots,traces,policy):
 
 
 def trajectories(plots,traces,policy,sea,region):
-    fig,axes=plt.subplots(2,3,figsize=(13.8,8.0))
-    allz=[z for (w,s,m),(_,z) in traces.items() if w in ('clear','night_fog')]
+    weathers=list(dict.fromkeys([policy['weather'][0],policy['weather'][-1]]))
+    fig,axes=plt.subplots(len(weathers),3,squeeze=False,figsize=(13.8,4*len(weathers)))
+    allz=[z for (w,s,m),(_,z) in traces.items() if w in weathers]
     limits=[padded(np.r_[[-12,12],*[z['p'][:,0] for z in allz]]),
             padded(np.r_[[-7,7],*[z['p'][:,1] for z in allz]])]
-    for row,w in enumerate(('clear','night_fog')):
+    for row,w in enumerate(weathers):
         deck(axes[row,0],region);found=False;summary=[]
         for i,method in enumerate(policy['methods']):
             item=traces.get((w,sea,method))
@@ -216,7 +217,8 @@ def touchdowns(plots,rows,policy,sea,region):
     fig,axes=plt.subplots(2,2,figsize=(12.2,9.2))
     points=[r['touchdown_position'] for r in rows if r['candidate']]+[r['nominal_gear_point'] for r in rows if r['candidate']]
     xlim=padded([-12,12]+[p[0] for p in points]);ylim=padded([-7,7]+[p[1] for p in points])
-    for ax,w in zip(axes.ravel(),WEATHER):
+    for ax in axes.ravel()[len(policy['weather']):]:ax.set_visible(False)
+    for ax,w in zip(axes.ravel(),policy['weather']):
         deck(ax,region);ax.set_title(WEATHER[w]);lines=[]
         ax.set(xlim=xlim,ylim=ylim)
         for method in policy['methods']:
@@ -311,7 +313,8 @@ def control(plots,traces,policy,sea):
 
 def rates(plots,t15,policy):
     fig,axes=plt.subplots(2,2,figsize=(11.8,8.3));methods=policy['methods']
-    for ax,w in zip(axes.ravel(),WEATHER):
+    for ax in axes.ravel()[len(policy['weather']):]:ax.set_visible(False)
+    for ax,w in zip(axes.ravel(),policy['weather']):
         for sea,offset,symbol in zip(conditions(policy), [0] if len(conditions(policy))==1 else [-.12,.12], ['o','s']):
             for i,method in enumerate(methods):
                 r=next((r for r in t15 if (r['weather'],r['sea'],r['method'])==(w,sea,method)),None)
