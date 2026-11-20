@@ -160,3 +160,21 @@ def test_report_renders_scheduled_conditions_and_preserves_evidence(tmp_path,pol
     assert status['image_count']==len(list((out/'analysis/figures').glob('*.png')))==11+len(policy['weather'])
     assert all(sha(out/p/'series.jsonl.gz')==h for p,h in hashes.items())
     assert status['safe']==len(policy['weather'])*len(methods) and status['unsafe']==len(policy['weather'])*len(methods)
+
+
+def test_custom_clear_c3_standard_pipeline(tmp_path):
+    manifest=create(parser().parse_args(['plan','--clear-c3-w10-h2','--output','outputs/batch/unused']))
+    policy=manifest['policy'];policy['master_seed']=17  # synthetic telemetry fixture seed
+    tasks=round_tasks(tmp_path,manifest)
+    assert len(tasks)==10 and len(manifest['groups'])==10 and policy['duration_s']==80
+    write_json(tmp_path/'manifest.json',manifest)
+    for t in tasks:
+        modern_case(tmp_path/t['case'],policy,sea=t['sea'],slot=t['group']['slot'],
+                    outcome='safe' if t['group']['slot']<7 else 'timeout')
+    assert not round_tasks(tmp_path,manifest)
+    status=analyze(tmp_path)
+    assert status['complete'] and status['included']==10 and status['safe']==status['touchdowns']==7
+    assert status['physical_conditions_passed'] and status['image_count']==8
+    assert read_json(tmp_path/'analysis/figure_5_16_paired.json')==[]
+    assert all(r['total']==10 and r['safe_rate']==pytest.approx(.7)
+               for r in read_json(tmp_path/'analysis/table_5_15.json'))

@@ -11,6 +11,7 @@ import shutil
 import math
 import yaml
 from .common import ROOT, METHODS, WEATHERS, output_path, fingerprints, write_json, read_json, seeds
+from .report_policy import conditions
 from .recovery import BatchWorkersFailed, RetryLedger, changed_sources, resume_sources
 
 
@@ -36,6 +37,7 @@ def parser():
     p.add_argument("--retry-delay-s", type=float, default=10., help="Initial restart delay; doubles on each retry, capped at 60 s")
     p.add_argument("--allow-retry-upgrade", action="store_true",
                    help="With --resume only: audit an upgrade limited to batch recovery code; keep manifest and scientific inputs unchanged")
+    p.add_argument("--clear-c3-w10-h2", action="store_true", help="Clear C3, 10 m/s wind, 2 m Hs, 10 slots, 80 s")
     return p
 
 
@@ -52,6 +54,11 @@ def create(a):
     if c["methods"] != list(METHODS) or set(c["seas"]) != {5, 6}:
         raise ValueError("C0-C3 and paired seas 5/6 are required")
     if a.c3_only: c["methods"] = ["C3"]
+    if a.clear_c3_w10_h2:
+        if a.pilot or c.get('analysis_profile') != 'thesis_523_15':
+            raise ValueError('Clear C3 preset requires formal thesis analysis')
+        c.update(condition_preset='clear_c3_w10_h2', weather=['clear'], methods=['C3'], seeds_per_weather=10,
+                 duration_s=80., seas={'custom_w10_h2': dict(wind_mps=10., wave_height_m=2.)})
     if c.get("analysis_profile") == "thesis_523_15":
         from .energy import validate_policy
         validate_policy(c)
@@ -63,7 +70,7 @@ def create(a):
     if a.render_python: base["render_python"] = a.render_python
     from main.config import validate
     validate(base)
-    return dict(schema=2, experiment="c3_preflight" if a.c3_only else "full_closed_loop",
+    return dict(schema=2, experiment="clear_c3_w10_h2" if a.clear_c3_w10_h2 else "c3_preflight" if a.c3_only else "full_closed_loop",
                 pilot=a.pilot, policy=c, base_config=base,
                 landing_snapshot=yaml.safe_load((ROOT/base["landing_config"]).read_text()),
                 git_commit=subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip(),
@@ -72,7 +79,7 @@ def create(a):
                 groups=[dict(id=f"{w}_s{s:02d}", weather=w, slot=s)
                         for w in c["weather"] for s in range(c["seeds_per_weather"])],
                 interpretation=dict(touchdown="existing model STOP proxy, no stable-contact claim",
-                    sea_comparison="combined wave-height and user-specified wind-speed change",
+                    sea_comparison="not applicable: one condition" if a.clear_c3_w10_h2 else "combined wave-height and user-specified wind-speed change",
                     initial_conditions="fixed nominal model state; no invented perturbation distribution",
                     pairing="same physical-time/channel seeds across all selected sea/method runs",
                     exclusions="any runaway supersedes entire matched group; ledger and attempted-run sensitivity retained",
@@ -223,7 +230,7 @@ def round_tasks(out, manifest):
             folder=directory/f"attempt_{attempt:02d}"; folder.mkdir(exist_ok=True)
             if (folder/"attempt.json").exists() and read_json(folder/"attempt.json")["status"]=="excluded_runaway": continue
             cases=[]; pending=[]
-            for sea in (5,6):
+            for sea in conditions(policy):
                 for method in policy["methods"]:
                     case=folder/f"sea{sea}_{method}"; case.mkdir(exist_ok=True)
                     cases.append(str(case.relative_to(out)))
@@ -245,8 +252,8 @@ def round_tasks(out, manifest):
     return tasks
 
 
-def main():
-    a = parser().parse_args(); out = output_path(a.output)
+def main(a=None, *, log_directory=False):
+    a = a or parser().parse_args(); out = output_path(a.output)
     if a.command == "status":
         print(__import__("json").dumps(status(out), ensure_ascii=False, indent=2)); return
     if a.command == "analyze":
@@ -265,9 +272,13 @@ def main():
         manifest = read_json(out/"manifest.json")
     else:
         manifest = create(a)
-        out.mkdir(parents=True, exist_ok=False)
+        if log_directory:
+            if {p.name for p in out.iterdir()} != {'batch.log'}:
+                raise FileExistsError(f'Expected a fresh batch log directory: {out}')
+        else:
+            out.mkdir(parents=True, exist_ok=False)
         write_json(out/"manifest.json", manifest)
-    expected=len(manifest['groups'])*2*len(manifest['policy']['methods'])
+    expected=len(manifest['groups'])*len(conditions(manifest['policy']))*len(manifest['policy']['methods'])
     print(f"{'PILOT' if manifest['pilot'] else manifest.get('experiment','FORMAL')}: {expected} runs, {a.workers} workers, {out}")
     if a.command == "plan": return
     # flock is released by the OS after interruption; resume cleans stale claims
@@ -309,7 +320,7 @@ def main():
 def status(out):
     manifest=read_json(out/"manifest.json")
     tasks=read_json(out/"tasks.json") if (out/"tasks.json").exists() else []
-    return dict(expected_sorties=len(manifest["groups"])*2*len(manifest["policy"]["methods"]),
+    return dict(expected_sorties=len(manifest["groups"])*len(conditions(manifest["policy"]))*len(manifest["policy"]["methods"]),
         finalized_groups=sum((out/"groups"/g["id"]/"result.json").exists() for g in manifest["groups"]),
         planned_groups=len(manifest["groups"]), current_round_tasks=len(tasks),
         current_round_completed=sum((out/t["case"]/"metrics.json").exists() for t in tasks),

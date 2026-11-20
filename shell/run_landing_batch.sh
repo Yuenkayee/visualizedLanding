@@ -20,7 +20,7 @@ if [[ "$LANDING_BATCH_MODE" == help || "$LANDING_BATCH_MODE" == --help ]]; then
     'Without --matlab-sessions, independent worker-owned MATLAB sessions start automatically.'
   exit 0
 fi
-case "$LANDING_BATCH_MODE" in plan|run|analyze|status) ;; *) printf 'Unknown mode: %s\n' "$LANDING_BATCH_MODE" >&2; exit 2;; esac
+case "$LANDING_BATCH_MODE" in clear-c3|plan|run|analyze|status) ;; *) printf 'Unknown mode: %s\n' "$LANDING_BATCH_MODE" >&2; exit 2;; esac
 source shell/download_mirrors.sh
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONUNBUFFERED=1
 LANDING_BATCH_PYTHON="${PYTHON_BIN:-}"
@@ -48,4 +48,7 @@ if [[ "$(uname -s)" == Linux ]]; then
 fi
 # Import the exact failing scipy.stats route in a fresh process before dispatch.
 "$LANDING_BATCH_PYTHON" -I -c 'import numpy, scipy, torch, yaml, matplotlib, cv2, matlab.engine; from scipy.stats import chi2; print("NumPy",numpy.__version__,numpy.__file__,"SciPy",scipy.__version__,scipy.__file__,"chi2",chi2.ppf(.95,3))'
+if [[ "$LANDING_BATCH_MODE" == clear-c3 ]]; then
+  exec "$LANDING_BATCH_PYTHON" -m main.batch.clear_c3 "$@"
+fi
 exec "$LANDING_BATCH_PYTHON" -m main.batch run "$@"

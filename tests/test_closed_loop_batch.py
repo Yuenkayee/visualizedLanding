@@ -28,7 +28,7 @@ def fake_case(path,policy,weather="clear",sea=5,method="C3",slot=0,candidate=Tru
     batch=dict(group=f"{weather}_s{slot:02d}",slot=slot,replacement=0,sea=sea,method=method,
                **seeds(17,weather,slot,0))
     model=dict(nominal_cg_target_ned_m=[-45,0,-8.4],command_limit_mps=[1,1,1],
-        wave_component=dict(omega=[1.],waveNumber=[.1],beta=[np.pi],amplitude=[sea/5],phase=[.5]))
+        wave_component=dict(omega=[1.],waveNumber=[.1],beta=[np.pi],amplitude=[sea/5 if isinstance(sea,int) else 1.],phase=[.5]))
     rows=[]
     for i in range(6):
         stage=min(i//2,2)

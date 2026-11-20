@@ -13,6 +13,11 @@ def validate_policy(policy):
         raise ValueError('Evaluation EI weights must match thesis equation (5-72) in its stated order')
     if policy['duration_s'] <= 0 or policy['bootstrap_samples'] < 1:
         raise ValueError('Positive duration and bootstrap sample count required')
+    if policy.get("condition_preset") == "clear_c3_w10_h2":
+        if (policy["weather"] != ["clear"] or policy["methods"] != ["C3"] or
+                policy["seas"] != {"custom_w10_h2": dict(wind_mps=10., wave_height_m=2.)}):
+            raise ValueError("Invalid custom clear C3 condition")
+        return
     for sea, wind, wave in [(5, 12., 2.), (6, 15., 3.)]:
         condition=policy['seas'].get(sea, policy['seas'].get(str(sea)))
         if condition != dict(wind_mps=wind, wave_height_m=wave):

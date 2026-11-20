@@ -7,6 +7,7 @@ from .common import read_json, write_json, seeds, sha
 from .metrics import summarize, read_series, arrays, allowed_region
 from .analysis import csv_file, selection
 from .statistics import wilson
+from .report_policy import conditions
 from .energy import validate_policy
 from .thesis_metrics import trace
 
@@ -32,7 +33,7 @@ def tables(rows, policy, data):
     t15,t16,t17=[],[],[]
     for weather in ['equal_weather',*policy['weather']]:
         strata=policy['weather'] if weather=='equal_weather' else [weather]
-        for sea in (5,6):
+        for sea in conditions(policy):
             for method in policy['methods']:
                 group=selection(rows,weather,sea,method);n=len(group)
                 base=dict(weather=weather,sea=sea,method=method,total=n)
@@ -133,7 +134,7 @@ def paired(rows,left,right,metric,weather,policy):
 def audit_group(out, group_rows, policy):
     """Compare actual common physical times; terminal duplicate rows are excluded."""
     audits=[]
-    for sea in (5,6):
+    for sea in conditions(policy):
         subset=[r for r in group_rows if r['sea']==sea];reference=None;delta_ship=delta_ff=0.;ncommon=[]
         for m in subset:
             rows=read_series(out/m['path']);samples={round(r['t1'],8):r for r in rows if r['t1']-r['t']>1e-9}
@@ -190,7 +191,7 @@ def analyze(out):
                 if rel not in result['cases']:raise ValueError('Included case is not in frozen group result')
                 if (m['group']!=group['id'] or m['weather']!=group['weather'] or m['slot']!=group['slot']
                         or m['replacement']!=attempt or case.name!=f"sea{m['sea']}_{m['method']}"
-                        or m['method'] not in policy['methods'] or m['sea'] not in (5,6)):
+                        or m['method'] not in policy['methods'] or m['sea'] not in conditions(policy)):
                     raise ValueError(f'Run identity differs from frozen paired group: {rel}')
                 if read_json(case/'run.json')['config']!=read_json(case/'requested.json'):
                     raise ValueError(f'Runtime configuration differs from request: {rel}')
@@ -212,7 +213,7 @@ def analyze(out):
         events=r['accompanied_events'],runaway=r['runaway_evidence'],cause='unverified') for r in attempted])
     sensitivity=[]
     for weather in ['equal_weather',*policy['weather']]:
-        for sea in (5,6):
+        for sea in conditions(policy):
             for method in policy['methods']:
                 group=selection(attempted,weather,sea,method)
                 sensitivity.append(dict(weather=weather,sea=sea,method=method,attempted=len(group),
@@ -221,8 +222,8 @@ def analyze(out):
                     note='descriptive only: all completed attempts including excluded groups; not IID'))
     csv_file(data/'all_attempts_sensitivity.csv',sensitivity)
     t15,t16,t17=tables(rows,policy,data)
-    contrasts=[((s,'C3'),(s,m)) for s in (5,6) for m in ('C1','C2') if m in policy['methods']]
-    contrasts += [((6,m),(5,m)) for m in policy['methods']]
+    contrasts=[((s,'C3'),(s,m)) for s in conditions(policy) for m in ('C1','C2') if m in policy['methods']]
+    contrasts += [((6,m),(5,m)) for m in policy['methods'] if {5,6} <= set(conditions(policy))]
     comparisons=[paired(rows,l,r,metric,w,policy) for w in ['equal_weather',*policy['weather']] for l,r in contrasts
         for metric in ('safe','candidate','ei','radial_error_m','duration_s','touchdown_duration_s','safe_duration_s','Jctrl')]
     csv_file(data/'figure_5_16_paired.csv',comparisons);write_json(data/'figure_5_16_paired.json',comparisons)
@@ -242,7 +243,7 @@ def analyze(out):
         duration_s=r['duration_s'],rms=r['motion_rms'],peak=r['motion_peak'],ei=r['motion_ei']) for r in rows])
     forcing_method='C0' if 'C0' in policy['methods'] else policy['methods'][0]
     forcing_summary=[]
-    for sea in (5,6):
+    for sea in conditions(policy):
         group=[r for r in rows if r['sea']==sea and r['method']==forcing_method]
         representative=next((r for r in group if r['weather']==policy['weather'][0] and r['slot']==policy['representative_slot']),None)
         for j,quantity in enumerate(('wave_m','roll_deg','pitch_deg','H_up_displacement_m','H_normal_speed_mps','actual_EI')):
@@ -260,7 +261,7 @@ def analyze(out):
     write_json(data/'pairing_audit.json',audit);write_json(data/'physical_conditions_audit.json',physical)
     from .thesis_figures import figures
     images=figures(rows,policy,data,t15,comparisons,landing,geometry)
-    expected=len(manifest['groups'])*2*len(policy['methods']);complete=len(rows)==expected
+    expected=len(manifest['groups'])*len(conditions(policy))*len(policy['methods']);complete=len(rows)==expected
     size=sum(p.stat().st_size for p in out.rglob('*') if p.is_file())
     normalized=[(out/r['path']/'series.jsonl.gz').stat().st_size/max(r['duration_s'],.02)*policy['duration_s'] for r in rows]
     peak_rss=peak_gpu=0.
@@ -296,8 +297,9 @@ def analyze(out):
         simulation_records_unchanged=True,images=images))
     lines=['# 闭环批量分析',
         f"纳入 {len(rows)}/{expected} 架次，触舰 {report['touchdowns']}，安全触舰 {report['safe']}，非安全触舰 {report['unsafe']}，EI 未知 {report['ei_unknown']}。完整批次：{complete}；试运行：{manifest['pilot']}。",
-        '本次标签5对应平均风速12 m/s、有效波高2 m；标签6对应15 m/s、3 m，采用用户指定试验工况。两条件同时改变风浪，不能把差异单独归因于波高。每架次上限80 s（短时压力测试以manifest为准）。',
-        '原着舰 STOP 输入触发且仿真终止即为触舰。安全分类另按论文公式，以实际舰船动力学的SI状态及导数刚体换算至固定H，EI<1为安全，EI≥1为非安全；缺测为未知，未触舰无落点、无触舰EI。模型原有制导EI及控制参数未改动。',
+        '；'.join(f"条件{k}：平均风速{v['wind_mps']:g} m/s、有效波高{v['wave_height_m']:g} m" for k,v in policy['seas'].items())
+        +f"。每架次上限{policy['duration_s']:g} s。"+('本批次只有一种工况和一种方法，无配对差值。' if len(conditions(policy))==len(policy['methods'])==1 else ''),
+        '原着舰 STOP 输入触发且仿真终止即为触舰。安全分类另按论文公式，以实际舰船动力学的SI状态及导数刚体换算至固定H，EI<1为安全，EI≥1为非安全；缺测为未知，未触舰无落点、无触舰EI。',
         '表5-15安全触舰率以全部纳入架次为分母；触舰发生率、EI完整触舰样本中的安全比例单列。天气等权条件统计遇缺失天气留空。Wilson仅对平衡样本给出，配对区间按天气分层重采样随机种子；小样本退化区间不代表精确。',
         '阶段完成时长与未完成停留分开；未进入不记零。图5-14的总时长仅包含已触舰架次。全任务、已触舰、安全子集总时长均保存在表5-17。',
         '满足预声明的持续飞离判据时，整组海况×方法共同更换种子，避免破坏配对。超时、非安全触舰和导航失效不换种子。排除带来选择偏差，须结合all_attempts_sensitivity和attempt_ledger阅读主结果。基础设施失败暂停批次，恢复时重跑相同种子。',

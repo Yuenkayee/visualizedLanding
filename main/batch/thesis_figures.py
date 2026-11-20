@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager, ft2font
 from matplotlib.patches import Rectangle
 from matplotlib.lines import Line2D
+from .report_policy import conditions
 from .common import write_json
 from .metrics import allowed_region
 
@@ -41,9 +42,13 @@ def configure_font():
     raise RuntimeError('Chinese plotting font missing: Ubuntu: sudo apt-get install fonts-noto-cjk; then rerun check/analyze')
 
 
+def short_label(sea):
+    return f"{sea}级设定" if isinstance(sea,int) else "自定义风浪工况"
+
+
 def label(sea,policy):
     c=policy['seas'].get(str(sea),policy['seas'].get(sea))
-    return f"{sea}级设定：风速{c['wind_mps']:g} m/s，有效波高{c['wave_height_m']:g} m"
+    return f"{short_label(sea)}：风速{c['wind_mps']:g} m/s，有效波高{c['wave_height_m']:g} m"
 
 
 def save(fig,plots,name,title,footer=''):
@@ -107,7 +112,7 @@ def figures(rows,policy,data,t15,comparisons,landing,geometry):
     plots=data/'figures';plots.mkdir(exist_ok=True)
     # A new-profile directory must not silently mix with legacy dozens-of-files plots.
     expected={'figure_5_11.png','figure_5_16_rates.png','figure_5_16_paired.png'}
-    expected|={f'figure_5_{n}_sea{s}.png' for n in (12,13,14,15) for s in (5,6)}
+    expected|={f'figure_5_{n}_sea{s}.png' for n in (12,13,14,15) for s in conditions(policy)}
     expected|={f'figure_5_17_{w}.png' for w in policy['weather']}
     extra={p.name for p in plots.glob('*.png')}-expected
     if extra:raise ValueError(f'Unexpected legacy PNGs in new-profile output: {sorted(extra)}; use a new output directory')
@@ -120,7 +125,7 @@ def figures(rows,policy,data,t15,comparisons,landing,geometry):
     write_json(data/'representative_cases.json',[dict(case=m['path'],weather=m['weather'],sea=m['sea'],method=m['method'],
         slot=m['slot'],replacement=m['replacement'],source=m['plot_source'],outcome=m['touchdown_outcome']) for m in representatives])
     forcing(plots,traces,policy)
-    for sea in (5,6):
+    for sea in conditions(policy):
         trajectories(plots,traces,policy,sea,region)
         touchdowns(plots,rows,policy,sea,region)
         phases(plots,rows,policy,sea)
@@ -156,13 +161,13 @@ def forcing(plots,traces,policy):
     weather=policy['weather'][0]
     names=['波面位移 / m','横摇角 / °','纵摇角 / °','H竖向位移 / m','H法向速度 / (m/s)','实际H中心 EI']
     ends=[];details=[]
-    for sea,c in [(5,'#236da4'),(6,'#d46b28')]:
+    for sea,c in zip(conditions(policy), ['#236da4','#d46b28']):
         item=traces.get((weather,sea,method))
         if not item:continue
         m,z=item;ends.append(z['t1'][-1]);params=m['wave_parameters']
-        details.append(f"{sea}级：Hs={m['actual_conditions']['wave_height_m']:g} m，Tp={params.get('PeakPeriod',11.2):g} s，浪向{params.get('RelativeWaveDirectionDeg',150):g}°，航速{np.linalg.norm(m['wave_speed_mps'][:2]):.2f} m/s")
-        for j in range(5):axes[j].plot(z['t'],z['motion'][:,j],color=c,lw=1,label=f'{sea}级设定')
-        axes[5].plot(z['energy_time'],z['ei'],color=c,lw=1,label=f'{sea}级设定')
+        details.append(f"{short_label(sea)}：Hs={m['actual_conditions']['wave_height_m']:g} m，Tp={params.get('PeakPeriod',11.2):g} s，浪向{params.get('RelativeWaveDirectionDeg',150):g}°，航速{np.linalg.norm(m['wave_speed_mps'][:2]):.2f} m/s")
+        for j in range(5):axes[j].plot(z['t'],z['motion'][:,j],color=c,lw=1,label=short_label(sea))
+        axes[5].plot(z['energy_time'],z['ei'],color=c,lw=1,label=short_label(sea))
     axes[5].axhline(1,color='black',ls='--',lw=.8)
     for ax,name in zip(axes,names):
         ax.set(xlabel='时间 / s',ylabel=name);ax.grid(alpha=.2)
@@ -307,7 +312,7 @@ def control(plots,traces,policy,sea):
 def rates(plots,t15,policy):
     fig,axes=plt.subplots(2,2,figsize=(11.8,8.3));methods=policy['methods']
     for ax,w in zip(axes.ravel(),WEATHER):
-        for sea,offset,symbol in [(5,-.12,'o'),(6,.12,'s')]:
+        for sea,offset,symbol in zip(conditions(policy), [0] if len(conditions(policy))==1 else [-.12,.12], ['o','s']):
             for i,method in enumerate(methods):
                 r=next((r for r in t15 if (r['weather'],r['sea'],r['method'])==(w,sea,method)),None)
                 if not r or r['safe_rate'] is None:continue
@@ -319,7 +324,7 @@ def rates(plots,t15,policy):
         ax.set(title=WEATHER[w],xticks=range(len(methods)),xticklabels=methods,xlim=(-.6,len(methods)-.4),
                ylim=(-.25,1.25),yticks=[0,.25,.5,.75,1],ylabel='安全触舰率')
         ax.grid(alpha=.2,axis='y')
-    axes[0,0].legend(handles=[Line2D([],[],marker=s,color='black',ls='none',label=f'{sea}级设定') for sea,s in [(5,'o'),(6,'s')]])
+    axes[0,0].legend(handles=[Line2D([],[],marker=s,color='black',ls='none',label=short_label(sea)) for sea,s in zip(conditions(policy), ['o','s'])])
     save(fig,plots,'figure_5_16_rates.png','图5-16 安全触舰率与95% Wilson区间',
          '分母为全部纳入架次；未触舰和EI未知不计入安全数。标注为安全数/总数；触舰发生率与条件安全比例见表5-15。')
 
@@ -347,9 +352,9 @@ def paired_plot(plots,comparisons,policy):
 
 
 def energy_distribution(plots,rows,policy,weather):
-    fig,axes=plt.subplots(2,2,figsize=(12.4,9.4));methods=policy['methods']
+    fig,axes=plt.subplots(len(conditions(policy)),2,squeeze=False,figsize=(12.4,4.7*len(conditions(policy))));methods=policy['methods']
     vmax=max([r['ei'] for r in rows if r['weather']==weather and r['ei'] is not None]+[1.2])
-    for row,sea in enumerate((5,6)):
+    for row,sea in enumerate(conditions(policy)):
         ax,ecdf=axes[row];counts=[];any_data=False
         for i,method in enumerate(methods):
             group=[r for r in rows if r['weather']==weather and r['sea']==sea and r['method']==method]
@@ -369,8 +374,8 @@ def energy_distribution(plots,rows,policy,weather):
         if vmax>10:
             ax.set_yscale('symlog',linthresh=1);ecdf.set_xscale('symlog',linthresh=1)
             ecdf.set_xlabel('触舰时刻 EI（1以内线性，外侧对数）')
-        text=f'{sea}级设定\n'+'；'.join(counts[:2])+'\n'+'；'.join(counts[2:])
-        ax.set_title(text,fontsize=9);ecdf.set_title(f'{sea}级设定：空心点为严格EI<1的比例',fontsize=9)
+        text=f'{short_label(sea)}\n'+'；'.join(counts[:2])+'\n'+'；'.join(counts[2:])
+        ax.set_title(text,fontsize=9);ecdf.set_title(f'{short_label(sea)}：空心点为严格EI<1的比例',fontsize=9)
         for a in (ax,ecdf):a.grid(alpha=.2)
         if any_data:ecdf.legend()
         else:empty(ax,'无EI完整的触舰样本');empty(ecdf,'无可估计分布')
