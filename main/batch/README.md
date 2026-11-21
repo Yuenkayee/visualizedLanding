@@ -264,3 +264,5 @@ nohup bash shell/run_landing_batch.sh run --resume --c3-only \
 编辑 `configs/closed_loop_batch.json`。`conditions` 同时保存 5、6 级各自的 `wind_mps`（m/s）、`wave_height_m`（有效波高，m）和 `prediction_window_s`（下限、上限，s，0.02 s 网格）。`sea_levels`、`weather`、`methods` 可以省略或写 `[]`，分别表示该维度全测。例如只测两海况晴天、雾天的 C3，设置 `weather: ["clear", "fog"]`、`methods: ["C3"]`，保留 `sea_levels: []`。四种天气代码为 `clear`、`fog`、`night`、`night_fog`。每组合仍为 10 个样本；`duration_s` 是每架次最长仿真时间（秒），省略时默认 80，可设置为 0.02 秒的正整数倍；六路并发需要 6 个空闲的共享 MATLAB 会话。
 
 服务器仓库根目录执行 `bash shell/run_configured_batch.sh` 后台启动；`bash shell/run_configured_batch.sh logs` 实时查看最近启动的配置批次，Ctrl+C 退出日志查看。启动输出会打印独立的 `outputs/batch/batch_<时间>_<风浪及窗口>_<天气>_<方法>_t<时长>s_<唯一后缀>/`；其中 `batch_config.json` 为启动时的原始配置，`manifest.json` 为实际计划，`batch.log` 为主日志，`dependencies/` 为依赖检查记录，`groups/` 为逐架次结果，`analysis/` 为分析报告与图表。
+
+`bash shell/run_configured_batch.sh check` 可单独检查六个共享会话，不启动架次。`start` 每次都在前台执行同一检查：逐会话签出 Simulink、Control System Toolbox、Robust Control Toolbox 授权，实际调用 `ss`、加载 Simulink 并确认 `hinfsyn` 可见。全部通过才在后台派发到这六个会话；失败时不会更新最近批次指针。预检反映的是当时的授权状态。
